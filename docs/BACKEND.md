@@ -19,7 +19,7 @@
 | MyBatis     | 3.x（spring-boot-starter） | 持久层                                  |
 | MySQL       | 8.0                        | 业务数据库                              |
 | Redis       | 7                          | 缓存 / Lua 原子操作 / 限流 / 分布式状态 |
-| Kafka       | 3.x（KRaft 3 节点）        | 秒杀异步下单消息                        |
+| Kafka       | 3.x（KRaft 单节点）        | 秒杀异步下单消息                        |
 | Lombok      | latest                     | 实体样板代码精简                        |
 | Hutool      | 5.8.x                      | Snowflake ID / 字符串 / JSON 工具       |
 | Caffeine    | 3.1.x                      | 本地二级缓存（活动详情 L1）             |
@@ -28,32 +28,36 @@
 
 ### 1.3 设计亮点
 
-- **Redis + Lua 原子库存扣减**：将秒杀的库存校验、一人一单判断与预扣减压缩至单次 Lua 调用，避免 MySQL 单行锁串行化成为吞吐天花板。压测对比：**平均吞吐 200 → 550 RPS（2.75×）**，**p99 320ms → 180ms（-44%）**。
-- **Kafka 异步削峰下单**：秒杀订单写入从同步事务改为 Kafka 异步消费，消费端幂等落库保证不重复下单。压测对比：**平均吞吐 550 → 1100 RPS（2×）**，**p99 180ms → 80ms（-56%）**。
-- **Caffeine（L1）+ Redis（L2）二级缓存**：使用 Caffeine 本地缓存和 Redis 缓存搭建二级缓存架构。压测对比：**活动接口 p99 15ms → 4ms（-73%）**，**L1 命中率 99%**。
-- **缓存防穿透 + 防击穿组合**：商品查询采用"缓存空值占位"拦截恶意 ID 扫描，避免空查询直击 MySQL；活动详情采取"逻辑过期"，避免缓存重建期间大量请求穿透到 MySQL。
-- **幂等定时任务兜底最终一致**：定时从 Kafka DLQ 重投消息，失败超 5 次写 ERROR 日志等待运维介入；周期对账修复消息丢失或 Redis 数据丢失导致的库存异常。
-- **滑动窗口限流**：采用 ZSet + Lua 原子滑动窗口，自定义 AOP 注解支持 USER / IP / API 三维度，挂到登录、抢购等敏感接口，业务代码零侵入。
+> 技术栈：Java 17 + Spring Boot 3 + MySQL 8 + Redis 7 + Kafka 3 + Caffeine 3
+
+面向高并发秒杀场景的积分商城，核心解决秒杀链路的防超卖、流量削峰、热点缓存与最终一致问题。
+
+- **Redis + Lua 原子库存扣减**：将秒杀的库存校验、一人一单判断与预扣减压缩至单次 Lua 调用，绕开 MySQL 单行锁串行化瓶颈，**大幅降低尾延迟**。压测对比（100 VU 横向）：**平均吞吐 200 → 300 RPS（1.5×）**，**p99 500ms → 150ms（-70%）**。
+- **Kafka 异步削峰下单**：秒杀链路从同步事务落库升级为 Kafka 异步消费，接口 RT 不含 DB 写入开销，**显著降低成功请求的尾延迟**（同 VU 同载下吞吐贴近 B，价值在尾延迟而非纯吞吐）。压测对比（100 VU 横向）：**平均吞吐 300 → 350 RPS（1.17×）**，**p99 150ms → 80ms（-47%）**。
+- **Caffeine（L1）+ Redis（L2）二级缓存**：为热点活动详情 Key 增设 Caffeine 本地缓存抗读，微秒级命中，减轻 Redis 单 Key 高 QPS 压力。压测对比：**活动接口 p99 15ms → 5ms（-67%）**，**L1 命中率 ≥ 95%**。
+- **缓存防穿透 + 防击穿组合**：商品访问采用"缓存空值占位"拦截恶意 ID 扫描，避免空查询直击 MySQL；活动访问采用"逻辑过期 + 后台异步重建"，避免缓存重建期间大量请求穿透到 MySQL。
+- **滑动窗口限流（ZSet + Lua + AOP）**：基于 Redis ZSet 实现原子滑动窗口，自定义 `@RateLimit` 注解支持 USER / IP / API 三维度，挂到登录、抢购等敏感接口，业务代码零侵入。
+- **DLQ + 幂等定时任务保证最终一致**：消息消费失败重试 3 次后入 DLQ，定时回投主 Topic 并累加失败计数，超 5 次写 ERROR 日志告警；周期对账修复 Redis 库存与 MySQL 真实订单数偏差，覆盖消息丢失与 Redis 数据丢失场景。
 
 #### 1.3.1 压测数据估算说明
 
 上述前三个亮点的压测数字为 M6 实跑前的**预估值**，实测数据待 M6 完成后以 `load/reports/<timestamp>/` JSON 摘要替换。预估推算依据如下。
 
-**硬件假设**：宿主机 7.6 GiB WSL2 / 4 vCPU，Docker 资源限额遵循 [DEPLOYMENT.md §2.4](./DEPLOYMENT.md)；Redis 单实例本地部署，网络往返 ~0.5ms；Kafka 3 节点 KRaft 同机集群，副本写入 ack ~5-20ms。
+**硬件假设**：宿主机 7.6 GiB WSL2 / 4 vCPU，Docker 资源限额遵循 [DEPLOYMENT.md §2.4](./DEPLOYMENT.md)；Redis 单实例本地部署，网络往返 ~0.5ms；Kafka 单节点 KRaft 同机部署，acks=1 写入磁盘 ~2-10ms。
 
 **场景 A vs B（亮点 1）**：
 
-- 场景 A 普惠：单事务包含 `UPDATE total_stock` + `UPDATE points` + `INSERT order` + `INSERT point_log` 四步，InnoDB 本地无 fsync 优化下事务平均 ~5ms；活动单行锁串行化将吞吐压在 ~200 RPS，50 VU 排队 ⇒ p99 ≈ 320ms。
-- 场景 B 限时：Lua 扣减 ~0.5ms，库存售罄后的失败请求（重复购买 / 售罄）在 Lua 层 ~1ms 直接返回，150 VU 下大量失败请求拉高平均 RPS 至 ~550；命中事务路径的 p99 仍由 DB 写入延迟主导 ⇒ ~180ms。
+- 场景 A 普惠：单事务包含 `UPDATE total_stock` + `UPDATE points` + `INSERT order` + `INSERT point_log` 四步，InnoDB 本地无 fsync 优化下事务平均 ~5ms；活动单行锁串行化将吞吐压在 ~200 RPS，100 VU 排队深度（≈ 2×Tomcat 线程上限）下 ⇒ p99 ≈ 500ms。
+- 场景 B 限时：Lua 扣减 ~0.5ms，库存售罄后的失败请求（重复购买 / 售罄）在 Lua 层 ~1ms 直接返回，100 VU 下平均 RPS ~300（由 Lua fail-fast 路径与 VU 共同决定）；命中事务路径的 p99 仍由 DB 写入延迟主导，但 100 VU 下 DB 排队远轻于 A ⇒ ~150ms。
 
 **场景 B vs C（亮点 2）**：
 
-- 场景 C 超级：Lua 扣减后调 `kafkaTemplate.send().get(3s)`，本地 3 节点 KRaft 集群 `acks=all` + `min.insync.replicas=2` 下 ack 延迟 ~5-20ms；接口 RT 不含 DB 落库（消费端异步），300 VU 下平均 RPS 推升至 ~1100；p99 由 Kafka producer ack 上限决定 ⇒ ~80ms。
+- 场景 C 超级：Lua 扣减后调 `kafkaTemplate.send().get(3s)`，本地单节点 KRaft `acks=1` 下 ack 延迟 ~2-10ms；接口 RT 不含 DB 落库（消费端异步），100 VU 下平均 RPS ~350（与 B 接近，因 fail-fast 路径相同；成功路径 Kafka send ~5ms 略短于 B 的 DB txn ~10ms 带来 ~17% 边际）；p99 由 Kafka producer ack 上限决定 ⇒ ~80ms。
 
 **场景 D（亮点 3）**：
 
-- L1 命中率：Caffeine `expireAfterWrite=1s`，100 VU 持续访问同一活动 Key，每秒数千次访问中仅有重建窗口的 1 次 miss，理论命中率 ≈ (n-1)/n。考虑 Caffeine evict、压测启停冷启动等损耗，保守取 **0.99**（ROADMAP 验收门槛 ≥ 0.95）。
-- 接口 p99：L1 关时所有请求走 Redis GET（~0.5-1ms 网络 + 反序列化），p99 受 Tomcat 100 线程上限制约 ~**15ms**；L1 开时 JVM 内存指针访问 ~微秒级，p99 主要由 HTTP 框架开销决定 ~**4ms**（验收门槛 -60%，估算 -73% 留余量）。
+- L1 命中率：Caffeine `expireAfterWrite=1s`，100 VU 持续访问同一活动 Key，每秒数千次访问中仅有重建窗口的 1 次 miss，理论命中率 ≈ (n-1)/n。考虑 Caffeine evict、压测启停冷启动等损耗，保守取 **0.95**（与 ROADMAP 验收门槛对齐）。
+- 接口 p99：L1 关时所有请求走 Redis GET（~0.5-1ms 网络 + 反序列化），p99 受 Tomcat 100 线程上限制约 ~**15ms**；L1 开时 JVM 内存指针访问 ~微秒级，p99 主要由 HTTP 框架开销决定 ~**5ms**（对齐验收门槛 -60%）。
 
 实测数据来源：[ROADMAP §M6 压测对比表](./ROADMAP.md) 与 [ROADMAP §M6 缓存层级对比表](./ROADMAP.md)，由 `scripts/k6-run.sh` 在 M6 完成后自动产出。
 
@@ -559,24 +563,25 @@ UPDATE t_seckill_activity SET tier = 1 WHERE id = 3001;
 
 ## 8. Kafka 设计
 
-### 8.1 集群形态
+### 8.1 部署形态
 
-- 3 节点 KRaft 模式，每个进程同时担任 controller 与 broker。
+- 单节点 KRaft 模式，进程同时担任 controller 与 broker。
 - 不开 SASL，部署在私网信任域内，10 人规模够用。
-- 副本因子 3，`min.insync.replicas=2`：任意 1 broker 故障消息仍可读写；2 broker 同时故障写入阻塞（拒写优于丢）。
+- 副本因子 1，无 `min.insync.replicas`；消息持久化由容器卷 `kafka-data:/bitnami/kafka` 落盘承担。
+- 单机宿主部署下"跨节点副本容错"无法落地（宿主死所有 broker 一起死），消息不丢由 Producer 幂等 + 同步 `send().get(3s)` + 回滚 Lua + Consumer `INSERT IGNORE` 幂等门 + DLQ + `StockReconcileJob` 对账六层兜底，详见 §14.4。
 
 ### 8.2 Topic
 
-| Topic                      | 分区 | 副本 | min.insync.replicas | Key       | Value（JSON）                                                  |
-| -------------------------- | ---- | ---- | ------------------- | --------- | -------------------------------------------------------------- |
-| `shanpu.seckill.order`     | 3    | 3    | 2                   | `orderId` | `{ orderId, userId, activityId, productId, price, createdAt }` |
-| `shanpu.seckill.order.dlq` | 1    | 3    | 2                   | `orderId` | 原消息 + Header：`failReason`、`failCount`                     |
+| Topic                      | 分区 | 副本 | Key       | Value（JSON）                                                  |
+| -------------------------- | ---- | ---- | --------- | -------------------------------------------------------------- |
+| `shanpu.seckill.order`     | 3    | 1    | `orderId` | `{ orderId, userId, activityId, productId, price, createdAt }` |
+| `shanpu.seckill.order.dlq` | 1    | 1    | `orderId` | 原消息 + Header：`failReason`、`failCount`                     |
 
 ### 8.3 生产者
 
 | 配置                                    | 值                | 说明                                                    |
 | --------------------------------------- | ----------------- | ------------------------------------------------------- |
-| `acks`                                  | all               | 所有 ISR 副本写入才返回，配合副本 3 + min.insync 2 不丢 |
+| `acks`                                  | 1                 | leader 写入即返回（单 broker，与 `all` 等价）           |
 | `enable.idempotence`                    | true              | broker 基于 producer epoch + 序列号去重内部重试         |
 | `retries`                               | Integer.MAX_VALUE | 配合幂等性，重试直到 `delivery.timeout.ms`              |
 | `max.in.flight.requests.per.connection` | 5                 | 幂等性允许的最大未确认请求数                            |
@@ -841,10 +846,10 @@ Hutool `Snowflake` 检测到 `currentMs < lastMs` 直接抛 `IllegalStateExcepti
 
 ## 12. Kafka Topic 设计
 
-| Topic                      | 分区 | 副本 | min.insync.replicas | Key       | Header                    | Value                                                          |
-| -------------------------- | ---- | ---- | ------------------- | --------- | ------------------------- | -------------------------------------------------------------- |
-| `shanpu.seckill.order`     | 3    | 3    | 2                   | `orderId` | -                         | `{ orderId, userId, activityId, productId, price, createdAt }` |
-| `shanpu.seckill.order.dlq` | 1    | 3    | 2                   | `orderId` | `failReason`、`failCount` | 同主 Topic 消息体                                              |
+| Topic                      | 分区 | 副本 | Key       | Header                    | Value                                                          |
+| -------------------------- | ---- | ---- | --------- | ------------------------- | -------------------------------------------------------------- |
+| `shanpu.seckill.order`     | 3    | 1    | `orderId` | -                         | `{ orderId, userId, activityId, productId, price, createdAt }` |
+| `shanpu.seckill.order.dlq` | 1    | 1    | `orderId` | `failReason`、`failCount` | 同主 Topic 消息体                                              |
 
 消费组：`shanpu-seckill-consumer`。
 
@@ -921,6 +926,7 @@ public class SeckillOrderMsg {
 ### 14.1 主动简化
 
 - Redis 单实例 + AOF everysec，不上集群与哨兵。
+- Kafka 单节点 KRaft + 单副本，消息不丢由 Producer 幂等 + 同步 `send().get(3s)` + 回滚 Lua + Consumer 幂等门 + DLQ + `StockReconcileJob` 对账兜底，不依赖跨 broker 副本。
 - 不引入 Spring Cloud / Nacos / Sentinel / SkyWalking / Seata。
 - JWT 无刷新令牌；登录写入 Redis session 白名单、登出 DEL 即时生效，session TTL 同 JWT 自然过期，无后台清理任务。
 - 限流自实现，不引入第三方限流框架。
@@ -931,7 +937,7 @@ public class SeckillOrderMsg {
 - 三档秒杀活动：业务可见档位驱动技术选型，普惠 / 限时 / 超级三档逐层引入 Redis Lua、Kafka 异步，演示"档位决定链路"。
 - 逻辑过期 + 后台线程异步重建：覆盖热点 Key 击穿心智模型。
 - Lua 一人一单 + 防超卖：演示 Redis 原子操作（限时与超级两档复用同一脚本）。
-- Kafka 多副本异步下单 + Producer 幂等 + Consumer 幂等门 + DLQ + 库存自动对账：覆盖"消息严格不丢 + 不重复消费 + 端到端最终一致"完整链路（仅超级档触发）。
+- Kafka 单节点异步下单 + Producer 幂等 + Consumer 幂等门 + DLQ + 库存自动对账：覆盖"消息严格不丢 + 不重复消费 + 端到端最终一致"完整链路（仅超级档触发）。
 - DB / Redis 同步 / Redis+Kafka 三场景压测：每条链路瓶颈可量化对比。
 - `CacheClient` 模板封装：避免每个 Service 重复书写双重检查与锁释放。
 

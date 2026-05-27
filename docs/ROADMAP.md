@@ -135,7 +135,6 @@ M1、M2 完成。
   - `SELECT COUNT(*) FROM t_point_log WHERE biz_type=2 AND biz_ref IN (SELECT order_id FROM t_order WHERE activity_id=3001 AND source=4 AND status='PAID')` 恰好 200——扣分流水数等于成功订单数，验证消费端幂等门生效、无重复扣积分。
 - **档位热切换**：手动执行 `UPDATE t_seckill_activity SET tier = 3 WHERE id = 1002`，调 `CacheClient.evict(...)` 与 `SeckillWarmupJob.warmupOne(1002)` 后，发起 `POST /api/seckills/1002/grab` 响应包含 `status: 'PENDING'` 且 Redis `shanpu:seckill:stock:1002` 已写入。
 - **故障注入（仅超级档）**：临时在 `SeckillConsumer.handle` 抛 `RuntimeException`，触发 3 次重试后消息进入 `shanpu.seckill.order.dlq`；恢复异常后，启动 `KafkaDlqRescueJob` 手动触发，消息回到主 topic 被消费、订单成功落库、`t_order_dlq_log` 中记录失败信息。
-- **故障注入（仅超级档）**：压测进行中执行 `docker compose stop kafka-1`，秒杀接口持续成功率 ≥ 99%（验证 `acks=all` + 副本 3 下单 broker 故障消息不丢）；恢复后 `docker compose start kafka-1` + `kafka-topics.sh --describe --topic shanpu.seckill.order` 显示 ISR 自动恢复到 3 副本。
 - `SeckillWarmupJob` 在活动开始前 60 分钟内执行后，限时与超级档活动的 `shanpu:seckill:stock:{id}` 与 `shanpu:seckill:activity:{id}` 已写入 Redis；普惠档仅 `shanpu:seckill:activity:{id}` 写入。
 - `/api/health` 中 `kafka=UP`。
 
@@ -149,11 +148,11 @@ M3 完成。
 
 ### 目标
 
-`web/` 全部页面可承载完整用户旅程；`OrderTimeoutJob` 在生产链路兜底未支付 / 异步落单失败的订单。
+`frontend/` 全部页面可承载完整用户旅程；`OrderTimeoutJob` 在生产链路兜底未支付 / 异步落单失败的订单。
 
 ### 交付物
 
-- 前端工程：`web/` 下 `package.json`、`next.config.ts`、`tsconfig.json`、`tailwind.config.ts`、`components.json` 及全部 `app/`、`components/`、`lib/`、`hooks/`、`types/` 文件（详见 [FRONTEND.md §3](./FRONTEND.md)）。
+- 前端工程：`frontend/` 下 `package.json`、`next.config.ts`、`tsconfig.json`、`tailwind.config.ts`、`components.json` 及全部 `app/`、`components/`、`lib/`、`hooks/`、`types/` 文件（详见 [FRONTEND.md §3](./FRONTEND.md)）。
 - 全部页面：`/`、`/products`、`/products/[id]`、`/seckill`、`/seckill/[id]`、`/login`、`/register`、`/orders`、`/orders/[id]`、`/me`。
 - 全部关键组件：`ProductCard`、`SeckillCard`、`SeckillCountdown`、`PointsBadge`、`OrderStatusBadge`、`AuthGuard`、`SiteHeader`、`SiteFooter`、`Providers`。
 - HTTP 客户端：`lib/api/client.ts` + `lib/api/{user,product,seckill,order}.ts`。
@@ -182,7 +181,7 @@ M4 完成。
 ### 交付物
 
 - 部署工件：`deploy/docker-compose.yml`（每服务 `deploy.resources.limits` 显式声明 CPU 与内存上限）、`deploy/.env.example`、`deploy/mysql/init/01_schema.sql`、`deploy/mysql/init/02_seed.sql`（含 500 压测用户 `u0001~u0500`）、`deploy/mysql/conf/my.cnf`、`deploy/redis/redis.conf`、`deploy/kafka/server.properties`。
-- 容器化构建：`backend/Dockerfile`（含 `JAVA_TOOL_OPTIONS=-Xmx1g -Xms512m`）、`web/Dockerfile`。
+- 容器化构建：`backend/Dockerfile`（含 `JAVA_TOOL_OPTIONS=-Xmx1g -Xms512m`）、`frontend/Dockerfile`。
 - 压测脚本：`load/lib/auth.js`、`load/scenario-a-inclusive.js`、`load/scenario-b-redis-sync.js`、`load/scenario-c-redis-kafka.js`、`load/scenario-d-cache-comparison.js`。
 - 辅助脚本：`scripts/dev-up.sh`、`scripts/seed-users.sh`、`scripts/k6-bench-reset.sh`、`scripts/k6-bench-restore.sh`、`scripts/k6-run.sh`。
 - 文档：DEPLOYMENT.md 全部章节内容落地完成；本里程碑末尾的"压测对比表"与"缓存层级对比表"由人工填入实测数据。
@@ -202,9 +201,9 @@ M4 完成。
   - `SELECT COUNT(*) FROM t_order WHERE source=2 AND activity_id=1001` ≤ 20000（普惠档压测注入库存）。
   - `SELECT COUNT(*) FROM t_order WHERE source=3 AND activity_id=2001` ≤ 20000（限时档压测注入库存）。
   - `SELECT COUNT(*) FROM t_order WHERE source=4 AND activity_id=3001` ≤ 20000（超级档压测注入库存）。
-- 压测峰值 `docker stats` 抓拍：`backend` / `mysql` / `kafka-1/2/3` 每服务内存使用 ≤ `deploy.resources.limits.memory` 的 90%，无 OOM Kill 事件（`docker inspect <container> --format '{{.State.OOMKilled}}'` 全为 `false`）。
+- 压测峰值 `docker stats` 抓拍：`backend` / `mysql` / `kafka` 每服务内存使用 ≤ `deploy.resources.limits.memory` 的 90%，无 OOM Kill 事件（`docker inspect <container> --format '{{.State.OOMKilled}}'` 全为 `false`）。
 - 场景 C 压测结束后流水对账：`SELECT COUNT(*) FROM t_point_log WHERE biz_type=2 AND biz_ref IN (SELECT order_id FROM t_order WHERE activity_id=3001 AND source=4 AND status='PAID')` 等于 `SELECT COUNT(*) FROM t_order WHERE source=4 AND activity_id=3001 AND status='PAID'`——验证压测全程消息端到端无丢失、无重复消费导致的积分流水偏差。
-- 三场景吞吐与延迟呈预期梯度：A 普惠的 RPS 上限由 MySQL 单行锁串行化决定；B 限时在 Redis 路径减负后吞吐高于 A，但因落库仍同步 DB，提升幅度受 MySQL 写入约束；C 超级因接口 RT 不含 DB 写入，应显著高于 A/B。本基线在 7.6 GiB WSL2 上测得，结论可外推但绝对值随硬件变化。
+- 三场景吞吐与延迟呈预期梯度：A 普惠的 RPS 上限由 MySQL 单行锁串行化决定，p99 因 100 VU 排队深度被进一步抬高；B 限时在 Redis 路径减负后吞吐显著高于 A，p99 由命中事务路径的 DB 写入主导；C 超级因接口 RT 不含 DB 写入，吞吐贴近 B、但 p99 进一步降低（架构优势主要在尾延迟而非纯吞吐）。由于三档共享 100 VU 阶梯，RPS / p99 / p95 可直接横向对比、无需按 VU 归一化。本基线在 7.6 GiB WSL2 上测得，结论可外推但绝对值随硬件变化。
 - 场景 D 双轮对比（`shanpu.cache.local.activity.enabled` true / false 各跑一遍，中间重启应用 + `FLUSHDB`）满足以下四项门槛：
   - **命中率**：`GET /api/admin/cache/stats` 显示 `activityLocal.hitRate ≥ 0.95`。
   - **性能提升**：活动接口 p99 下降 ≥ 60%，活动 Key Redis `GET` ops/s 下降 ≥ 95%（差分自 `redis-cli INFO commandstats`）。
@@ -219,13 +218,13 @@ M5 完成。
 
 | 场景 | 接口 | VU 峰值 | 平均 RPS | p50 (ms) | p95 (ms) | p99 (ms) | HTTP 错误率 | 业务错误率 | 成功订单数 | 超卖 | 瓶颈观察 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| A 普惠（tier=1） | `POST /api/seckills/1001/grab` | 50 |  |  |  |  |  |  | ≤500 | 否 | DB 单行 `id=1001` 行锁串行化 |
-| B 限时（tier=2） | `POST /api/seckills/2001/grab` | 150 |  |  |  |  |  |  | ≤500 | 否 | DB 行锁（Redis 减负但落库仍同步） |
-| C 超级（tier=3） | `POST /api/seckills/3001/grab` | 300 |  |  |  |  |  |  | ≤500 | 否 | Kafka producer send ack 延迟 |
+| A 普惠（tier=1） | `POST /api/seckills/1001/grab` | 100 |  |  |  |  |  |  | ≤500 | 否 | DB 单行 `id=1001` 行锁串行化 |
+| B 限时（tier=2） | `POST /api/seckills/2001/grab` | 100 |  |  |  |  |  |  | ≤500 | 否 | DB 行锁（Redis 减负但落库仍同步） |
+| C 超级（tier=3） | `POST /api/seckills/3001/grab` | 100 |  |  |  |  |  |  | ≤500 | 否 | Kafka producer send ack 延迟 |
 
 业务错误率 = `(seckill_duplicate_total + seckill_sold_out_total) / iterations`，独立于 HTTP 错误率（业务码不计入 `http_req_failed`，见 DEPLOYMENT.md §7.5）。成功订单数上限 500 = 一人一单约束 × 500 压测用户池。
 
-测试硬件、Docker 资源限制（按 DEPLOYMENT.md §2.4）、差异化阶梯（A 0→50/3m、B 0→150/3m、C 0→300/3m，详见 DEPLOYMENT.md §7.4）、瓶颈观察源（`docker stats` / `redis-cli INFO commandstats` 差分 / `kafka-consumer-groups.sh --describe` lag）记录在 `load/reports/<timestamp>/README.md`。
+测试硬件、Docker 资源限制（按 DEPLOYMENT.md §2.4）、统一 VU 阶梯（0→30→100→0，总时长 3 分钟，详见 DEPLOYMENT.md §7.4）、瓶颈观察源（`docker stats` / `redis-cli INFO commandstats` 差分 / `kafka-consumer-groups.sh --describe` lag）记录在 `load/reports/<timestamp>/README.md`。
 
 ### 缓存层级对比表（场景 D，待 M6 实跑后填入）
 
@@ -249,7 +248,6 @@ Redis ops 取自 `redis-cli INFO commandstats` 两轮压测前后差分；L1 hit
 | 风险 | 影响里程碑 | 应对 |
 |---|---|---|
 | Java 17 / Spring Boot 3.x 与 Lombok 兼容性 | M1 | 使用 Lombok 1.18.32+ |
-| 3 节点 KRaft controller quorum 等待 ISR 成立 | M4、M6 | 健康检查间隔 10 秒，单 broker 最多等待 120 秒；`backend.depends_on` 等三个 broker 全部 `service_healthy` 才启动 |
 | 实习生不熟悉 RSC / Server Component | M5 | 业务页面默认 client 组件，仅首页与列表用 RSC，且不依赖 cookies |
 | 压测期间 Redis 内存增长 | M6 | `maxmemory 256mb` + `allkeys-lru`；单 k6 场景结束后 `k6-bench-restore.sh` 清理对应活动的库存与已购集合 |
 | Lua 脚本未挂载 / 路径错误 | M3、M4 | `RedisConfig` 用 `ClassPathResource` 显式加载 `src/main/resources/lua/*.lua`，启动期间日志打印 sha |

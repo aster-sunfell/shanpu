@@ -12,23 +12,23 @@
 
 ## 2. 技术栈
 
-| 类别 | 选型 | 备注 |
+| 组件 | 版本 | 用途 |
 |---|---|---|
-| 框架 | Next.js 15（App Router） | RSC + Client Component 混用 |
-| 语言 | TypeScript 5.x | strict 模式 |
-| 样式 | Tailwind CSS v4 | CSS-first，配置写在 `globals.css` |
-| UI 组件 | Shadcn UI（Radix UI + Tailwind） | 通过 CLI 按需生成到 `components/ui/` |
-| 图标 | lucide-react | - |
-| 状态管理 | Zustand 4.x | 仅维护登录态 |
-| HTTP | 原生 `fetch` 封装 | 不引入 axios / TanStack Query |
-| 表单 | react-hook-form + zod | 登录 / 注册表单校验 |
-| 通知 | sonner | toast 提示 |
-| 包管理 | pnpm | - |
+| Next.js | 15 (App Router) | RSC + Client Component 混用 |
+| TypeScript | 5.x | strict 模式 |
+| Tailwind CSS | v4 | CSS-first，配置写在 `globals.css` |
+| Shadcn UI | latest (Radix UI + Tailwind) | 通过 CLI 按需生成到 `components/ui/` |
+| lucide-react | latest | 图标 |
+| Zustand | 4.x | 仅维护登录态 |
+| 原生 fetch | - | HTTP 封装，不引入 axios / TanStack Query |
+| react-hook-form + zod | latest | 登录 / 注册表单校验 |
+| sonner | latest | toast 提示 |
+| pnpm | latest | 包管理 |
 
 ## 3. 目录结构
 
 ```text
-web/
+frontend/
 ├── package.json
 ├── pnpm-lock.yaml
 ├── Dockerfile
@@ -72,10 +72,12 @@ web/
 │   ├── api/seckill.ts
 │   ├── api/order.ts
 │   ├── auth/token-store.ts # Zustand 持久化
+│   ├── config/public-config.ts # 运行时配置注入读取（详见 §7.3）
 │   └── utils.ts            # cn() 等
 ├── hooks/
 │   ├── use-auth.ts
 │   ├── use-countdown.ts
+│   ├── use-public-config.ts
 │   └── use-seckill-result.ts
 └── types/
     ├── api.ts              # Result<T> 泛型
@@ -179,7 +181,7 @@ export async function request<T>(
 |---|---|
 | 自动注入 token | 浏览器侧从 `useAuthStore.getState().token` 取；服务端侧不带（RSC 仅访问无鉴权接口） |
 | Content-Type | 默认 `application/json`；GET 不带 body |
-| baseURL | 浏览器侧 `NEXT_PUBLIC_API_BASE_URL`；服务端侧 `INTERNAL_API_BASE_URL` |
+| baseURL | 浏览器侧从 `usePublicConfig().apiBase` 取（根 layout 注入，详见 §7.3）；服务端侧 `process.env.INTERNAL_API_BASE_URL` |
 | 响应解析 | 读 `Result<T>`，`code !== 0` 抛 `ApiError(code, msg)` |
 | HTTP 401 | 调用 `useAuthStore.getState().clearSession()` 并 `router.push('/login')` |
 | HTTP 429 | 抛 `ApiError(42900, '请求过于频繁，请稍后再试')` |
@@ -209,17 +211,35 @@ export const userApi = {
 };
 ```
 
+### 7.3 运行时配置注入
+
+`PUBLIC_API_BASE_URL` 与部署目标的主机名 / 端口耦合，不能在 build-time 烤进 JS bundle，否则用户改 `.env` 后必须重 build 镜像。采用 SSR 注入 + client 端解析机制：
+
+1. **server 侧渲染**：`app/layout.tsx` 作为 server component，每次请求时读取 `process.env.PUBLIC_API_BASE_URL`，序列化为：
+   ```tsx
+   <script id="__shanpu_config__" type="application/json">
+     {JSON.stringify({ apiBase: process.env.PUBLIC_API_BASE_URL })}
+   </script>
+   ```
+2. **client 侧解析**：`lib/config/public-config.ts` 提供 `readPublicConfig()`，浏览器侧 `JSON.parse(document.getElementById('__shanpu_config__')!.textContent!)`，模块级缓存避免重复解析。
+3. **Hook 暴露**：`hooks/use-public-config.ts` 暴露 `usePublicConfig()` 供 client 组件订阅 `apiBase`。
+4. **client.ts 适配**：`lib/api/client.ts` 在 `request()` 内按运行环境分流——浏览器侧 lazy 调 `readPublicConfig().apiBase`；服务端侧（SSR/RSC）直接读 `process.env.INTERNAL_API_BASE_URL`，不走 `<script>` 注入路径。
+
+效果：用户在 `deploy/.env` 改 `PUBLIC_API_HOST` 或 `BACKEND_PORT` 后，`docker compose up -d frontend` 重启容器即可生效，无需重 build 镜像。
+
 ## 8. 环境变量
 
-`.env.local`（开发） / `.env.production` / Docker 构建参数：
+`.env.local`（开发） / 容器 `environment:` 段（部署）：
 
 | 变量 | 范围 | 默认值 | 说明 |
 |---|---|---|---|
-| `NEXT_PUBLIC_API_BASE_URL` | 浏览器 | `http://localhost:8080/api` | 浏览器调用后端的基地址 |
-| `INTERNAL_API_BASE_URL` | 服务端 | `http://backend:8080/api` | SSR/RSC 在 Docker 网络内调用 |
-| `NEXT_PUBLIC_SITE_NAME` | 浏览器 | `闪铺` | 站点名 |
-| `NEXT_PUBLIC_POLL_INTERVAL_MS` | 浏览器 | `1000` | 订单轮询间隔 |
-| `NEXT_PUBLIC_POLL_MAX_TIMES` | 浏览器 | `10` | 订单最大轮询次数 |
+| `PUBLIC_API_BASE_URL` | 服务端读取→注入到浏览器 | `http://localhost:8080/api` | 浏览器调用后端的基地址。由 docker-compose 拼自 `${PUBLIC_API_HOST}:${BACKEND_PORT}`；server component 读取后嵌入 HTML 供 client hydrate 时消费（详见 §7.3） |
+| `INTERNAL_API_BASE_URL` | frontend 容器服务端 | `http://backend:8080/api` | SSR/RSC 在 Docker 网络内调用后端，硬编码在 docker-compose `environment:` 段 |
+| `NEXT_PUBLIC_SITE_NAME` | 浏览器 | `闪铺` | 站点名，build-time 烤进 bundle |
+| `NEXT_PUBLIC_POLL_INTERVAL_MS` | 浏览器 | `1000` | 订单轮询间隔，build-time 烤进 bundle |
+| `NEXT_PUBLIC_POLL_MAX_TIMES` | 浏览器 | `10` | 订单最大轮询次数，build-time 烤进 bundle |
+
+`PUBLIC_API_BASE_URL` 与 `INTERNAL_API_BASE_URL` 走运行时环境变量，与部署目标耦合，改值后重启容器即生效；`NEXT_PUBLIC_*` 三项与部署无关，build-time 编译进静态产物。
 
 ## 9. 页面与 API 映射
 
