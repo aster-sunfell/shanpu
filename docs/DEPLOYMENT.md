@@ -8,51 +8,32 @@ shanpu/
 ├── CLAUDE.md
 ├── README.md
 ├── .sdkmanrc
+├── docker-compose.yml
+├── .env.example
 ├── backend/                 # Spring Boot 工程（详见 BACKEND.md）
 ├── frontend/                # Next.js 工程（详见 FRONTEND.md）
-├── deploy/
-│   ├── docker-compose.yml
-│   ├── .env.example
-│   ├── mysql/
-│   │   ├── conf/my.cnf
-│   │   └── init/
-│   │       ├── 01_schema.sql      # DDL，自动执行
-│   │       └── 02_seed.sql        # 种子数据
-│   ├── redis/redis.conf
-│   └── kafka/
-│       └── server.properties      # KRaft 单节点基线
-├── load/
-│   ├── lib/auth.js                       # 批量登录拿 JWT
-│   ├── scenario-a-inclusive.js           # 场景 A：普惠档（tier=1，DB 直连）
-│   ├── scenario-b-redis-sync.js          # 场景 B：限时档（tier=2，Redis+Lua 同步）
-│   ├── scenario-c-redis-kafka.js         # 场景 C：超级档（tier=3，Redis+Lua+Kafka 异步）
-│   ├── scenario-d-cache-comparison.js    # 场景 D：缓存层级对比（与三档压测正交）
-│   └── reports/                          # 压测产物
-├── scripts/
-│   ├── dev-up.sh                   # 拉起依赖（不含后端 / 前端）
-│   ├── seed-users.sh               # 注入 500 个种子用户
-│   ├── k6-bench-reset.sh           # 压测前置：重置库存与压测用户订单
-│   ├── k6-bench-restore.sh         # 压测后置：恢复种子库存
-│   └── k6-run.sh                   # 一键串跑三场景（自动调 bench-reset）
+├── mysql/
+│   └── init/
+│       ├── 01_schema.sql      # DDL，自动执行
+│       └── 02_seed.sql        # 种子数据
 └── docs/
     ├── BACKEND.md
     ├── FRONTEND.md
+    ├── QUICKSTART.md
     ├── DEPLOYMENT.md
     └── ROADMAP.md
 ```
 
 ## 2. Docker Compose 服务清单
 
-`deploy/docker-compose.yml` 定义 6 个服务，其中 `k6` 仅在 `loadtest` profile 中拉起。每个服务通过 `deploy.resources.limits` 显式声明 CPU 与内存上限（见 §2.4 设计逻辑）。下表"暴露端口"列引用 `.env` 变量，默认值见 §2.3。
+根目录 `docker-compose.yml` 定义 4 个服务。每个服务通过 `deploy.resources.limits` 显式声明 CPU 与内存上限（见 §2.4 设计逻辑）。下表"暴露端口"列引用 `.env` 变量，默认值见 §2.3。
 
 | 服务 | 镜像 | 内部端口 | 暴露端口 | CPU 上限 | 内存上限 | 卷 | 健康检查 |
 |---|---|---|---|---|---|---|---|
-| `mysql` | `mysql:8.0` | 3306 | `${MYSQL_PORT}` | 1.5 | 1g | `./mysql/init:/docker-entrypoint-initdb.d:ro`、`./mysql/conf/my.cnf:/etc/mysql/conf.d/my.cnf:ro`、`mysql-data:/var/lib/mysql` | `mysqladmin ping -p$MYSQL_ROOT_PASSWORD` |
-| `redis` | `redis:7-alpine` | 6379 | `${REDIS_PORT}` | 1.0 | 384m | `./redis/redis.conf:/etc/redis/redis.conf:ro`、`redis-data:/data` | `redis-cli -a $REDIS_PASSWORD ping` |
-| `kafka` | `bitnami/kafka:3.7` | 9092、9093 | `${KAFKA_PORT}` | 1.0 | 768m | `kafka-data:/bitnami/kafka` | `kafka-topics.sh --bootstrap-server localhost:9092 --list` |
-| `backend` | 本仓 `backend/Dockerfile` | 8080 | `${BACKEND_PORT}` | 2.0 | 1.5g | - | `curl -sf http://localhost:8080/api/health` |
-| `frontend` | 本仓 `frontend/Dockerfile` | 3000 | `${FRONTEND_PORT}` | 0.5 | 384m | - | `curl -sf http://localhost:3000/` |
-| `k6` | `grafana/k6:0.50` | - | - | 1.0 | 256m | `../load:/scripts:ro`、`../load/reports:/reports` | - |
+| `mysql` | `mysql:8.0` | 3306 | `${MYSQL_PORT}` | 1.5 | 1g | `./mysql/init:/docker-entrypoint-initdb.d:ro`、`mysql-data:/var/lib/mysql` | `mysqladmin ping -p$MYSQL_ROOT_PASSWORD` |
+| `redis` | `redis:7-alpine` | 6379 | `${REDIS_PORT}` | 1.0 | 384m | `redis-data:/data` | `redis-cli -a $REDIS_PASSWORD ping` |
+| `backend` | 本仓 `backend/Dockerfile` | 8080 | `${BACKEND_PORT}` | 2.0 | 1.5g | - | `wget -q --spider http://127.0.0.1:8080/api/health` |
+| `frontend` | 本仓 `frontend/Dockerfile` | 3000 | `${FRONTEND_PORT}` | 0.5 | 384m | - | `wget -q --spider http://127.0.0.1:3000/` |
 
 ### 2.1 依赖关系
 
@@ -64,8 +45,6 @@ depends_on:
     condition: service_healthy
   redis:
     condition: service_healthy
-  kafka:
-    condition: service_healthy
 ```
 
 `frontend.depends_on`：
@@ -76,73 +55,68 @@ depends_on:
     condition: service_healthy
 ```
 
-`k6` 无 `depends_on`，由人工在所有服务健康后手动 `run`。
+### 2.2 MySQL / Redis 命令参数
 
-### 2.2 Kafka KRaft 关键环境变量
-
-`bitnami/kafka:3.7` 单节点 KRaft 模式，进程同时担任 controller 与 broker：
+MySQL 调优通过 `docker-compose.yml` 的 `mysql.command` 维护：
 
 ```yaml
-kafka:
-  image: bitnami/kafka:3.7
-  environment:
-    KAFKA_CFG_PROCESS_ROLES: controller,broker
-    KAFKA_CFG_NODE_ID: 1
-    KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-    KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
-    KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
-    KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
-    KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
-    KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-    KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "false"
-    KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: "1"
-    ALLOW_PLAINTEXT_LISTENER: yes
-  volumes: [kafka-data:/bitnami/kafka]
+command:
+  - --innodb-buffer-pool-size=384M
+  - --max-connections=200
+  - --innodb-log-buffer-size=16M
+  - --innodb-flush-log-at-trx-commit=2
+  - --character-set-server=utf8mb4
+  - --collation-server=utf8mb4_0900_ai_ci
 ```
 
-Topic 由后端启动时通过 `KafkaAdmin` Bean 显式创建，指定 `replicationFactor=1`，不依赖自动创建。单节点无 ISR 协调，broker 启动通过健康检查后即可承接读写。
+Redis 调优通过 `docker-compose.yml` 的 `redis.command` 维护：
+
+```yaml
+command:
+  - redis-server
+  - --requirepass
+  - ${REDIS_PASSWORD}
+  - --maxmemory
+  - 256mb
+  - --maxmemory-policy
+  - allkeys-lru
+  - --save
+  - ""
+  - --appendonly
+  - "no"
+```
 
 ### 2.3 环境变量集中维护
 
-`deploy/.env.example` 提供模板，部署时拷贝为 `.env`：
+根目录 `.env.example` 提供模板，部署时拷贝为 `.env`：
 
 ```bash
-# ===== 凭据（生产部署务必修改）=====
-MYSQL_ROOT_PASSWORD=change-me-root
+# ===== 凭据 =====
+MYSQL_ROOT_PASSWORD=123456
 MYSQL_DATABASE=shanpu
-MYSQL_USER=shanpu
-MYSQL_PASSWORD=change-me
-REDIS_PASSWORD=change-me-redis
-JWT_SECRET=replace-me-with-a-32-byte-random
+REDIS_PASSWORD=123456
+JWT_SECRET=replace-me-with-a-32-byte-random-secret-for-development
 
-# ===== 对外暴露端口（按需修改避免与宿主已占端口冲突）=====
+# ===== 暴露端口 =====
 MYSQL_PORT=3306
 REDIS_PORT=6379
-KAFKA_PORT=9094
 BACKEND_PORT=8080
 FRONTEND_PORT=3000
 
-# ===== 前端浏览器侧调用后端的主机名（端口自动复用 BACKEND_PORT）=====
-# 本机部署填 localhost；部署到云端填公网域名或 IP
+# ===== 前端浏览器侧调用后端的主机名 =====
 PUBLIC_API_HOST=localhost
-
-# ===== 资源限制（按机器规模调整，见 §2.4）=====
-BACKEND_MEMORY_LIMIT=1.5g
-BACKEND_JAVA_OPTS=-Xmx1g -Xms512m -XX:MaxMetaspaceSize=128m
-KAFKA_HEAP=512m
-MYSQL_BUFFER_POOL=384M
 ```
 
-`.env.example` 只承载用户必须感知的四类：凭据、对外暴露端口、前端浏览器侧主机名、资源限制。以下四点说明用户视角不可见但运行时不可少的配置如何派生：
+`.env.example` 只承载用户必须感知的三类：凭据、对外暴露端口、前端浏览器侧主机名。以下配置由 `docker-compose.yml` 派生：
 
-- **Compose 内部地址不进 `.env`**：backend 连 `mysql:3306` / `redis:6379` / `kafka:9092`、frontend SSR 连 `http://backend:8080/api`，全部由 `docker-compose.yml` 在容器 `environment:` 段直接硬编码。这些值由 Compose 网络内的 service name 与内部端口决定，用户无须也不应调整。
-- **MySQL 应用账号自动派生**：后端容器 `SPRING_DATASOURCE_USERNAME` / `SPRING_DATASOURCE_PASSWORD` 通过 `${MYSQL_USER}` / `${MYSQL_PASSWORD}` 注入；MySQL 镜像在首次启动时按 `MYSQL_USER` + `MYSQL_PASSWORD` + `MYSQL_DATABASE` 自动创建应用账号并赋予该库全部权限，root 仅用于初始化与健康检查。
-- **Redis 密码强制开启**：`redis.conf` 含 `requirepass ${REDIS_PASSWORD}`（详见 §5.2），后端容器 `SPRING_REDIS_PASSWORD` 通过 `${REDIS_PASSWORD}` 注入，Redis 健康检查命令为 `redis-cli -a $REDIS_PASSWORD ping`。
+- **Compose 内部地址不进 `.env`**：backend 连 `mysql:3306` / `redis:6379`、frontend SSR 连 `http://backend:8080/api`，全部由 `docker-compose.yml` 在容器 `environment:` 段直接硬编码。这些值由 Compose 网络内的 service name 与内部端口决定，用户无须也不应调整。
+- **后端容器以 root 账号连库**：`docker-compose.yml` 在 backend 容器 `environment:` 段拼装 `MYSQL_USERNAME=root` / `MYSQL_PASSWORD=${MYSQL_ROOT_PASSWORD}` 注入 Spring；mysql 镜像不创建额外应用账号，root 承担初始化、健康检查与应用连接三件事，配置最小化便于教学。
+- **Redis 密码强制开启**：`redis.command` 含 `--requirepass ${REDIS_PASSWORD}`（详见 §5.2），后端容器 `REDIS_PASSWORD` 通过 `${REDIS_PASSWORD}` 注入，Redis 健康检查命令为 `redis-cli -a $REDIS_PASSWORD ping`。
 - **前端 BASE_URL 运行时拼接**：浏览器侧调用后端的完整地址 `http://${PUBLIC_API_HOST}:${BACKEND_PORT}/api` 由 `docker-compose.yml` 在 frontend 容器 `environment:` 段拼接后作为运行时变量 `PUBLIC_API_BASE_URL` 注入。前端根 layout 作为 server component 读取 `process.env.PUBLIC_API_BASE_URL`，注入到 HTML 供 client 端 hydrate 时消费（详见 FRONTEND.md §7.3）。**不走 Next.js build-time `NEXT_PUBLIC_*` 通道**，用户改 `PUBLIC_API_HOST` 或 `BACKEND_PORT` 后只需 `docker compose up -d frontend` 重启容器即可生效，无需重 build 镜像。
 
 ### 2.4 资源限制设计
 
-`docker-compose.yml` 显式声明每服务 `deploy.resources.limits`，以 7.6 GiB WSL2 单机为基线，全栈总和 ≈ 4 GiB，留 ≥ 2.5 GiB 给宿主与压测突发：
+`docker-compose.yml` 显式声明每服务 `deploy.resources.limits`，以 7.6 GiB WSL2 单机为基线，全栈总和 ≈ 3.3 GiB，留 ≥ 2.5 GiB 给宿主与压测突发：
 
 | 服务 | CPU | 内存 | 内部硬约束 |
 |---|---|---|---|
@@ -150,14 +124,12 @@ MYSQL_BUFFER_POOL=384M
 | `frontend` | 0.5 | 384m | Next.js standalone SSR，压测期间几乎纯静态响应 |
 | `mysql` | 1.5 | 1g | `innodb_buffer_pool_size=384M`、`max_connections=200`、`innodb_log_buffer_size=16M` |
 | `redis` | 1.0 | 384m | `maxmemory 256mb`、`maxmemory-policy allkeys-lru`、`save ""` |
-| `kafka` | 1.0 | 768m | `KAFKA_HEAP_OPTS=-Xmx512m -Xms512m`、`num.network.threads=2`、`num.io.threads=2`、`log.segment.bytes=64MB`、`log.retention.ms=3600000` |
-| `k6` | 1.0 | 256m | k6 单进程 500 VU 实测约 100 MB |
-| 合计 | 7.0 | 4.0g | 留 ≥ 7 CPU 核、≥ 2.5 GiB 内存给宿主 |
+| 合计 | 5.0 | 3.3g | 留 ≥ 2.5 GiB 内存给宿主 |
 
 按机器规模缩放指引：
-- **内存 ≥ 16 GiB**：可把 `backend` 提到 3g（`-Xmx2g`）、`mysql` 提到 2g（buffer pool 1g）、`kafka` 提到 1.5g（堆 1g）、压测库存 `PRESSURE_STOCK` 改 100000、VU 上限翻倍。
-- **内存 ≥ 32 GiB**：`backend` 提到 4g、`kafka` 提到 2g（堆 1.5g）、用户池扩到 1000、VU 上限再翻倍。
-- **CPU 核心紧张（< 8 核）**：把 `kafka` 缩到 0.7 CPU，`backend` 不变（吞吐瓶颈通常在内存而非 CPU）。
+- **内存 ≥ 16 GiB**：可把 `backend` 提到 3g（`-Xmx2g`）、`mysql` 提到 2g（buffer pool 1g）。
+- **内存 ≥ 32 GiB**：`backend` 提到 4g、`mysql` 提到 4g（buffer pool 2g）。
+- **CPU 核心紧张（< 8 核）**：优先保持 `backend` 2.0 CPU，MySQL 可下调到 1.0 CPU。
 
 ## 3. 后端 Dockerfile
 
@@ -179,7 +151,7 @@ COPY --from=build /workspace/target/*.jar app.jar
 EXPOSE 8080
 ENV JAVA_OPTS="-XX:+UseG1GC"
 ENV JAVA_TOOL_OPTIONS="-Xmx1g -Xms512m -XX:MaxMetaspaceSize=128m"
-ENV SPRING_PROFILES_ACTIVE=docker
+ENV SPRING_PROFILES_ACTIVE=prod
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]
 ```
 
@@ -191,32 +163,38 @@ ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]
 
 ```dockerfile
 # ===== deps =====
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm config set minimumReleaseAge 0 \
+ && pnpm config set strictDepBuilds false \
+ && pnpm config set verifyDepsBeforeRun false \
+ && pnpm install --frozen-lockfile
 
 # ===== build =====
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
-RUN corepack enable
+RUN corepack enable \
+ && pnpm config set verifyDepsBeforeRun false
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-ARG NEXT_PUBLIC_SITE_NAME
-ENV NEXT_PUBLIC_SITE_NAME=$NEXT_PUBLIC_SITE_NAME
 RUN pnpm build
 
 # ===== runtime =====
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
 EXPOSE 3000
 CMD ["node", "server.js"]
 ```
+
+`deps` 阶段三项 `pnpm config set` 关闭 pnpm 11 默认开启的"最小发布年龄"、"严格依赖构建脚本"与"运行前 deps 校验"三条策略——容器构建场景下 lockfile 已在本地验证过，无需在 CI 镜像内重复审计；`build` 阶段同样关闭 `verifyDepsBeforeRun`，避免 `pnpm build` 触发隐式 `pnpm install`。
 
 构建期仅烤进与部署无关的 `NEXT_PUBLIC_*` 静态项（站点名、轮询间隔等）。后端调用地址 `PUBLIC_API_BASE_URL` 与 `INTERNAL_API_BASE_URL` 走运行时 `environment:` 注入，由 server component 在每次请求时读取后嵌入 HTML，机制详见 [FRONTEND.md §7.3](./FRONTEND.md)。
 
@@ -226,73 +204,48 @@ CMD ["node", "server.js"]
 
 ### 5.1 MySQL
 
-`deploy/mysql/init/` 下两个脚本由 `mysql:8.0` 镜像在首次启动时自动执行：
+`mysql/init/` 下两个脚本由 `mysql:8.0` 镜像在首次启动时自动执行：
 
-- `01_schema.sql`：DDL（与 `docs/BACKEND.md` 第 10 节一致），创建 `t_user / t_product / t_seckill_activity / t_order / t_point_log / t_order_dlq_log` 六张表。
-- `02_seed.sql`：注入：
-  - 2 个测试用户（`alice` / `bob`，密码 BCrypt 哈希后写入）。
-  - 500 个压测用户（`u0001` ~ `u0500`，统一密码 `pwd123456`，初始积分 10000）。
-  - 5 个普通商品（价格 50~500 积分，库存 100~10000）。
-  - 9 条三档秒杀活动，**ID 仅为视觉惯例（1xxx / 2xxx / 3xxx），路由权威依据为 `tier` 列**。`seckill_price = product.price × tier_discount`，`start_at` / `end_at` 用 `NOW()` 锚定（进行中：`NOW() - INTERVAL 1 HOUR` ~ `NOW() + INTERVAL 6 HOUR`；即将开始：`NOW() + INTERVAL 30 MINUTE` ~ `NOW() + INTERVAL 6 HOUR`）：
-    - **普惠专场**（`tier=1`，9 折，库存 5000）：
-      - `id=1001`：进行中，绑 product 1（场景 A 压测目标）
-      - `id=1002`：进行中，绑 product 2
-      - `id=1003`：即将开始，绑 product 3
-    - **限时抢购**（`tier=2`，7 折，库存 500）：
-      - `id=2001`：进行中，绑 product 1（场景 B 压测目标）
-      - `id=2002`：进行中，绑 product 4
-      - `id=2003`：即将开始，绑 product 5
-    - **超级秒杀**（`tier=3`，3 折，库存 200）：
-      - `id=3001`：进行中，绑 product 1（场景 C 压测目标）
-      - `id=3002`：进行中，绑 product 2
-      - `id=3003`：即将开始，绑 product 5
+- `01_schema.sql`：DDL（与 `docs/BACKEND.md` 第 10 节一致），创建 `t_user / t_point_log` 两张表。
+- `02_seed.sql`：空种子脚本，用户通过注册接口创建。
 
-`deploy/mysql/conf/my.cnf` 集中调优：
+MySQL 运行参数写在 `docker-compose.yml` 的 `mysql.command`：
 
-```ini
-[mysqld]
-innodb_buffer_pool_size = 384M
-max_connections         = 200
-innodb_log_buffer_size  = 16M
-innodb_flush_log_at_trx_commit = 2
-character-set-server    = utf8mb4
-collation-server        = utf8mb4_unicode_ci
+```yaml
+command:
+  - --innodb-buffer-pool-size=384M
+  - --max-connections=200
+  - --innodb-log-buffer-size=16M
+  - --innodb-flush-log-at-trx-commit=2
+  - --character-set-server=utf8mb4
+  - --collation-server=utf8mb4_0900_ai_ci
 ```
 
 ### 5.2 Redis
 
-`deploy/redis/redis.conf`：
+Redis 运行参数写在 `docker-compose.yml` 的 `redis.command`：
 
-```conf
-requirepass ${REDIS_PASSWORD}
-maxmemory 256mb
-maxmemory-policy allkeys-lru
-save ""                     # 关闭 RDB 快照，避免压测期间 fork 抖动
-appendonly no
+```yaml
+command:
+  - redis-server
+  - --requirepass
+  - ${REDIS_PASSWORD}
+  - --maxmemory
+  - 256mb
+  - --maxmemory-policy
+  - allkeys-lru
+  - --save
+  - ""
+  - --appendonly
+  - "no"
 ```
 
-`${REDIS_PASSWORD}` 由 `docker-compose.yml` 启动时通过 `command: ["redis-server", "/etc/redis/redis.conf"]` + envsubst 渲染（或直接在 compose `command:` 中以 `--requirepass $$REDIS_PASSWORD` 形式覆盖）。后端 `SPRING_REDIS_PASSWORD` 与健康检查 `redis-cli -a $REDIS_PASSWORD ping` 使用同一变量，三处保持一致。
-
-无独立预热脚本。后端 `ApplicationRunner` 在启动后立即扫描 `t_seckill_activity` 中 `tier IN (2, 3) AND status IN (0, 1) AND start_at < now + 60min` 的活动，写入库存与活动详情，与 `SeckillWarmupJob` 等价。普惠档（`tier=1`）无需库存预热，仅活动详情逻辑过期缓存按需写入。
-
-### 5.3 Kafka
-
-`deploy/kafka/server.properties` 单节点基线：
-
-```properties
-num.network.threads = 2
-num.io.threads      = 2
-log.segment.bytes   = 67108864
-log.retention.ms    = 3600000
-```
-
-JVM 堆 `KAFKA_HEAP_OPTS=-Xmx512m -Xms512m`，容器内存上限 768m 留出 ~50% 余量。后端 `KafkaConfig` 声明 `NewTopic` Bean，`KafkaAdmin` 启动时自动创建 `shanpu.seckill.order`（3 分区 1 副本）与 `shanpu.seckill.order.dlq`（1 分区 1 副本）。单节点无 ISR 协调与 controller 选举开销，broker 启动通过健康检查后即可承接读写。
+`${REDIS_PASSWORD}` 由 Compose 变量插值注入 Redis 启动命令。后端 `REDIS_PASSWORD` 与健康检查 `redis-cli -a $REDIS_PASSWORD ping` 使用同一变量，三处保持一致。
 
 ## 6. 一键启动流程
 
 ```bash
 # 1. 准备环境变量
-cd deploy
 cp .env.example .env
 # 按需修改 .env 中密码与 JWT_SECRET
 
@@ -305,16 +258,14 @@ docker compose ps
 # 4. 浏览器访问
 open http://localhost:3000
 
-# 5. 默认账号
-#    alice / pwd123456
-#    bob   / pwd123456
+# 5. 访问页面后通过注册接口创建账号
 ```
 
 ### 6.1 停止与重置
 
 ```bash
 docker compose down            # 停止容器，保留数据卷
-docker compose down -v         # 同时清空 MySQL / Redis / Kafka 数据
+docker compose down -v         # 同时清空 MySQL / Redis 数据
 ```
 
 `down -v` 后再次 `up -d` 会重新跑 `01_schema.sql` 与 `02_seed.sql`，得到干净环境。
@@ -349,7 +300,7 @@ docker compose down -v         # 同时清空 MySQL / Redis / Kafka 数据
 import http from 'k6/http';
 import { check } from 'k6';
 
-// 500 用户串行登录约 15~30s,在 setup 阶段一次性完成,运行期不再登录
+// 500 用户串行登录约 15~30s,在 setup 阶段一次性完成,运行期复用 token
 export function loginAll(baseUrl, prefix = 'u', count = 500, password = 'pwd123456') {
   const tokens = [];
   for (let i = 1; i <= count; i++) {
@@ -564,8 +515,8 @@ set -euo pipefail
 ACTIVITY_IDS=${1:-"1001 2001 3001"}
 PRESSURE_STOCK=${PRESSURE_STOCK:-20000}
 USER_RANGE_MAX=${USER_RANGE_MAX:-500}
-DB_USER=${MYSQL_USER:-shanpu}
-DB_PASS=${MYSQL_PASSWORD:-shanpu_pwd}
+DB_USER=root
+DB_PASS=${MYSQL_ROOT_PASSWORD}
 DB_NAME=${MYSQL_DATABASE:-shanpu}
 
 # 1. MySQL 重置库存 / 激活活动 / 清旧订单
@@ -604,8 +555,8 @@ echo "[bench-reset] done: activities=$ACTIVITY_IDS stock=$PRESSURE_STOCK users=1
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-DB_USER=${MYSQL_USER:-shanpu}
-DB_PASS=${MYSQL_PASSWORD:-shanpu_pwd}
+DB_USER=root
+DB_PASS=${MYSQL_ROOT_PASSWORD}
 DB_NAME=${MYSQL_DATABASE:-shanpu}
 
 docker compose exec -T mysql mysql -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" <<'SQL'
@@ -639,15 +590,14 @@ echo "[bench-restore] seed stocks restored"
 | 操作系统 | Linux / macOS / Windows + WSL2 |
 | Docker | 24+ |
 | Docker Compose | v2.20+ |
-| 内存 | ≥ 8 GB 可用（全栈容器合计 ≈ 5 GB，按 §2.4 限制；压测峰值额外吃 ~500 MB） |
+| 内存 | ≥ 8 GB 可用（全栈容器合计 ≈ 3.3 GB，按 §2.4 限制） |
 | 磁盘 | ≥ 5 GB 可用 |
-| 端口 | 3000（frontend）、8080（backend）、3306（mysql）、6379（redis）、9094（kafka 外部） |
+| 端口 | 3000（frontend）、8080（backend）、3306（mysql）、6379（redis） |
 
-本地开发若希望直接 IDE 启动后端，可仅启 `mysql / redis / kafka` 三个依赖：
+本地开发若希望直接 IDE 启动后端，可仅启 `mysql / redis` 两个依赖：
 
 ```bash
-cd deploy
-docker compose up -d mysql redis kafka
+docker compose up -d mysql redis
 # 然后在 IDE 中以 spring.profiles.active=local 启动 backend
 # frontend 在 frontend/ 目录下 pnpm dev
 ```

@@ -100,7 +100,7 @@ frontend/
 | `/register` | Client | 否 | 注册表单 |
 | `/orders` | Client | 是 | 我的订单列表，状态 tab 切换 |
 | `/orders/[id]` | Client | 是 | 订单详情，超级秒杀订单在此轮询直到 PAID |
-| `/me` | Client | 是 | 个人中心，展示用户名、昵称、积分 |
+| `/me` | Client | 是 | 个人中心，展示用户名、可编辑昵称、积分；进入页面自动同步积分余额 |
 
 需要鉴权的页面在 `app/(authed)/layout.tsx` 或页面顶部包裹 `<AuthGuard>`，未登录跳转 `/login?next=<encoded>`。
 
@@ -114,15 +114,15 @@ frontend/
 | `SeckillCard` | 秒杀卡片：商品图、原价 / 秒杀价、倒计时、库存进度条；右上角挂 `SeckillTierBadge` |
 | `SeckillTierBadge` | 档位徽标：读活动 VO 的 `tier` 字段渲染 shadcn `Badge`——`tier=1` 普惠（secondary 绿）/`tier=2` 限时（default 橙）/`tier=3` 超级（destructive 红）。**不根据 ID 推断 tier**，运营可热切档位，ID 段仅为视觉惯例 |
 | `SeckillCountdown` | 倒计时 `HH:mm:ss`，到时切按钮状态 |
-| `PointsBadge` | header 右侧常驻徽标，显示当前积分 |
+| `PointsBadge` | 带金色金币图标的积分徽标，用于个人中心与订单支付反馈 |
 | `OrderStatusBadge` | 订单状态徽标，对应 4 个 shadcn `Badge` variant：`PENDING`（黄）/`PAID`（绿）/`CANCELLED`（灰）/`FAILED`（红） |
 
 ### 5.2 容器与守卫
 
 | 组件 | 用途 |
 |---|---|
-| `SiteHeader` | 顶部导航：Logo、商品、秒杀、订单、我的、积分徽标。未登录显示"登录"按钮；已登录显示用户名 + 下拉菜单（个人中心、登出） |
-| `SiteFooter` | 站点信息、备案文案占位 |
+| `SiteHeader` | 顶部导航：Logo、商品、秒杀、订单、我的。未登录显示"登录"按钮；已登录显示带边框的用户名或昵称按钮 + 下拉菜单（个人中心、登出） |
+| `SiteFooter` | 站点品牌名 |
 | `AuthGuard` | 客户端组件，挂在需登录页面，无 token 时重定向 `/login?next=...` |
 | `Providers` | 包裹 `Toaster`、Zustand 持久化、主题 |
 
@@ -142,14 +142,17 @@ frontend/
 type AuthState = {
   token: string | null;
   user: { userId: number; username: string; nickname: string; points: number } | null;
+  hydrated: boolean;
+  setHydrated: (hydrated: boolean) => void;
   setSession: (token: string, user: AuthState['user']) => void;
   clearSession: () => void;
   logout: () => Promise<void>;       // 调 POST /api/users/logout 后清空 session 并跳转 /login
   updatePoints: (points: number) => void;
+  patchUser: (patch: Partial<AuthState['user']>) => void;
 };
 ```
 
-通过 `zustand/middleware` 的 `persist` 写入 `localStorage`，key 为 `shanpu.auth`。
+通过 `zustand/middleware` 的 `persist` 写入 `localStorage`，key 为 `shanpu.auth`。`hydrated` 表示浏览器端持久化登录态恢复完成，`AuthGuard` 与 `SiteHeader` 基于该状态决定展示加载态、登录入口或已登录用户信息。
 
 `logout` 实现：调用 `userApi.logout()`，无论后端是否成功（网络异常也无所谓，因为本地清空已足够保护用户），始终在 `finally` 中执行 `clearSession()` 并通过 `router.push('/login')` 跳转登录页，最后 `toast.success('已登出')`。
 
@@ -208,6 +211,8 @@ export const userApi = {
   logout: () => request<void>('POST', '/users/logout'),
   me: () => request<UserInfo>('GET', '/users/me'),
   myPoints: () => request<{ points: number }>('GET', '/users/me/points'),
+  updateNickname: (body: { nickname: string }) =>
+    request<UserInfo>('POST', '/users/me/nickname', { body }),
 };
 ```
 
@@ -221,11 +226,13 @@ export const userApi = {
      {JSON.stringify({ apiBase: process.env.PUBLIC_API_BASE_URL })}
    </script>
    ```
-2. **client 侧解析**：`lib/config/public-config.ts` 提供 `readPublicConfig()`，浏览器侧 `JSON.parse(document.getElementById('__shanpu_config__')!.textContent!)`，模块级缓存避免重复解析。
+2. **client 侧解析**：`lib/config/public-config.ts` 提供 `readPublicConfig()`，浏览器侧 `JSON.parse(document.getElementById('__shanpu_config__')!.textContent!)`，模块级缓存避免重复解析；SSR/RSC 路径依优先级回退 `process.env.INTERNAL_API_BASE_URL` → `process.env.PUBLIC_API_BASE_URL` → `process.env.NEXT_PUBLIC_API_BASE_URL`，不缓存避免容器跨请求污染。
 3. **Hook 暴露**：`hooks/use-public-config.ts` 暴露 `usePublicConfig()` 供 client 组件订阅 `apiBase`。
 4. **client.ts 适配**：`lib/api/client.ts` 在 `request()` 内按运行环境分流——浏览器侧 lazy 调 `readPublicConfig().apiBase`；服务端侧（SSR/RSC）直接读 `process.env.INTERNAL_API_BASE_URL`，不走 `<script>` 注入路径。
 
-效果：用户在 `deploy/.env` 改 `PUBLIC_API_HOST` 或 `BACKEND_PORT` 后，`docker compose up -d frontend` 重启容器即可生效，无需重 build 镜像。
+效果：用户在根目录 `.env` 改 `PUBLIC_API_HOST` 或 `BACKEND_PORT` 后，`docker compose up -d frontend` 重启容器即可生效，无需重 build 镜像。
+
+容器化部署接管运行时注入；本地开发（`pnpm dev`）下 `lib/config/public-config.ts` 直接读 `NEXT_PUBLIC_API_BASE_URL` 这个 build-time 变量，浏览器与后端跨域由后端 CORS（[BACKEND.md §4.6](./BACKEND.md)）放行，链路与 §7.3 一致。
 
 ## 8. 环境变量
 
@@ -255,8 +262,7 @@ export const userApi = {
 | `<SiteHeader>` 登出按钮 | `POST /api/users/logout` |
 | `/orders` | `GET /api/orders?status=&page=&size=` |
 | `/orders/[id]` | `GET /api/orders/{orderId}`（仅超级档需要轮询） |
-| `/me` | `GET /api/users/me`、`GET /api/users/me/points` |
-| `<SiteHeader>` 积分徽标 | `GET /api/users/me/points`（5 秒缓存于内存） |
+| `/me` | `GET /api/users/me`、`GET /api/users/me/points`；昵称保存调用 `POST /api/users/me/nickname` |
 
 ## 10. 超级秒杀异步轮询
 

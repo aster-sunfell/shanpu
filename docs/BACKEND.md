@@ -99,7 +99,9 @@ backend/
 │       └── redis/RedisKeys.java
 └── src/main/resources/
     ├── application.yml
-    ├── application-docker.yml
+    ├── application-dev.yml
+    ├── application-test.yml
+    ├── application-prod.yml
     ├── mapper/
     └── lua/
         ├── seckill.lua
@@ -219,6 +221,24 @@ JWT 不引入刷新令牌：7 天过期后重新登录。登出通过删除 Redi
 3. 返回 `Result.ok()`。
 
 服务端会话记录被删除后，同一枚 token 再次请求会在 §4.1 第 5 步因 session 不存在而被拒绝。会话按 `tokenHash` 维度独立，多设备登录互不影响，登出仅作废本次的那枚 token。
+
+### 4.6 CORS
+
+`WebMvcConfig#addCorsMappings` 为 `/api/**` 开启跨域，供浏览器侧的 Next.js 前端直连 `http://localhost:8080/api`：
+
+| 项                 | 值                                                       |
+| ------------------ | -------------------------------------------------------- |
+| 路径               | `/api/**`                                                |
+| `allowedOrigins`   | `http://localhost:3000`, `http://127.0.0.1:3000`         |
+| `allowedMethods`   | `GET`, `POST`, `OPTIONS`                                 |
+| `allowedHeaders`   | `Authorization`, `Content-Type`                          |
+| `exposedHeaders`   | `Authorization`                                          |
+| `allowCredentials` | `false`                                                  |
+| `maxAge`           | `3600` 秒                                                |
+
+token 经浏览器 `Authorization: Bearer <token>` 头明文携带，不依赖 cookie，故 `allowCredentials=false`。浏览器发起的 `OPTIONS` CORS 预检请求由 `AuthInterceptor` 直接放行，不要求携带 `Authorization`；真实业务请求继续按 §4.1 校验 JWT 与 Redis session。
+
+容器化部署（M6）通过同源访问消除浏览器跨域，CORS 仅服务本地开发场景。
 
 ## 5. 限流：滑动窗口 + AOP
 
@@ -383,7 +403,7 @@ shanpu:
 
 #### CacheClient 旁路逻辑
 
-`queryWithLogicalExpire(keyPrefix, id, ...)` 内部新增 L1 旁路：
+`queryWithLogicalExpire(keyPrefix, id, ...)` 内部包含 L1 旁路：
 
 1. 取注册表 `local = registry.get(keyPrefix)`；未注册（商品 Key 不注册）跳过 L1，沿用现有 Redis 路径。
 2. `local.getIfPresent(key)` 命中直接返回。
@@ -531,7 +551,7 @@ return 1
 
 ### 7.6 档位热切换
 
-运营通过 `UPDATE t_seckill_activity SET tier = ? WHERE id = ?` 切换档位。任何切换必须同步执行缓存与库存初始化动作，否则下一次 `grab` 仍按旧 tier 路由：
+运营通过 `UPDATE t_seckill_activity SET tier = ? WHERE id = ?` 切换档位。任何切换必须同步执行缓存与库存初始化动作，确保下一次 `grab` 按数据库中的当前 tier 路由：
 
 **升级（1→2 / 1→3 / 2→3）**
 
@@ -555,7 +575,7 @@ UPDATE t_seckill_activity SET tier = 1 WHERE id = 3001;
 
 随后调用 `CacheClient.evict(...)` 即可。无需手动清理 Redis 残留的 `stock` 与 `bought` Key：
 
-- 新到 `grab` 请求按新 tier 路由，不再读这两个 Key。
+- 后续 `grab` 请求按当前 tier 路由，降级后的链路不读取这两个 Key。
 - 在途 Kafka 消息（已 `send` 但未消费）由 `SeckillConsumer` 处理时按消息体内携带的 `source` 字段落库，`source` 在 `grabSuper` 时已固化，不受 tier 后续变更影响。
 - Redis 残留 Key 由 `StockReconcileJob` 周期性维护，过期自然清理。
 
@@ -604,7 +624,7 @@ public void consume(ConsumerRecord<String, String> record, Acknowledgment ack);
 
 消费逻辑封装在 `SeckillConsumer.handle(SeckillOrderMsg)` 中，单个本地事务完成：
 
-1. `INSERT IGNORE INTO t_order(...)`，依赖 `uk_order_id` 实现幂等。**若受影响行数为 0（订单已存在，本条为重投），直接 `ack.acknowledge()` 返回，不再执行后续步骤。**
+1. `INSERT IGNORE INTO t_order(...)`，依赖 `uk_order_id` 实现幂等。**若受影响行数为 0（订单已存在，本条为重投），直接 `ack.acknowledge()` 返回。**
 2. 扣减用户积分（行锁 `UPDATE t_user SET points = points - ? WHERE id = ? AND points >= ?`，受影响行数为 0 抛业务异常）。
 3. 写 `t_point_log` 流水。
 
@@ -755,7 +775,7 @@ CREATE TABLE t_order_dlq_log (
 | `SeckillService.grabFlash`       | 3      | 当时 `activity.tier = 2`           |
 | `SeckillService.grabSuper`       | 4      | 当时 `activity.tier = 3`           |
 
-后续 §7.6 档位热切换不影响已写入的 `source`，保留历史档位证据。超级档异步落库时，`source` 在 `grabSuper` 投递消息前已固化进 payload，由 Consumer 写入。
+后续 §7.6 档位热切换不影响订单创建时写入的 `source`，保留创建时档位证据。超级档异步落库时，`source` 在 `grabSuper` 投递消息前固化进 payload，由 Consumer 写入。
 
 ### ID 生成
 
@@ -872,13 +892,14 @@ public class SeckillOrderMsg {
 
 ### 13.1 用户
 
-| 方法 | 路径                   | 鉴权 | 请求体                              | 响应 data                                | 限流       |
-| ---- | ---------------------- | ---- | ----------------------------------- | ---------------------------------------- | ---------- |
-| POST | `/api/users/register`  | 否   | `{ username, password, nickname? }` | `{ userId, username, points }`           | 60s/3 IP   |
-| POST | `/api/users/login`     | 否   | `{ username, password }`            | `{ token, userId, username, points }`    | 60s/5 IP   |
-| POST | `/api/users/logout`    | 是   | -                                   | -                                        | 1s/5 USER  |
-| GET  | `/api/users/me`        | 是   | -                                   | `{ userId, username, nickname, points }` | 1s/20 USER |
-| GET  | `/api/users/me/points` | 是   | -                                   | `{ points }`                             | 1s/20 USER |
+| 方法 | 路径                       | 鉴权 | 请求体                              | 响应 data                                | 限流       |
+| ---- | -------------------------- | ---- | ----------------------------------- | ---------------------------------------- | ---------- |
+| POST | `/api/users/register`      | 否   | `{ username, password, nickname? }` | `{ userId, username, points }`           | 60s/3 IP   |
+| POST | `/api/users/login`         | 否   | `{ username, password }`            | `{ token, userId, username, points }`    | 60s/5 IP   |
+| POST | `/api/users/logout`        | 是   | -                                   | -                                        | 1s/5 USER  |
+| GET  | `/api/users/me`            | 是   | -                                   | `{ userId, username, nickname, points }` | 1s/20 USER |
+| GET  | `/api/users/me/points`     | 是   | -                                   | `{ points }`                             | 1s/20 USER |
+| POST | `/api/users/me/nickname`   | 是   | `{ nickname }`                      | `{ userId, username, nickname, points }` | 1s/5 USER  |
 
 ### 13.2 商品
 
@@ -919,7 +940,7 @@ public class SeckillOrderMsg {
 | ---- | ------------- | ---- | ---------------------------------------------------------------------------------- |
 | GET  | `/api/health` | 否   | `{ status: "UP", mysql: "UP", redis: "UP", kafka: "UP", kafkaConsumerLag: <int> }` |
 
-`/api/health` 探测 MySQL（`SELECT 1`）、Redis（`PING`）、Kafka（AdminClient `describeCluster()`）三依赖，供 Docker `depends_on: condition: service_healthy` 使用。`kafkaConsumerLag` 为消费组 `shanpu-seckill-consumer` 在主 topic 各分区 lag 之和；超过 100 时 `status` 转为 `DOWN`，触发部署侧告警。
+`/api/health` 探测 MySQL（`SELECT 1`）、Redis（`PING`）、Kafka（AdminClient `describeCluster()`）三依赖，供 Docker `depends_on: condition: service_healthy` 使用。任一依赖 `DOWN`，整体 `status` 转为 `DOWN`。`kafka` 与 `kafkaConsumerLag` 字段在 M4 接入 Kafka 后写入；`kafkaConsumerLag` 为消费组 `shanpu-seckill-consumer` 在主 topic 各分区 lag 之和，超过 100 时 `status` 转为 `DOWN`，触发部署侧告警。
 
 ## 14. 设计取舍
 
