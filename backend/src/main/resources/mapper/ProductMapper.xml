@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shanpu.module.product.mapper.ProductMapper">
+
+    <select id="selectPage" resultType="com.shanpu.module.product.domain.entity.Product">
+        SELECT id, title, cover_url, price, stock, status, created_at, updated_at
+        FROM t_product
+        WHERE status = 1
+        ORDER BY id ASC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countOnSale" resultType="long">
+        SELECT COUNT(*) FROM t_product WHERE status = 1
+    </select>
+
+    <select id="selectById" resultType="com.shanpu.module.product.domain.entity.Product">
+        SELECT id, title, cover_url, description, price, stock, status, created_at, updated_at
+        FROM t_product
+        WHERE id = #{id}
+    </select>
+
+    <update id="deductStock">
+        UPDATE t_product
+        SET stock = stock - #{quantity}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id} AND stock >= #{quantity}
+    </update>
+
+</mapper>

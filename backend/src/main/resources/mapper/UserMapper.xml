@@ -30,4 +30,10 @@
         WHERE id = #{id}
     </update>
 
+    <update id="deductPoints">
+        UPDATE t_user
+        SET points = points - #{cost}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id} AND points >= #{cost}
+    </update>
+
 </mapper>

@@ -14,4 +14,6 @@ public interface UserMapper {
     Integer selectPointsById(@Param("id") Long id);
 
     int updateNickname(@Param("id") Long id, @Param("nickname") String nickname);
+
+    int deductPoints(@Param("id") Long id, @Param("cost") int cost);
 }

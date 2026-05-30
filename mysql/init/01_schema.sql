@@ -1,8 +1,7 @@
 CREATE DATABASE IF NOT EXISTS shanpu DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 USE shanpu;
 
--- ===== M1 tables =====
-
+-- 用户
 CREATE TABLE t_user (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   username VARCHAR(32) NOT NULL,
@@ -15,6 +14,41 @@ CREATE TABLE t_user (
   UNIQUE KEY uk_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+-- 普通商品
+CREATE TABLE t_product (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  title VARCHAR(128) NOT NULL,
+  cover_url VARCHAR(255) NOT NULL DEFAULT '',
+  description VARCHAR(4096) NOT NULL DEFAULT '' COMMENT '商品描述，硬上限 4KB 以约束缓存体积',
+  price INT NOT NULL COMMENT '单位:积分',
+  stock INT NOT NULL DEFAULT 0,
+  status TINYINT NOT NULL DEFAULT 1 COMMENT '1上架 0下架',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 订单
+CREATE TABLE t_order (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  order_id VARCHAR(32) NOT NULL COMMENT '雪花 ID，业务主键',
+  user_id BIGINT UNSIGNED NOT NULL,
+  product_id BIGINT UNSIGNED NOT NULL,
+  activity_id BIGINT UNSIGNED DEFAULT NULL COMMENT '秒杀活动 ID，普通订单为 NULL',
+  source TINYINT NOT NULL COMMENT '1普通商品 2普惠 3限时 4超级',
+  price INT NOT NULL,
+  status TINYINT NOT NULL COMMENT '1待支付 2已支付 3已取消',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  paid_at DATETIME DEFAULT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_order_id (order_id),
+  UNIQUE KEY uk_user_activity (user_id, activity_id),
+  KEY idx_user_status (user_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 积分流水
 CREATE TABLE t_point_log (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   user_id BIGINT UNSIGNED NOT NULL,
