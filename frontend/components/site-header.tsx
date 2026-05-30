@@ -21,7 +21,15 @@ export function SiteHeader() {
         <Link href="/" className="text-lg font-semibold tracking-tight">
           闪铺
         </Link>
-        <nav className="flex items-center gap-3">
+        <nav className="flex items-center gap-1 sm:gap-3">
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/products">商品</Link>
+          </Button>
+          {hydrated && isAuthed ? (
+            <Button asChild variant="ghost" size="sm">
+              <Link href="/orders">订单</Link>
+            </Button>
+          ) : null}
           {!hydrated ? (
             <div className="h-8 w-20" aria-hidden />
           ) : isAuthed && user ? (

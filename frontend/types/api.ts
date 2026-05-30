@@ -4,6 +4,11 @@ export interface Result<T> {
   data: T;
 }
 
+export interface PageResult<T> {
+  list: T[];
+  total: number;
+}
+
 export class ApiError extends Error {
   readonly code: number;
   readonly msg: string;
