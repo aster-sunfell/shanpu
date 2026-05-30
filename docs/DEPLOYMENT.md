@@ -67,7 +67,10 @@ command:
   - --innodb-flush-log-at-trx-commit=2
   - --character-set-server=utf8mb4
   - --collation-server=utf8mb4_0900_ai_ci
+  - --default-time-zone=+08:00
 ```
+
+`--default-time-zone=+08:00` 与 backend 容器 `TZ=Asia/Shanghai` 统一为东八区，保证 DB 写入的 `created_at` 与应用写入的 `paid_at` 时区一致。
 
 Redis 调优通过 `docker-compose.yml` 的 `redis.command` 维护：
 
@@ -206,8 +209,8 @@ CMD ["node", "server.js"]
 
 `mysql/init/` 下两个脚本由 `mysql:8.0` 镜像在首次启动时自动执行：
 
-- `01_schema.sql`：DDL（与 `docs/BACKEND.md` 第 10 节一致），创建 `t_user / t_point_log` 两张表。
-- `02_seed.sql`：空种子脚本，用户通过注册接口创建。
+- `01_schema.sql`：DDL（与 `docs/BACKEND.md` 第 10 节一致），创建 `t_user / t_product / t_order / t_point_log` 四张表。
+- `02_seed.sql`：写入 5 个普通商品种子数据（`id` 1~5、`status=1`，其中一个商品库存为 10 供并发防超卖验收）；用户通过注册接口创建。
 
 MySQL 运行参数写在 `docker-compose.yml` 的 `mysql.command`：
 
@@ -219,6 +222,7 @@ command:
   - --innodb-flush-log-at-trx-commit=2
   - --character-set-server=utf8mb4
   - --collation-server=utf8mb4_0900_ai_ci
+  - --default-time-zone=+08:00
 ```
 
 ### 5.2 Redis
