@@ -1,9 +1,11 @@
 package com.shanpu.module.order.service.impl;
 
 import cn.hutool.core.lang.Snowflake;
+import com.shanpu.cache.CacheClient;
 import com.shanpu.common.exception.BusinessException;
 import com.shanpu.common.result.PageResult;
 import com.shanpu.common.result.ResultCode;
+import com.shanpu.infra.redis.RedisKeys;
 import com.shanpu.module.order.domain.entity.Order;
 import com.shanpu.module.order.domain.vo.OrderDetailVO;
 import com.shanpu.module.order.domain.vo.OrderItemVO;
@@ -20,6 +22,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -33,9 +36,12 @@ public class OrderServiceImpl implements OrderService {
     private final OrderMapper orderMapper;
     private final PointLogMapper pointLogMapper;
     private final Snowflake snowflake;
+    private final CacheClient cacheClient;
 
     private static final int DEFAULT_SIZE = 20;
     private static final int MAX_SIZE = 50;
+    private static final Duration ORDER_DETAIL_TTL = Duration.ofSeconds(30);
+    private static final Duration ORDER_NULL_TTL = Duration.ofSeconds(30);
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -93,7 +99,14 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     public OrderDetailVO getOrderDetail(Long userId, String orderId) {
-        OrderDetailVO vo = orderMapper.selectByOrderId(userId, orderId);
+        OrderDetailVO vo = cacheClient.queryWithMutex(
+                RedisKeys.orderDetail(userId, orderId),
+                cacheClient.javaType(OrderDetailVO.class),
+                () -> orderMapper.selectByOrderId(userId, orderId),
+                RedisKeys.orderDetailLock(userId, orderId),
+                ORDER_DETAIL_TTL,
+                ORDER_NULL_TTL
+        );
         if (vo == null) {
             throw new BusinessException(ResultCode.NOT_FOUND);
         }

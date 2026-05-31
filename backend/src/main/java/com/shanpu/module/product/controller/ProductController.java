@@ -1,5 +1,6 @@
 package com.shanpu.module.product.controller;
 
+import com.shanpu.common.annotation.RateLimit;
 import com.shanpu.common.result.PageResult;
 import com.shanpu.common.result.Result;
 import com.shanpu.common.util.UserContext;
@@ -36,7 +37,7 @@ public class ProductController {
         return Result.ok(productService.getDetail(id));
     }
 
-    // TODO M3: @RateLimit(window=1, max=10, dim=USER)
+    @RateLimit(window = 1, max = 10, dim = RateLimit.Dimension.USER)
     @PostMapping("/{id}/order")
     public Result<OrderVO> order(@PathVariable Long id) {
         return Result.ok(orderService.createNormalOrder(UserContext.requireUserId(), id, 1));

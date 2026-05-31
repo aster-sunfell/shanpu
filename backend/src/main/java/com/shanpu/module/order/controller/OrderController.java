@@ -20,7 +20,6 @@ public class OrderController {
 
     private final OrderService orderService;
 
-    // TODO M3: @RateLimit(window=1, max=10, dim=USER)
     @GetMapping
     public Result<PageResult<OrderItemVO>> list(
             @RequestParam(required = false) String status,
@@ -29,7 +28,6 @@ public class OrderController {
         return Result.ok(orderService.getMyOrders(UserContext.requireUserId(), status, page, size));
     }
 
-    // TODO M3: @RateLimit(window=1, max=10, dim=USER)
     @GetMapping("/{orderId}")
     public Result<OrderDetailVO> detail(@PathVariable String orderId) {
         return Result.ok(orderService.getOrderDetail(UserContext.requireUserId(), orderId));

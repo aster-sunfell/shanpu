@@ -1,5 +1,6 @@
 package com.shanpu.module.user.controller;
 
+import com.shanpu.common.annotation.RateLimit;
 import com.shanpu.common.result.Result;
 import com.shanpu.module.user.domain.dto.LoginRequest;
 import com.shanpu.module.user.domain.dto.RegisterRequest;
@@ -25,13 +26,13 @@ public class UserController {
 
     private final UserService userService;
 
-    // TODO M3: @RateLimit(window=60, max=3, dim=IP)
+    @RateLimit(window = 60, max = 3, dim = RateLimit.Dimension.IP)
     @PostMapping("/register")
     public Result<RegisterVO> register(@Valid @RequestBody RegisterRequest req) {
         return Result.ok(userService.register(req));
     }
 
-    // TODO M3: @RateLimit(window=60, max=5, dim=IP)
+    @RateLimit(window = 60, max = 5, dim = RateLimit.Dimension.IP)
     @PostMapping("/login")
     public Result<LoginVO> login(@Valid @RequestBody LoginRequest req) {
         return Result.ok(userService.login(req));

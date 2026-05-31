@@ -1,6 +1,7 @@
 package com.shanpu.module.order.service.impl;
 
 import cn.hutool.core.lang.Snowflake;
+import com.shanpu.cache.CacheClient;
 import com.shanpu.common.exception.BusinessException;
 import com.shanpu.common.result.ResultCode;
 import com.shanpu.module.order.domain.entity.Order;
@@ -46,6 +47,9 @@ class OrderServiceImplTest {
 
     @Mock
     private Snowflake snowflake;
+
+    @Mock
+    private CacheClient cacheClient;
 
     @InjectMocks
     private OrderServiceImpl orderService;
