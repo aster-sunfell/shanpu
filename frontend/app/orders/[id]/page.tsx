@@ -42,29 +42,68 @@ function OrderDetailInner() {
 
   useEffect(() => {
     let active = true;
-    orderApi
-      .detail(orderId)
-      .then((o) => {
-        if (active) {
-          setState({ orderId, status: "ready", order: o, error: null });
-        }
-      })
-      .catch((e) => {
-        if (!active) return;
-        if (e instanceof ApiError && e.code === 40400) {
-          setState({ orderId, status: "missing", order: null, error: null });
-        } else {
-          const message = apiErrorMessage(e);
-          if (message) {
-            setState({ orderId, status: "error", order: null, error: message });
-            toast.error(message);
+    let timer: number | undefined;
+    let attempts = 0;
+
+    const load = () => {
+      orderApi
+        .detail(orderId)
+        .then((o) => {
+          if (active) {
+            setState({ orderId, status: "ready", order: o, error: null });
           }
-        }
-      });
+        })
+        .catch((e) => {
+          if (!active) return;
+          if (e instanceof ApiError && e.code === 40400 && attempts < 5) {
+            attempts += 1;
+            timer = window.setTimeout(load, 1000);
+            return;
+          }
+          if (e instanceof ApiError && e.code === 40400) {
+            setState({ orderId, status: "missing", order: null, error: null });
+          } else {
+            const message = apiErrorMessage(e);
+            if (message) {
+              setState({ orderId, status: "error", order: null, error: message });
+              toast.error(message);
+            }
+          }
+        });
+    };
+
+    load();
+
     return () => {
       active = false;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
     };
   }, [orderId]);
+
+  useEffect(() => {
+    if (state.status !== "ready" || state.order.status !== "PENDING") {
+      return;
+    }
+    let active = true;
+    const id = window.setInterval(() => {
+      orderApi
+        .detail(orderId)
+        .then((o) => {
+          if (active) {
+            setState({ orderId, status: "ready", order: o, error: null });
+          }
+        })
+        .catch(() => {
+          // Keep the last known pending order stable while polling.
+        });
+    }, 1000);
+    return () => {
+      active = false;
+      window.clearInterval(id);
+    };
+  }, [orderId, state]);
 
   if (state.orderId !== orderId || state.status === "loading") {
     return <p className="py-16 text-center text-sm text-muted-foreground">加载中...</p>;

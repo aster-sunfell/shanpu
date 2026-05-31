@@ -26,12 +26,13 @@ shanpu/
 
 ## 2. Docker Compose 服务清单
 
-根目录 `docker-compose.yml` 定义 4 个服务。每个服务通过 `deploy.resources.limits` 显式声明 CPU 与内存上限（见 §2.4 设计逻辑）。下表"暴露端口"列引用 `.env` 变量，默认值见 §2.3。
+根目录 `docker-compose.yml` 定义 5 个服务。每个服务通过 `deploy.resources.limits` 显式声明 CPU 与内存上限（见 §2.4 设计逻辑）。下表"暴露端口"列引用 `.env` 变量，默认值见 §2.3。
 
 | 服务 | 镜像 | 内部端口 | 暴露端口 | CPU 上限 | 内存上限 | 卷 | 健康检查 |
 |---|---|---|---|---|---|---|---|
 | `mysql` | `mysql:8.0` | 3306 | `${MYSQL_PORT}` | 1.5 | 1g | `./mysql/init:/docker-entrypoint-initdb.d:ro`、`mysql-data:/var/lib/mysql` | `mysqladmin ping -p$MYSQL_ROOT_PASSWORD` |
 | `redis` | `redis:7-alpine` | 6379 | `${REDIS_PORT}` | 1.0 | 384m | `redis-data:/data` | `redis-cli -a $REDIS_PASSWORD ping` |
+| `kafka` | `bitnami/kafka:3.7` | 9092 | `${KAFKA_PORT}` | 1.0 | 768m | `kafka-data:/bitnami/kafka` | `kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list` |
 | `backend` | 本仓 `backend/Dockerfile` | 8080 | `${BACKEND_PORT}` | 2.0 | 1.5g | - | `wget -q --spider http://127.0.0.1:8080/api/health` |
 | `frontend` | 本仓 `frontend/Dockerfile` | 3000 | `${FRONTEND_PORT}` | 0.5 | 384m | - | `wget -q --spider http://127.0.0.1:3000/` |
 
@@ -44,6 +45,8 @@ depends_on:
   mysql:
     condition: service_healthy
   redis:
+    condition: service_healthy
+  kafka:
     condition: service_healthy
 ```
 
@@ -103,6 +106,7 @@ JWT_SECRET=replace-me-with-a-32-byte-random-secret-for-development
 # ===== 暴露端口 =====
 MYSQL_PORT=3306
 REDIS_PORT=6379
+KAFKA_PORT=9092
 BACKEND_PORT=8080
 FRONTEND_PORT=3000
 
@@ -112,7 +116,7 @@ PUBLIC_API_HOST=localhost
 
 `.env.example` 只承载用户必须感知的三类：凭据、对外暴露端口、前端浏览器侧主机名。以下配置由 `docker-compose.yml` 派生：
 
-- **Compose 内部地址不进 `.env`**：backend 连 `mysql:3306` / `redis:6379`、frontend SSR 连 `http://backend:8080/api`，全部由 `docker-compose.yml` 在容器 `environment:` 段直接硬编码。这些值由 Compose 网络内的 service name 与内部端口决定，用户无须也不应调整。
+- **Compose 内部地址不进 `.env`**：backend 连 `mysql:3306` / `redis:6379` / `kafka:9092`，frontend SSR 连 `http://backend:8080/api`，全部由 `docker-compose.yml` 在容器 `environment:` 段直接硬编码。这些值由 Compose 网络内的 service name 与内部端口决定，用户无须也不应调整。
 - **后端容器以 root 账号连库**：`docker-compose.yml` 在 backend 容器 `environment:` 段拼装 `MYSQL_USERNAME=root` / `MYSQL_PASSWORD=${MYSQL_ROOT_PASSWORD}` 注入 Spring；mysql 镜像不创建额外应用账号，root 承担初始化、健康检查与应用连接三件事，配置最小化便于教学。
 - **Redis 密码强制开启**：`redis.command` 含 `--requirepass ${REDIS_PASSWORD}`（详见 §5.2），后端容器 `REDIS_PASSWORD` 通过 `${REDIS_PASSWORD}` 注入，Redis 健康检查命令为 `redis-cli -a $REDIS_PASSWORD ping`。
 - **前端 BASE_URL 运行时拼接**：浏览器侧调用后端的完整地址 `http://${PUBLIC_API_HOST}:${BACKEND_PORT}/api` 由 `docker-compose.yml` 在 frontend 容器 `environment:` 段拼接后作为运行时变量 `PUBLIC_API_BASE_URL` 注入。前端根 layout 作为 server component 读取 `process.env.PUBLIC_API_BASE_URL`，注入到 HTML 供 client 端 hydrate 时消费（详见 FRONTEND.md §7.3）。**不走 Next.js build-time `NEXT_PUBLIC_*` 通道**，用户改 `PUBLIC_API_HOST` 或 `BACKEND_PORT` 后只需 `docker compose up -d frontend` 重启容器即可生效，无需重 build 镜像。
@@ -127,7 +131,8 @@ PUBLIC_API_HOST=localhost
 | `frontend` | 0.5 | 384m | Next.js standalone SSR，压测期间几乎纯静态响应 |
 | `mysql` | 1.5 | 1g | `innodb_buffer_pool_size=384M`、`max_connections=200`、`innodb_log_buffer_size=16M` |
 | `redis` | 1.0 | 384m | `maxmemory 256mb`、`maxmemory-policy allkeys-lru`、`save ""` |
-| 合计 | 5.0 | 3.3g | 留 ≥ 2.5 GiB 内存给宿主 |
+| `kafka` | 1.0 | 768m | 单节点 KRaft，内部 listener `kafka:9092`，宿主调试端口 `${KAFKA_PORT}` |
+| 合计 | 6.0 | 4.1g | 留 ≥ 2 GiB 内存给宿主 |
 
 按机器规模缩放指引：
 - **内存 ≥ 16 GiB**：可把 `backend` 提到 3g（`-Xmx2g`）、`mysql` 提到 2g（buffer pool 1g）。
@@ -209,8 +214,8 @@ CMD ["node", "server.js"]
 
 `mysql/init/` 下两个脚本由 `mysql:8.0` 镜像在首次启动时自动执行：
 
-- `01_schema.sql`：DDL（与 `docs/BACKEND.md` 第 10 节一致），创建 `t_user / t_product / t_order / t_point_log` 四张表。
-- `02_seed.sql`：写入测试用户 `summer`（密码 `123456`，初始积分 10000，带注册赠送积分流水）与 5 个普通商品种子数据（`id` 1~5、`status=1`，其中一个商品库存为 10 供并发防超卖验收）。
+- `01_schema.sql`：DDL（与 `docs/BACKEND.md` 第 10 节一致），创建用户、商品、秒杀活动、订单、积分流水与 DLQ 失败日志表。
+- `02_seed.sql`：写入测试用户 `summer`（密码 `123456`，初始积分 10000，带注册赠送积分流水）、5 个普通商品种子数据（`id` 1~5、`status=1`，其中一个商品库存为 10 供并发防超卖验收）与 9 个三档秒杀活动（`1001/1002/1003`、`2001/2002/2003`、`3001/3002/3003`）。
 
 两个脚本均以 `SET NAMES utf8mb4;` 开头：`mysql:8.0` 镜像内的 `mysql` 客户端默认 `character_set_client=latin1`，`docker-entrypoint-initdb.d` 按该默认连接导入 UTF-8 脚本，缺少显式声明会把中文按 latin1 双重编码后落库。`SET NAMES utf8mb4` 将导入会话的 client / connection / results 字符集对齐到 utf8mb4，保证种子数据与列注释中的中文按原字节写入。
 

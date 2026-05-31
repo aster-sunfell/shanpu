@@ -31,4 +31,20 @@ public class RedisConfig {
         script.setScriptSource(new ResourceScriptSource(new ClassPathResource("lua/rate-limit.lua")));
         return script;
     }
+
+    @Bean
+    public DefaultRedisScript<Long> seckillScript() {
+        DefaultRedisScript<Long> script = new DefaultRedisScript<>();
+        script.setResultType(Long.class);
+        script.setScriptSource(new ResourceScriptSource(new ClassPathResource("lua/seckill.lua")));
+        return script;
+    }
+
+    @Bean
+    public DefaultRedisScript<Long> seckillRollbackScript() {
+        DefaultRedisScript<Long> script = new DefaultRedisScript<>();
+        script.setResultType(Long.class);
+        script.setScriptSource(new ResourceScriptSource(new ClassPathResource("lua/seckill-rollback.lua")));
+        return script;
+    }
 }

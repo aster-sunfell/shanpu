@@ -8,6 +8,25 @@
         VALUES (#{orderId}, #{userId}, #{productId}, #{activityId}, #{source}, #{price}, #{status}, #{paidAt})
     </insert>
 
+    <insert id="insertIgnore" useGeneratedKeys="true" keyProperty="id">
+        INSERT IGNORE INTO t_order (order_id, user_id, product_id, activity_id, source, price, status, paid_at)
+        VALUES (#{orderId}, #{userId}, #{productId}, #{activityId}, #{source}, #{price}, #{status}, #{paidAt})
+    </insert>
+
+    <select id="existsByOrderId" resultType="int">
+        SELECT COUNT(*) FROM t_order WHERE order_id = #{orderId}
+    </select>
+
+    <select id="countByUserActivity" resultType="int">
+        SELECT COUNT(*) FROM t_order
+        WHERE user_id = #{userId} AND activity_id = #{activityId}
+    </select>
+
+    <select id="countPaidByActivity" resultType="long">
+        SELECT COUNT(*) FROM t_order
+        WHERE activity_id = #{activityId} AND status = 2
+    </select>
+
     <select id="selectPageByUser" resultType="com.shanpu.module.order.domain.vo.OrderItemVO">
         SELECT o.order_id   AS orderId,
                o.product_id AS productId,

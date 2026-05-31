@@ -22,3 +22,5 @@ spring:
           max-active: 20
           max-idle: 8
           min-idle: 2
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}

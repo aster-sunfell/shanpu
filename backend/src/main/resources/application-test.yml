@@ -1,4 +1,7 @@
 spring:
+  kafka:
+    admin:
+      auto-create: false
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:shanpu_test}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
@@ -14,3 +17,8 @@ spring:
 logging:
   level:
     com.shanpu: INFO
+
+shanpu:
+  kafka:
+    consumer:
+      enabled: false

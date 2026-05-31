@@ -25,6 +25,9 @@ export function SiteHeader() {
           <Button asChild variant="ghost" size="sm">
             <Link href="/products">商品</Link>
           </Button>
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/seckill">秒杀</Link>
+          </Button>
           {hydrated && isAuthed ? (
             <Button asChild variant="ghost" size="sm">
               <Link href="/orders">订单</Link>

@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shanpu.module.seckill.mapper.SeckillActivityMapper">
+
+    <sql id="ActivityVoColumns">
+        a.id              AS id,
+        a.product_id      AS productId,
+        p.title           AS productTitle,
+        p.cover_url       AS coverUrl,
+        a.title           AS title,
+        a.tier            AS tier,
+        p.price           AS originalPrice,
+        a.seckill_price   AS seckillPrice,
+        a.total_stock     AS totalStock,
+        a.total_stock     AS stock,
+        CASE a.status WHEN 0 THEN 'UPCOMING' WHEN 1 THEN 'ACTIVE' WHEN 2 THEN 'ENDED' ELSE 'UNKNOWN' END AS status,
+        a.status          AS statusCode,
+        a.start_at        AS startAt,
+        a.end_at          AS endAt
+    </sql>
+
+    <select id="selectList" resultType="com.shanpu.module.seckill.domain.vo.SeckillActivityVO">
+        SELECT <include refid="ActivityVoColumns" />
+        FROM t_seckill_activity a
+        LEFT JOIN t_product p ON p.id = a.product_id
+        WHERE 1 = 1
+        <if test="tier != null">
+            AND a.tier = #{tier}
+        </if>
+        <if test="status != null">
+            AND a.status = #{status}
+        </if>
+        ORDER BY a.status ASC, a.start_at ASC, a.id ASC
+    </select>
+
+    <select id="selectDetailById" resultType="com.shanpu.module.seckill.domain.vo.SeckillActivityVO">
+        SELECT <include refid="ActivityVoColumns" />
+        FROM t_seckill_activity a
+        LEFT JOIN t_product p ON p.id = a.product_id
+        WHERE a.id = #{id}
+    </select>
+
+    <select id="selectById" resultType="com.shanpu.module.seckill.domain.entity.SeckillActivity">
+        SELECT id, product_id, title, tier, seckill_price, total_stock, start_at, end_at,
+               status, created_at, updated_at
+        FROM t_seckill_activity
+        WHERE id = #{id}
+    </select>
+
+    <update id="deductStock">
+        UPDATE t_seckill_activity
+        SET total_stock = total_stock - 1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id} AND total_stock > 0
+    </update>
+
+    <select id="selectWarmupList" resultType="com.shanpu.module.seckill.domain.vo.SeckillActivityVO">
+        SELECT <include refid="ActivityVoColumns" />
+        FROM t_seckill_activity a
+        LEFT JOIN t_product p ON p.id = a.product_id
+        WHERE a.status IN (0, 1)
+          AND a.start_at &lt;= #{before}
+          AND a.end_at &gt; #{now}
+        ORDER BY a.start_at ASC, a.id ASC
+    </select>
+
+    <select id="selectReconcileList" resultType="com.shanpu.module.seckill.domain.vo.SeckillActivityVO">
+        SELECT <include refid="ActivityVoColumns" />
+        FROM t_seckill_activity a
+        LEFT JOIN t_product p ON p.id = a.product_id
+        WHERE a.tier IN (2, 3)
+          AND a.start_at &lt;= #{now}
+          AND a.end_at &gt;= #{after}
+        ORDER BY a.id ASC
+    </select>
+
+</mapper>

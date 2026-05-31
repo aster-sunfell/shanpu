@@ -605,16 +605,16 @@ UPDATE t_seckill_activity SET tier = 1 WHERE id = 3001;
 
 ### 8.2 Topic
 
-| Topic                      | 分区 | 副本 | Key       | Value（JSON）                                                  |
-| -------------------------- | ---- | ---- | --------- | -------------------------------------------------------------- |
-| `shanpu.seckill.order`     | 3    | 1    | `orderId` | `{ orderId, userId, activityId, productId, price, createdAt }` |
-| `shanpu.seckill.order.dlq` | 1    | 1    | `orderId` | 原消息 + Header：`failReason`、`failCount`                     |
+| Topic                      | 分区 | 副本 | Key       | Value（JSON）                                                          |
+| -------------------------- | ---- | ---- | --------- | ---------------------------------------------------------------------- |
+| `shanpu.seckill.order`     | 3    | 1    | `orderId` | `{ orderId, userId, activityId, productId, price, source, createdAt }` |
+| `shanpu.seckill.order.dlq` | 1    | 1    | `orderId` | 原消息 + Header：`failReason`、`failCount`                             |
 
 ### 8.3 生产者
 
 | 配置                                    | 值                | 说明                                                    |
 | --------------------------------------- | ----------------- | ------------------------------------------------------- |
-| `acks`                                  | 1                 | leader 写入即返回（单 broker，与 `all` 等价）           |
+| `acks`                                  | all               | 幂等 Producer 要求所有 ISR ack；单 broker 下即 leader 写入 |
 | `enable.idempotence`                    | true              | broker 基于 producer epoch + 序列号去重内部重试         |
 | `retries`                               | Integer.MAX_VALUE | 配合幂等性，重试直到 `delivery.timeout.ms`              |
 | `max.in.flight.requests.per.connection` | 5                 | 幂等性允许的最大未确认请求数                            |
@@ -630,16 +630,17 @@ UPDATE t_seckill_activity SET tier = 1 WHERE id = 3001;
     topics = KafkaTopics.SECKILL_ORDER,
     groupId = "shanpu-seckill-consumer",
     containerFactory = "manualAckListenerContainerFactory",
-    concurrency = "3"
 )
-public void consume(ConsumerRecord<String, String> record, Acknowledgment ack);
+public void consume(ConsumerRecord<String, SeckillOrderMsg> record, Acknowledgment ack);
 ```
 
 消费逻辑封装在 `SeckillConsumer.handle(SeckillOrderMsg)` 中，单个本地事务完成：
 
-1. `INSERT IGNORE INTO t_order(...)`，依赖 `uk_order_id` 实现幂等。**若受影响行数为 0（订单已存在，本条为重投），直接 `ack.acknowledge()` 返回。**
-2. 扣减用户积分（行锁 `UPDATE t_user SET points = points - ? WHERE id = ? AND points >= ?`，受影响行数为 0 抛业务异常）。
-3. 写 `t_point_log` 流水。
+1. 先查 `uk_order_id`；订单已存在说明本条为重投，直接 `ack.acknowledge()` 返回。
+2. `INSERT IGNORE INTO t_order(...)`，依赖 `uk_order_id` 与 `uk_user_activity` 兜底幂等与一人一单。
+3. `UPDATE t_seckill_activity SET total_stock = total_stock - 1 WHERE id = ? AND total_stock > 0`，受影响行数为 0 抛 `STOCK_SHORTAGE`。
+4. 扣减用户积分（行锁 `UPDATE t_user SET points = points - ? WHERE id = ? AND points >= ?`，受影响行数为 0 抛业务异常）。
+5. 写 `t_point_log` 流水。
 
 成功后调用 `ack.acknowledge()`；抛异常则由 `DefaultErrorHandler` 处理。
 
@@ -659,7 +660,7 @@ DefaultErrorHandler errorHandler = new DefaultErrorHandler(
 );
 ```
 
-重试耗尽后消息进入 DLQ，`KafkaDlqRescueJob` 周期性拉回主 Topic。**当 `t_order_dlq_log.fail_count >= 5` 时停止该消息的重投并写 ERROR 日志**，依赖运维介入排查。
+重试耗尽后消息进入 DLQ，并同步写入 `t_order_dlq_log` 记录失败原因与失败次数。DLQ 回投由 M5 的 `KafkaDlqRescueJob` 承担。
 
 ## 9. 定时任务
 
@@ -668,8 +669,8 @@ DefaultErrorHandler errorHandler = new DefaultErrorHandler(
 | 任务                | Cron            | 行为                                                                                                                                                                                                                                                                                                                       | 幂等性                                                |
 | ------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | `OrderTimeoutJob`   | `0 */1 * * * *` | 扫描 `t_order` 中 `status=PENDING_PAY` 且 `created_at < now - 15min` 的订单 → 设 `status=CANCELLED`；秒杀订单同时回补 Redis 库存（`INCR`）与移除已购集合（`SREM`）                                                                                                                                                         | 状态机：只有 `PENDING_PAY` 才被改写，重复执行无副作用 |
-| `KafkaDlqRescueJob` | `0 */5 * * * *` | 用一次性 Consumer 拉 DLQ → 重投主 Topic → 累加 `t_order_dlq_log` 失败计数；`fail_count >= 5` 时停止该条重投并写 ERROR 日志                                                                                                                                                                                                 | 主流程 `INSERT IGNORE` 保证不重复落单                 |
-| `StockReconcileJob` | `0 */5 * * * *` | 对每个进行中或刚结束的活动计算 `应有库存 = activity.total_stock - 已成功订单数`。`Redis 库存 < 应有库存`（消费在途的临时差异）跳过本轮等待下次确认；`Redis 库存 > 应有库存`（消息丢失/Redis 数据丢）`SET shanpu:seckill:stock:{id} = 应有库存` 修复并写 ERROR 日志，同步修复 `bought` 集合（移除非 DB 真实下单成功的用户） | 修复操作幂等（SET 覆写到正确值）                      |
+| `KafkaDlqRescueJob` | `0 */5 * * * *` | M5 承担 DLQ 回投与失败次数阈值处理                                                                                                                                                                                                                                                                                         | 主流程 `INSERT IGNORE` 保证不重复落单                 |
+| `StockReconcileJob` | `0 */5 * * * *` | 对每个进行中或刚结束的限时 / 超级活动读取 MySQL 剩余库存 `activity.total_stock` 与 Redis 库存；`Redis 库存 > MySQL 剩余库存` 时 `SET shanpu:seckill:stock:{id}` 修复并写 ERROR 日志                                                                                                                                       | 修复操作幂等（SET 覆写到正确值）                      |
 | `SeckillWarmupJob`  | `0 */1 * * * *` | 扫描未来 60 分钟内开始的活动：库存用 `SETNX` 写入（已存在不覆盖）、活动详情按逻辑过期写入                                                                                                                                                                                                                                  | SETNX + 覆盖写，幂等                                  |
 
 `StockReconcileJob` 自动修复仅在 `Redis > 应有库存` 方向触发——这是消息丢失或 Redis 数据丢失的明确信号；反向差异交给消费在途自然收敛。
@@ -895,6 +896,7 @@ public class SeckillOrderMsg {
     private Long activityId;
     private Long productId;
     private Integer price;        // 积分
+    private Integer source;       // 固化订单来源，超级档为 4
     private LocalDateTime createdAt;
 }
 ```
@@ -951,9 +953,9 @@ public class SeckillOrderMsg {
 
 | 方法 | 路径          | 鉴权 | 响应                                                                               |
 | ---- | ------------- | ---- | ---------------------------------------------------------------------------------- |
-| GET  | `/api/health` | 否   | `{ status: "UP", mysql: "UP", redis: "UP" }` |
+| GET  | `/api/health` | 否   | `{ status: "UP", mysql: "UP", redis: "UP", kafka: "UP" }` |
 
-`/api/health` 探测 MySQL（`SELECT 1`）与 Redis（`PING`），供 Docker `depends_on: condition: service_healthy` 使用。任一依赖 `DOWN`，整体 `status` 转为 `DOWN`。
+`/api/health` 探测 MySQL（`SELECT 1`）、Redis（`PING`）与 Kafka（AdminClient `describeCluster`），供 Docker `depends_on: condition: service_healthy` 使用。任一依赖 `DOWN`，整体 `status` 转为 `DOWN`。
 
 ## 14. 设计取舍
 

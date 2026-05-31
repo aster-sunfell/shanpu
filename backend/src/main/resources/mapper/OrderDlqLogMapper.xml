@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shanpu.module.seckill.mapper.OrderDlqLogMapper">
+
+    <insert id="upsert">
+        INSERT INTO t_order_dlq_log (order_id, fail_reason, fail_count, last_failed_at)
+        VALUES (#{orderId}, #{failReason}, 1, CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE
+            fail_reason = VALUES(fail_reason),
+            fail_count = fail_count + 1,
+            last_failed_at = CURRENT_TIMESTAMP
+    </insert>
+
+</mapper>

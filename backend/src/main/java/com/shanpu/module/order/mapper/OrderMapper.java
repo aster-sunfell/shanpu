@@ -11,6 +11,14 @@ public interface OrderMapper {
 
     int insert(Order order);
 
+    int insertIgnore(Order order);
+
+    int existsByOrderId(@Param("orderId") String orderId);
+
+    int countByUserActivity(@Param("userId") Long userId, @Param("activityId") Long activityId);
+
+    long countPaidByActivity(@Param("activityId") Long activityId);
+
     List<OrderItemVO> selectPageByUser(@Param("userId") Long userId,
                                        @Param("status") Integer status,
                                        @Param("offset") int offset,
