@@ -50,7 +50,7 @@ export default function RegisterPage() {
         nickname: values.nickname || undefined,
       });
       toast.success("注册成功，请登录");
-      router.replace("/login?next=%2Fme");
+      router.replace("/login");
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       else toast.error("注册失败");

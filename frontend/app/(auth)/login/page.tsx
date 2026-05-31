@@ -32,7 +32,7 @@ type FormValues = z.infer<typeof schema>;
 
 function LoginForm() {
   const search = useSearchParams();
-  const next = search.get("next") || "/me";
+  const next = search.get("next") || "/";
   const { login } = useAuth();
   const {
     register,

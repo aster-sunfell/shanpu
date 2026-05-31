@@ -3,5 +3,8 @@
 !.env.example
 
 .claude/
+.codex/
+.agents/
+.trellis/
 
 backend/target/

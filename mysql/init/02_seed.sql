@@ -1,3 +1,4 @@
+SET NAMES utf8mb4;
 USE shanpu;
 
 -- 普通商品种子：5 件上架商品（id=5 库存 10，供并发防超卖验收）

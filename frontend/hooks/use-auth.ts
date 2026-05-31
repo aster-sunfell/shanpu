@@ -31,7 +31,7 @@ export function useAuth() {
     } catch {
       // 静默：拿 nickname 失败不阻塞登录跳转
     }
-    router.replace(next || "/me");
+    router.replace(next || "/");
   }
 
   async function logout() {
