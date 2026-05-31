@@ -1,0 +1,216 @@
+package com.shanpu.cache;
+
+import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class CacheClient {
+
+    private static final String EMPTY_VALUE = "";
+    private static final Duration LOCK_TTL = Duration.ofSeconds(10);
+    private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(4);
+
+    private final StringRedisTemplate redisTemplate;
+    private final ObjectMapper objectMapper;
+
+    public void set(String key, Object value, Duration ttl) {
+        try {
+            redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(value), ttl);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to serialize cache value for key " + key, e);
+        }
+    }
+
+    public void setWithLogicalExpire(String key, Object value, Duration ttl) {
+        RedisData redisData = RedisData.builder()
+                .data(value)
+                .expireTime(LocalDateTime.now().plus(ttl))
+                .build();
+        try {
+            redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(redisData));
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to serialize logical cache value for key " + key, e);
+        }
+    }
+
+    public <R, ID> R queryWithPassThrough(String keyPrefix, ID id, Class<R> type,
+                                          Function<ID, R> dbFallback,
+                                          Duration ttl, Duration nullTtl) {
+        return queryWithPassThrough(keyPrefix + id, javaType(type), () -> dbFallback.apply(id), ttl, nullTtl);
+    }
+
+    public <R> R queryWithPassThrough(String key, JavaType type, Supplier<R> dbFallback,
+                                      Duration ttl, Duration nullTtl) {
+        String json = redisTemplate.opsForValue().get(key);
+        if (json != null) {
+            return json.isEmpty() ? null : read(json, type);
+        }
+
+        R value = dbFallback.get();
+        if (value == null) {
+            redisTemplate.opsForValue().set(key, EMPTY_VALUE, nullTtl);
+            return null;
+        }
+        set(key, value, ttl);
+        return value;
+    }
+
+    public <R, ID> R queryWithLogicalExpire(String keyPrefix, ID id, Class<R> type,
+                                            Function<ID, R> dbFallback,
+                                            Duration ttl) {
+        return queryWithLogicalExpire(keyPrefix, id, type, dbFallback, ttl, null);
+    }
+
+    public <R, ID> R queryWithLogicalExpire(String keyPrefix, ID id, Class<R> type,
+                                            Function<ID, R> dbFallback,
+                                            Duration ttl, Duration nullTtl) {
+        return queryWithLogicalExpire(keyPrefix + id, javaType(type), () -> dbFallback.apply(id),
+                keyPrefix + "lock:" + id, ttl, nullTtl);
+    }
+
+    public <R> R queryWithLogicalExpire(String key, JavaType type, Supplier<R> dbFallback,
+                                        String lockKey, Duration ttl) {
+        return queryWithLogicalExpire(key, type, dbFallback, lockKey, ttl, null);
+    }
+
+    public <R> R queryWithLogicalExpire(String key, JavaType type, Supplier<R> dbFallback,
+                                        String lockKey, Duration ttl, Duration nullTtl) {
+        String json = redisTemplate.opsForValue().get(key);
+        if (json != null && json.isEmpty()) {
+            return null;
+        }
+        if (json == null) {
+            R value = dbFallback.get();
+            if (value == null) {
+                if (nullTtl != null) {
+                    redisTemplate.opsForValue().set(key, EMPTY_VALUE, nullTtl);
+                }
+                return null;
+            }
+            setWithLogicalExpire(key, value, ttl);
+            return value;
+        }
+
+        RedisData redisData = read(json, RedisData.class);
+        R value = objectMapper.convertValue(redisData.getData(), type);
+        if (redisData.getExpireTime() == null || redisData.getExpireTime().isAfter(LocalDateTime.now())) {
+            return value;
+        }
+
+        if (tryLock(lockKey)) {
+            CACHE_REBUILD_EXECUTOR.submit(() -> {
+                try {
+                    R latest = dbFallback.get();
+                    if (latest != null) {
+                        setWithLogicalExpire(key, latest, ttl);
+                    }
+                } catch (Exception e) {
+                    log.warn("Logical cache rebuild failed: key={}", key, e);
+                } finally {
+                    unlock(lockKey);
+                }
+            });
+        }
+        return value;
+    }
+
+    public <R, ID> R queryWithMutex(String keyPrefix, ID id, Class<R> type,
+                                    Function<ID, R> dbFallback,
+                                    Duration ttl, Duration nullTtl) {
+        return queryWithMutex(keyPrefix + id, javaType(type), () -> dbFallback.apply(id),
+                keyPrefix + "lock:" + id, ttl, nullTtl);
+    }
+
+    public <R> R queryWithMutex(String key, JavaType type, Supplier<R> dbFallback,
+                                String lockKey, Duration ttl, Duration nullTtl) {
+        String json = redisTemplate.opsForValue().get(key);
+        if (json != null) {
+            return json.isEmpty() ? null : read(json, type);
+        }
+
+        boolean locked = false;
+        try {
+            for (int i = 0; i < 3; i++) {
+                locked = tryLock(lockKey);
+                if (locked) {
+                    String doubleCheck = redisTemplate.opsForValue().get(key);
+                    if (doubleCheck != null) {
+                        return doubleCheck.isEmpty() ? null : read(doubleCheck, type);
+                    }
+                    R value = dbFallback.get();
+                    if (value == null) {
+                        redisTemplate.opsForValue().set(key, EMPTY_VALUE, nullTtl);
+                        return null;
+                    }
+                    set(key, value, ttl);
+                    return value;
+                }
+                TimeUnit.MILLISECONDS.sleep(50);
+                json = redisTemplate.opsForValue().get(key);
+                if (json != null) {
+                    return json.isEmpty() ? null : read(json, type);
+                }
+            }
+            R value = dbFallback.get();
+            if (value == null) {
+                redisTemplate.opsForValue().set(key, EMPTY_VALUE, nullTtl);
+                return null;
+            }
+            set(key, value, ttl);
+            return value;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while rebuilding cache for key " + key, e);
+        } finally {
+            if (locked) {
+                unlock(lockKey);
+            }
+        }
+    }
+
+    public JavaType javaType(Class<?> rawClass, Class<?>... parameterClasses) {
+        if (parameterClasses.length == 0) {
+            return objectMapper.getTypeFactory().constructType(rawClass);
+        }
+        return objectMapper.getTypeFactory().constructParametricType(rawClass, parameterClasses);
+    }
+
+    private boolean tryLock(String key) {
+        Boolean ok = redisTemplate.opsForValue().setIfAbsent(key, "1", LOCK_TTL);
+        return Boolean.TRUE.equals(ok);
+    }
+
+    private void unlock(String key) {
+        redisTemplate.delete(key);
+    }
+
+    private <T> T read(String json, Class<T> type) {
+        try {
+            return objectMapper.readValue(json, type);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to deserialize cache value", e);
+        }
+    }
+
+    private <T> T read(String json, JavaType type) {
+        try {
+            return objectMapper.readValue(json, type);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to deserialize cache value", e);
+        }
+    }
+}
