@@ -18,6 +18,14 @@ public final class RedisKeys {
         return PRODUCT_LIST_PREFIX + "page:" + page + ":size:" + size;
     }
 
+    public static String productListPattern() {
+        return PRODUCT_LIST_PREFIX + "*";
+    }
+
+    public static String productDetail(Long productId) {
+        return PRODUCT_DETAIL_PREFIX + productId;
+    }
+
     public static String orderDetail(Long userId, String orderId) {
         return ORDER_DETAIL_PREFIX + "user:" + userId + ":" + orderId;
     }

@@ -384,6 +384,8 @@ public class RedisData {
 | 商品列表     | 缓存空值 | 5 分钟（列表查询级别） | 仅 `id / title / coverUrl / price / stock / status`，**不携带 `description`**，防止分页缓存体积随 size 倍数放大 |
 | 我的订单详情 | 互斥锁   | 30 秒                  | 完整字段；Key 包含 `userId`，防止订单跨用户泄露                                                                 |
 
+普通商品下单事务提交后清理对应 `shanpu:product:detail:{id}` 与 `shanpu:product:list:*` 缓存。缓存清理由事务 `afterCommit` 触发，保证后续商品详情与列表查询回源读取扣减后的库存；Redis 异常仅记录告警，不改变已提交订单的接口响应。
+
 ### 6.5 本地二级缓存（活动详情）
 
 在 Redis 之上为 `shanpu:seckill:activity:{id}` 叠一层 Caffeine L1，形成「L1 Caffeine → L2 Redis → L3 MySQL」三层结构。同一场秒杀的全部抢购前置查询都会扫这一个 Key，L1 命中率显著高于其他 Key 类型。
@@ -920,7 +922,7 @@ public class SeckillOrderMsg {
 | GET  | `/api/products/{id}`       | 否   | → `{ id, title, coverUrl, description, price, stock, status }`                                | 无         |
 | POST | `/api/products/{id}/order` | 是   | `{}` → `{ orderId, status: "PAID" }`                                                          | 1s/10 USER |
 
-普通下单事务边界：单个 `OrderService.createNormalOrder` 方法 + `@Transactional(rollbackFor = Exception.class)`，依次执行 `UPDATE t_product SET stock = stock - 1 WHERE id = ? AND stock > 0`（受影响行数为 0 抛 `STOCK_SHORTAGE`）、`UPDATE t_user SET points = points - ? WHERE id = ? AND points >= ?`（为 0 抛 `POINTS_NOT_ENOUGH`）、`INSERT t_order`、`INSERT t_point_log`。
+普通下单事务边界：单个 `OrderService.createNormalOrder` 方法 + `@Transactional(rollbackFor = Exception.class)`，依次执行 `UPDATE t_product SET stock = stock - 1 WHERE id = ? AND stock > 0`（受影响行数为 0 抛 `STOCK_SHORTAGE`）、`UPDATE t_user SET points = points - ? WHERE id = ? AND points >= ?`（为 0 抛 `POINTS_NOT_ENOUGH`）、`INSERT t_order`、`INSERT t_point_log`。事务提交后失效商品详情与商品列表缓存，下一次商品查询返回扣减后的库存。
 
 ### 13.3 秒杀
 

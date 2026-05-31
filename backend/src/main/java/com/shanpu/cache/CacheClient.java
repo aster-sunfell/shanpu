@@ -4,11 +4,15 @@ import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -44,6 +48,29 @@ public class CacheClient {
             redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(redisData));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to serialize logical cache value for key " + key, e);
+        }
+    }
+
+    public void delete(String key) {
+        redisTemplate.delete(key);
+    }
+
+    public void deleteByPattern(String pattern) {
+        ScanOptions options = ScanOptions.scanOptions().match(pattern).count(100).build();
+        List<String> batch = new ArrayList<>(100);
+        try (Cursor<String> cursor = redisTemplate.scan(options)) {
+            while (cursor.hasNext()) {
+                batch.add(cursor.next());
+                if (batch.size() == 100) {
+                    redisTemplate.delete(batch);
+                    batch.clear();
+                }
+            }
+            if (!batch.isEmpty()) {
+                redisTemplate.delete(batch);
+            }
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("Failed to scan cache keys for pattern " + pattern, e);
         }
     }
 

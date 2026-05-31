@@ -4,6 +4,7 @@ import cn.hutool.core.lang.Snowflake;
 import com.shanpu.cache.CacheClient;
 import com.shanpu.common.exception.BusinessException;
 import com.shanpu.common.result.ResultCode;
+import com.shanpu.infra.redis.RedisKeys;
 import com.shanpu.module.order.domain.entity.Order;
 import com.shanpu.module.order.domain.vo.OrderVO;
 import com.shanpu.module.order.mapper.OrderMapper;
@@ -26,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -124,6 +126,28 @@ class OrderServiceImplTest {
         assertEquals(9700, log.getBalanceAfter());
         assertEquals(PointLog.BIZ_ORDER_CONSUME, log.getBizType());
         assertEquals("9000000000001", log.getBizRef());
+
+        verify(cacheClient).delete(RedisKeys.productDetail(5L));
+        verify(cacheClient).deleteByPattern(RedisKeys.productListPattern());
+    }
+
+    @Test
+    void createNormalOrder_cacheInvalidationFails_keepsOrderResponse() {
+        when(productMapper.selectById(5L)).thenReturn(onSaleProduct(300, 10));
+        when(productMapper.deductStock(5L, 1)).thenReturn(1);
+        when(userMapper.deductPoints(1L, 300)).thenReturn(1);
+        when(snowflake.nextIdStr()).thenReturn("9000000000001");
+        when(userMapper.selectPointsById(1L)).thenReturn(9700);
+        doThrow(new IllegalStateException("redis down"))
+                .when(cacheClient).delete(RedisKeys.productDetail(5L));
+
+        OrderVO vo = orderService.createNormalOrder(1L, 5L, 1);
+
+        assertEquals("9000000000001", vo.getOrderId());
+        assertEquals("PAID", vo.getStatus());
+        verify(orderMapper).insert(any(Order.class));
+        verify(pointLogMapper).insert(any(PointLog.class));
+        verify(cacheClient).deleteByPattern(RedisKeys.productListPattern());
     }
 
     @Test

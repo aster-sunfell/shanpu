@@ -21,6 +21,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -83,6 +85,8 @@ public class OrderServiceImpl implements OrderService {
         pointLog.setBizRef(orderId);
         pointLogMapper.insert(pointLog);
 
+        invalidateProductCacheAfterCommit(productId);
+
         return OrderVO.builder().orderId(orderId).status("PAID").build();
     }
 
@@ -123,5 +127,34 @@ public class OrderServiceImpl implements OrderService {
             case "CANCELLED" -> Order.STATUS_CANCELLED;
             default -> throw new BusinessException(ResultCode.PARAM_INVALID, "非法订单状态");
         };
+    }
+
+    private void invalidateProductCacheAfterCommit(Long productId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()
+                && TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    invalidateProductCache(productId);
+                }
+            });
+            return;
+        }
+        invalidateProductCache(productId);
+    }
+
+    private void invalidateProductCache(Long productId) {
+        try {
+            cacheClient.delete(RedisKeys.productDetail(productId));
+        } catch (RuntimeException e) {
+            log.warn("Product detail cache invalidation failed: productId={}, error={}: {}",
+                    productId, e.getClass().getSimpleName(), e.getMessage());
+        }
+        try {
+            cacheClient.deleteByPattern(RedisKeys.productListPattern());
+        } catch (RuntimeException e) {
+            log.warn("Product list cache invalidation failed after normal order: productId={}, error={}: {}",
+                    productId, e.getClass().getSimpleName(), e.getMessage());
+        }
     }
 }

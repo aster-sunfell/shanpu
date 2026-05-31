@@ -9,11 +9,15 @@ import lombok.Setter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -146,6 +150,21 @@ class CacheClientTest {
         assertTrue(jsonCaptor.getValue().contains("\"name\":\"fresh\""));
     }
 
+    @Test
+    void deleteByPattern_scansAndDeletesMatchedKeys() {
+        when(redisTemplate.scan(any(ScanOptions.class))).thenReturn(new ListCursor(List.of(
+                "shanpu:product:list:page:1:size:8",
+                "shanpu:product:list:page:1:size:12"
+        )));
+
+        cacheClient.deleteByPattern("shanpu:product:list:*");
+
+        verify(redisTemplate).delete(List.of(
+                "shanpu:product:list:page:1:size:8",
+                "shanpu:product:list:page:1:size:12"
+        ));
+    }
+
     @Getter
     @Setter
     @NoArgsConstructor
@@ -153,5 +172,43 @@ class CacheClientTest {
     static class TestValue {
         private Long id;
         private String name;
+    }
+
+    private static class ListCursor implements Cursor<String> {
+        private final Iterator<String> iterator;
+
+        private ListCursor(List<String> keys) {
+            this.iterator = keys.iterator();
+        }
+
+        @Override
+        public boolean isClosed() {
+            return false;
+        }
+
+        @Override
+        public long getCursorId() {
+            return 0;
+        }
+
+        @Override
+        public long getPosition() {
+            return 0;
+        }
+
+        @Override
+        public boolean hasNext() {
+            return iterator.hasNext();
+        }
+
+        @Override
+        public String next() {
+            return iterator.next();
+        }
+
+        @Override
+        public void close() {
+        }
+
     }
 }
