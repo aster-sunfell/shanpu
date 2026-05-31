@@ -261,9 +261,9 @@ public @interface RateLimit {
 `RateLimitAspect` 切 `@annotation(RateLimit)`，在 controller 方法执行前完成：
 
 1. 根据 `dim` 拼装 Redis Key：
-   - `USER` → `shanpu:rl:user:{userId}:{methodSig}`（要求登录）
-   - `IP` → `shanpu:rl:ip:{clientIp}:{methodSig}`（适用于登录 / 注册）
-   - `API` → `shanpu:rl:api:{methodSig}`（全局阈值）
+   - `USER` → `shanpu:rate:user:{userId}:{methodSig}`（要求登录）
+   - `IP` → `shanpu:rate:ip:{clientIp}:{methodSig}`（适用于登录 / 注册）
+   - `API` → `shanpu:rate:api:{methodSig}`（全局阈值）
 2. 调用 `rate-limit.lua`，返回 1 放行、0 拒绝。
 3. 拒绝时抛 `BusinessException(RATE_LIMITED)`，由全局异常处理器映射为 HTTP 429。
 
@@ -272,16 +272,23 @@ public @interface RateLimit {
 ```lua
 -- KEYS[1] = rateLimitKey
 -- ARGV[1] = nowMs
--- ARGV[2] = windowMs
+-- ARGV[2] = windowSeconds
 -- ARGV[3] = max
+-- ARGV[4] = member
 
-redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1] - ARGV[2])
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2]) * 1000
+local max = tonumber(ARGV[3])
+local member = ARGV[4]
+
+redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, now - window)
 local count = redis.call('ZCARD', KEYS[1])
-if count >= tonumber(ARGV[3]) then
+if count >= max then
+    redis.call('PEXPIRE', KEYS[1], window)
     return 0
 end
-redis.call('ZADD', KEYS[1], ARGV[1], ARGV[1])
-redis.call('PEXPIRE', KEYS[1], ARGV[2])
+redis.call('ZADD', KEYS[1], now, member)
+redis.call('PEXPIRE', KEYS[1], window)
 return 1
 ```
 
@@ -313,16 +320,17 @@ public class CacheClient {
     public <R, ID> R queryWithLogicalExpire(
         String keyPrefix, ID id, Class<R> type,
         Function<ID, R> dbFallback,
-        Duration logicalTtl);
+        Duration logicalTtl, Duration nullTtl);
 
-    // 3. 互斥锁，备选方案
+    // 3. 互斥锁，防击穿
     public <R, ID> R queryWithMutex(
         String keyPrefix, ID id, Class<R> type,
         Function<ID, R> dbFallback,
-        Duration ttl);
+        Duration ttl, Duration nullTtl);
 
     public void set(String key, Object value, Duration ttl);
     public void setWithLogicalExpire(String key, Object value, Duration logicalTtl);
+    public JavaType javaType(Class<?> rawClass, Class<?>... parameterClasses);
 }
 ```
 
@@ -336,7 +344,7 @@ public class CacheClient {
    - DB 返回非空：写入 Redis 并设 `ttl`，返回。
    - DB 返回空：写入空字符串并设 `nullTtl`（默认 2 分钟），返回 `null`。
 
-适用：用户信息、订单详情等非热点查询。
+适用：商品列表等按查询条件区分的读路径。
 
 ### 6.2 逻辑过期
 
@@ -351,18 +359,21 @@ public class RedisData {
 
 `queryWithLogicalExpire` 流程：
 
-1. 查 Key，未命中（说明数据未预热）直接返回 `null`，由调用方按业务决定是否走 DB。
-2. 命中后解析 `RedisData`：
+1. 查 Key，命中空值占位（约定值 `""`）则直接返回 `null`。
+2. 未命中则同步调用 `dbFallback` 回源：
+   - DB 返回非空：写入 `RedisData` 并设置逻辑过期时间，返回。
+   - DB 返回空：写入空字符串并设 `nullTtl`，返回 `null`。
+3. 命中后解析 `RedisData`：
    - `expireTime > now`：直接返回 `data`。
-   - 已过期：返回旧 `data`，同时提交一个后台任务异步重建（尝试获取 `shanpu:lock:rebuild:{keyPrefix}:{id}` 锁，拿到则 `dbFallback` 后 `setWithLogicalExpire`，未拿到说明其他线程在重建，跳过）。
+   - 已过期：返回旧 `data`，同时提交一个后台任务异步重建（尝试获取 `{keyPrefix}lock:{id}` 锁，拿到则 `dbFallback` 后 `setWithLogicalExpire`，未拿到说明其他线程在重建，跳过）。
 
-后台线程池：`ExecutorService rebuildExecutor = Executors.newFixedThreadPool(10)`。
+后台线程池：`ExecutorService rebuildExecutor = Executors.newFixedThreadPool(4)`。
 
 适用：商品详情、秒杀活动详情等热点查询。
 
-### 6.3 互斥锁（备选）
+### 6.3 互斥锁
 
-`queryWithMutex` 提供方法签名与说明，业务默认不调用。其语义为：未命中时尝试获取 Redis 互斥锁，拿到则查 DB 并回填缓存，未拿到则短暂等待后重试缓存；与"逻辑过期"二选一即可。
+`queryWithMutex` 用于订单详情等低 TTL 读路径：未命中时尝试获取 Redis 互斥锁，拿到则查 DB 并回填缓存，未拿到则短暂等待后重试缓存；DB 返回空时写入空值占位并设置 `nullTtl`。
 
 ### 6.4 商品 / 活动落点
 
@@ -371,13 +382,13 @@ public class RedisData {
 | 商品详情     | 逻辑过期 | 30 分钟                | 完整字段（含 `description`）                                                                                    |
 | 秒杀活动详情 | 逻辑过期 | 10 分钟                | 完整字段                                                                                                        |
 | 商品列表     | 缓存空值 | 5 分钟（列表查询级别） | 仅 `id / title / coverUrl / price / stock / status`，**不携带 `description`**，防止分页缓存体积随 size 倍数放大 |
-| 我的订单详情 | 缓存空值 | 30 秒                  | 完整字段                                                                                                        |
+| 我的订单详情 | 互斥锁   | 30 秒                  | 完整字段；Key 包含 `userId`，防止订单跨用户泄露                                                                 |
 
 ### 6.5 本地二级缓存（活动详情）
 
 在 Redis 之上为 `shanpu:seckill:activity:{id}` 叠一层 Caffeine L1，形成「L1 Caffeine → L2 Redis → L3 MySQL」三层结构。同一场秒杀的全部抢购前置查询都会扫这一个 Key，L1 命中率显著高于其他 Key 类型。
 
-`shanpu:product:{id}` 不进入 L1，作为压测对比的"单层 Redis 基线"，便于在 M6 同一轮压测中量化 L1 的提升（详见 ROADMAP M6 场景 D）。
+`shanpu:product:detail:{id}` 不进入 L1，作为压测对比的"单层 Redis 基线"，便于在 M6 同一轮压测中量化 L1 的提升（详见 ROADMAP M6 场景 D）。
 
 #### Caffeine 实例
 
@@ -416,14 +427,14 @@ shanpu:
 
 | Key                                   | 角色            | 原因                                         |
 | ------------------------------------- | --------------- | -------------------------------------------- |
-| `shanpu:product:{id}`                 | 对照组基线      | 故意保留单层 Redis，作为压测对比的无 L1 路径 |
-| `shanpu:product:list:p{page}:s{size}` | 对照组基线      | 同上                                         |
+| `shanpu:product:detail:{id}`          | 对照组基线      | 故意保留单层 Redis，作为压测对比的无 L1 路径 |
+| `shanpu:product:list:page:{page}:size:{size}` | 对照组基线 | 同上                                      |
 | `shanpu:seckill:stock:{activityId}`   | RW 强一致计数器 | Lua 原子扣减不允许应用层旁路                 |
 | `shanpu:seckill:bought:{activityId}`  | RW 集合         | 一人一单语义不允许 stale 读                  |
-| `shanpu:rl:*`                         | 滑动窗口限流    | 需 Redis 全局视角                            |
+| `shanpu:rate:*`                       | 滑动窗口限流    | 需 Redis 全局视角                            |
 | `shanpu:user:session:{tokenHash}`     | 登录态          | 登出要求实时失效                             |
-| `shanpu:order:user:{uid}:{orderId}`   | 用户级订单      | 命中率低 + 已有 30s TTL                      |
-| `shanpu:lock:rebuild:*`               | 分布式互斥锁    | 本地缓存语义不适用                           |
+| `shanpu:order:detail:user:{uid}:{orderId}` | 用户级订单  | 命中率低 + 已有 30s TTL                      |
+| `shanpu:*:lock:*`                     | 分布式互斥锁    | 本地缓存语义不适用                           |
 
 #### 可观测
 
@@ -847,18 +858,18 @@ Hutool `Snowflake` 检测到 `currentMs < lastMs` 直接抛 `IllegalStateExcepti
 | Key 模板                               | 类型                   | TTL                | 用途                                                      |
 | -------------------------------------- | ---------------------- | ------------------ | --------------------------------------------------------- |
 | `shanpu:user:session:{tokenHash}`      | String(userId)         | 7 天               | 登录态会话白名单；登出 DEL，自然过期同 JWT                |
-| `shanpu:product:{id}`                  | String(JSON+RedisData) | 逻辑过期 30 分钟   | 商品详情                                                  |
-| `shanpu:product:null:{id}`             | String("")             | 2 分钟             | 商品空值占位，防穿透                                      |
-| `shanpu:product:list:p{page}:s{size}`  | String(JSON)           | 5 分钟             | 商品列表分页缓存                                          |
+| `shanpu:product:detail:{id}`           | String(JSON+RedisData) | 逻辑过期 30 分钟   | 商品详情；同 Key 空字符串表示空值占位                     |
+| `shanpu:product:detail:lock:{id}`      | String                 | 10 秒              | 商品详情逻辑过期重建锁                                    |
+| `shanpu:product:list:page:{page}:size:{size}` | String(JSON)   | 5 分钟             | 商品列表分页缓存                                          |
 | `shanpu:seckill:activity:{id}`         | String(JSON+RedisData) | 逻辑过期 10 分钟   | 秒杀活动详情（含 `tier` 字段），三档统一写入              |
 | `shanpu:seckill:activity:null:{id}`    | String("")             | 2 分钟             | 活动空值占位                                              |
 | `shanpu:seckill:stock:{activityId}`    | String(int)            | 活动 `end_at + 1h` | 秒杀剩余库存，仅 `tier=2/3` 写入；`tier=1` 普惠档无此 Key |
 | `shanpu:seckill:bought:{activityId}`   | Set                    | 活动 `end_at + 1h` | 已购用户 ID 集合，仅 `tier=2/3` 写入；单场上限 5000       |
-| `shanpu:order:user:{userId}:{orderId}` | String(JSON)           | 30 秒              | 订单详情用户级缓存，缓解轮询风暴                          |
-| `shanpu:rl:user:{userId}:{methodSig}`  | ZSet                   | window             | 用户维度限流                                              |
-| `shanpu:rl:ip:{clientIp}:{methodSig}`  | ZSet                   | window             | IP 维度限流                                               |
-| `shanpu:rl:api:{methodSig}`            | ZSet                   | window             | API 全局限流                                              |
-| `shanpu:lock:rebuild:{keyPrefix}:{id}` | String(uuid)           | 10 秒              | 缓存重建互斥锁                                            |
+| `shanpu:order:detail:user:{userId}:{orderId}` | String(JSON)   | 30 秒              | 订单详情用户级缓存，缓解轮询风暴；同 Key 空字符串表示空值占位 |
+| `shanpu:order:detail:lock:user:{userId}:{orderId}` | String        | 10 秒              | 订单详情互斥重建锁                                        |
+| `shanpu:rate:user:{userId}:{methodSig}` | ZSet                  | window             | 用户维度限流                                              |
+| `shanpu:rate:ip:{clientIp}:{methodSig}` | ZSet                  | window             | IP 维度限流                                               |
+| `shanpu:rate:api:{methodSig}`          | ZSet                   | window             | API 全局限流                                              |
 
 `RedisKeys` 类集中维护 Key 模板常量，业务代码禁止硬编码字符串。
 
@@ -938,9 +949,9 @@ public class SeckillOrderMsg {
 
 | 方法 | 路径          | 鉴权 | 响应                                                                               |
 | ---- | ------------- | ---- | ---------------------------------------------------------------------------------- |
-| GET  | `/api/health` | 否   | `{ status: "UP", mysql: "UP", redis: "UP", kafka: "UP", kafkaConsumerLag: <int> }` |
+| GET  | `/api/health` | 否   | `{ status: "UP", mysql: "UP", redis: "UP" }` |
 
-`/api/health` 探测 MySQL（`SELECT 1`）、Redis（`PING`）、Kafka（AdminClient `describeCluster()`）三依赖，供 Docker `depends_on: condition: service_healthy` 使用。任一依赖 `DOWN`，整体 `status` 转为 `DOWN`。`kafka` 与 `kafkaConsumerLag` 字段在 M4 接入 Kafka 后写入；`kafkaConsumerLag` 为消费组 `shanpu-seckill-consumer` 在主 topic 各分区 lag 之和，超过 100 时 `status` 转为 `DOWN`，触发部署侧告警。
+`/api/health` 探测 MySQL（`SELECT 1`）与 Redis（`PING`），供 Docker `depends_on: condition: service_healthy` 使用。任一依赖 `DOWN`，整体 `status` 转为 `DOWN`。
 
 ## 14. 设计取舍
 
@@ -964,7 +975,6 @@ public class SeckillOrderMsg {
 
 ### 14.3 仅文档提及不做强约束
 
-- `CacheClient.queryWithMutex` 保留方法签名，业务默认不调用。
 - 限流 API 全局维度默认不挂任何接口，留作演示。
 
 ### 14.4 已知坑位与对策

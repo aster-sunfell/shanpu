@@ -39,13 +39,18 @@ frontend/
 ├── app/
 │   ├── layout.tsx          # 根布局，挂载 Providers / SiteHeader / SiteFooter
 │   ├── page.tsx            # 首页：聚合秒杀与热门商品
+│   ├── error.tsx           # 全局页面错误兜底
+│   ├── not-found.tsx       # 全局 404 兜底
 │   ├── globals.css
 │   ├── (auth)/
 │   │   ├── login/page.tsx
 │   │   └── register/page.tsx
 │   ├── products/
 │   │   ├── page.tsx
-│   │   └── [id]/page.tsx
+│   │   └── [id]/
+│   │       ├── page.tsx
+│   │       ├── loading.tsx
+│   │       └── buy-button.tsx
 │   ├── seckill/
 │   │   ├── page.tsx
 │   │   └── [id]/page.tsx
@@ -67,6 +72,8 @@ frontend/
 │   └── providers.tsx
 ├── lib/
 │   ├── api/client.ts       # fetch 封装
+│   ├── api/api-error.ts    # ApiError 定义
+│   ├── api/errors.ts       # 组件层错误文案映射
 │   ├── api/user.ts
 │   ├── api/product.ts
 │   ├── api/seckill.ts
@@ -167,8 +174,18 @@ type AuthState = {
 `lib/api/client.ts` 封装 `fetch`，对外暴露 `request<T>(method, path, init?)`：
 
 ```ts
-class ApiError extends Error {
-  constructor(public code: number, public msg: string) { super(msg); }
+export class ApiError extends Error {
+  readonly code: number;
+  readonly msg: string;
+  readonly httpStatus?: number;
+
+  constructor(code: number, msg: string, httpStatus?: number) {
+    super(msg);
+    this.name = 'ApiError';
+    this.code = code;
+    this.msg = msg;
+    this.httpStatus = httpStatus;
+  }
 }
 
 export async function request<T>(
@@ -187,8 +204,8 @@ export async function request<T>(
 | baseURL | 浏览器侧从 `usePublicConfig().apiBase` 取（根 layout 注入，详见 §7.3）；服务端侧 `process.env.INTERNAL_API_BASE_URL` |
 | 响应解析 | 读 `Result<T>`，`code !== 0` 抛 `ApiError(code, msg)` |
 | HTTP 401 | 调用 `useAuthStore.getState().clearSession()` 并 `router.push('/login')` |
-| HTTP 429 | 抛 `ApiError(42900, '请求过于频繁，请稍后再试')` |
-| 网络异常 | 抛 `ApiError(0, '网络异常')`，组件层 toast |
+| HTTP 429 | 抛 `ApiError(42900, '操作过于频繁', 429)` |
+| 网络异常 | 抛 `ApiError(0, '网络异常，请稍后重试')`，组件层 toast |
 
 ### 7.2 业务封装
 
@@ -210,11 +227,13 @@ export const userApi = {
   login: (body: LoginReq) => request<UserSession>('POST', '/users/login', { body }),
   logout: () => request<void>('POST', '/users/logout'),
   me: () => request<UserInfo>('GET', '/users/me'),
-  myPoints: () => request<{ points: number }>('GET', '/users/me/points'),
+  myPoints: (options?: { force?: boolean }) => Promise<{ points: number }>,
   updateNickname: (body: { nickname: string }) =>
     request<UserInfo>('POST', '/users/me/nickname', { body }),
 };
 ```
+
+`userApi.myPoints()` 使用模块级内存缓存，按当前 token 维度缓存 5 秒；`useAuth().refreshPoints()` 在下单成功后传 `force: true` 绕过缓存，保证积分余额立即刷新。
 
 ### 7.3 运行时配置注入
 
@@ -264,6 +283,8 @@ export const userApi = {
 | `/orders/[id]` | `GET /api/orders/{orderId}`（仅超级档需要轮询） |
 | `/me` | `GET /api/users/me`、`GET /api/users/me/points`；昵称保存调用 `POST /api/users/me/nickname` |
 
+商品详情通过 `loading.tsx` 展示骨架屏；商品不存在时展示稳定空态，后端或网络异常时展示可刷新错误态。订单详情使用 `loading / missing / error / ready` 四类状态，错误态保留返回订单列表入口。登录、注册、普通商品下单按钮在提交中禁用并显示提交中文案。
+
 ## 10. 超级秒杀异步轮询
 
 仅当 `seckillApi.grab(id)` 返回 `status === 'PENDING'`（即超级档 `tier=3`）时启动轮询；普惠 / 限时档直接命中订单详情 PAID 状态，无需轮询。
@@ -300,13 +321,13 @@ export const userApi = {
 
 ### 11.2 网络异常
 
-`fetch` 抛错（断网、CORS、JSON 解析失败）由 `client.ts` 转 `ApiError(0, '网络异常')`，组件层统一 `toast.error('网络异常，请稍后重试')`。
+`fetch` 抛错（断网、CORS、JSON 解析失败）由 `client.ts` 转 `ApiError(0, '网络异常，请稍后重试')`，组件层统一 `toast.error('网络异常，请稍后重试')`。
 
 ### 11.3 不白屏原则
 
 - 所有 `await request(...)` 包在 `try/catch` 中。
 - RSC 中使用 Next.js 的 `error.tsx`、`not-found.tsx` 兜底。
-- 关键页面（首页、登录页）若数据获取失败，渲染骨架与"重试"按钮，不出现纯白页。
+- 商品详情、订单详情、商品列表、订单列表在 loading、empty、error 状态下渲染稳定内容，不出现纯白页。
 
 ## 12. 性能与体验细节
 
@@ -314,4 +335,5 @@ export const userApi = {
 - 商品图片走 Next.js `<Image>` 自动懒加载与尺寸优化。
 - 倒计时使用 `requestAnimationFrame` 节流到 1 秒一次，避免重渲染。
 - 登录态持久化基于 `localStorage`，刷新页面不丢登录。
+- 个人中心积分徽标 5 秒内复用内存缓存，减少重复 `/api/users/me/points` 请求。
 - 秒杀按钮在前端做一次轻量节流（按下后 1 秒禁用），减轻服务端限流压力。
