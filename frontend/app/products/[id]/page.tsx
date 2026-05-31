@@ -3,8 +3,8 @@ import { Package } from "lucide-react";
 import { BuyButton } from "./buy-button";
 import { PointsBadge } from "@/components/points-badge";
 import { Badge } from "@/components/ui/badge";
+import { ApiError } from "@/lib/api/client";
 import { productApi } from "@/lib/api/product";
-import { ApiError } from "@/types/api";
 import type { ProductDetailVO } from "@/types/product";
 
 export const dynamic = "force-dynamic";

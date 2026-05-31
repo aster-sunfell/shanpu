@@ -9,8 +9,8 @@ import { OrderStatusBadge } from "@/components/order-status-badge";
 import { PointsBadge } from "@/components/points-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { apiErrorMessage } from "@/lib/api/errors";
 import { orderApi } from "@/lib/api/order";
-import { ApiError } from "@/types/api";
 import type { OrderItemVO, OrderStatus } from "@/types/order";
 
 const TABS: { label: string; value: OrderStatus | undefined }[] = [
@@ -34,7 +34,8 @@ function OrdersInner() {
       })
       .catch((e) => {
         if (active) setOrders([]);
-        if (e instanceof ApiError && e.httpStatus !== 401) toast.error(e.message);
+        const message = apiErrorMessage(e);
+        if (message) toast.error(message);
       })
       .finally(() => {
         if (active) setLoading(false);

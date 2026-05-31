@@ -19,7 +19,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
-import { ApiError } from "@/types/api";
+import { apiErrorMessage } from "@/lib/api/errors";
 
 const schema = z.object({
   username: z
@@ -45,8 +45,8 @@ function LoginForm() {
       await login(values.username, values.password, next);
       toast.success("登录成功");
     } catch (e) {
-      if (e instanceof ApiError) toast.error(e.message);
-      else toast.error("登录失败");
+      const message = apiErrorMessage(e, "登录失败");
+      if (message) toast.error(message);
     }
   }
 

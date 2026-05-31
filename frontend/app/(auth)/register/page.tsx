@@ -17,8 +17,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { apiErrorMessage } from "@/lib/api/errors";
 import { userApi } from "@/lib/api/user";
-import { ApiError } from "@/types/api";
 
 const schema = z.object({
   username: z
@@ -52,8 +52,8 @@ export default function RegisterPage() {
       toast.success("注册成功，请登录");
       router.replace("/login");
     } catch (e) {
-      if (e instanceof ApiError) toast.error(e.message);
-      else toast.error("注册失败");
+      const message = apiErrorMessage(e, "注册失败");
+      if (message) toast.error(message);
     }
   }
 

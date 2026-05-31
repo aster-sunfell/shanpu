@@ -3,9 +3,9 @@
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
+import { apiErrorMessage } from "@/lib/api/errors";
 import { userApi } from "@/lib/api/user";
 import { useAuthStore } from "@/lib/auth/token-store";
-import { ApiError } from "@/types/api";
 
 export function useAuth() {
   const router = useRouter();
@@ -47,10 +47,11 @@ export function useAuth() {
 
   async function refreshPoints() {
     try {
-      const r = await userApi.myPoints();
+      const r = await userApi.myPoints({ force: true });
       updatePoints(r.points);
     } catch (e) {
-      if (e instanceof ApiError && e.httpStatus !== 401) toast.error(e.message);
+      const message = apiErrorMessage(e);
+      if (message) toast.error(message);
     }
   }
 

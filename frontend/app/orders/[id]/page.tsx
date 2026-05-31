@@ -10,9 +10,16 @@ import { OrderStatusBadge } from "@/components/order-status-badge";
 import { PointsBadge } from "@/components/points-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ApiError } from "@/lib/api/client";
+import { apiErrorMessage } from "@/lib/api/errors";
 import { orderApi } from "@/lib/api/order";
-import { ApiError } from "@/types/api";
 import type { OrderDetailVO } from "@/types/order";
+
+type DetailState =
+  | { orderId: string; status: "loading"; order: null; error: null }
+  | { orderId: string; status: "ready"; order: OrderDetailVO; error: null }
+  | { orderId: string; status: "missing"; order: null; error: null }
+  | { orderId: string; status: "error"; order: null; error: string };
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -26,35 +33,57 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 function OrderDetailInner() {
   const params = useParams<{ id: string }>();
   const orderId = params.id;
-  const [order, setOrder] = useState<OrderDetailVO | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [missing, setMissing] = useState(false);
+  const [state, setState] = useState<DetailState>({
+    orderId,
+    status: "loading",
+    order: null,
+    error: null,
+  });
 
   useEffect(() => {
     let active = true;
     orderApi
       .detail(orderId)
       .then((o) => {
-        if (active) setOrder(o);
+        if (active) {
+          setState({ orderId, status: "ready", order: o, error: null });
+        }
       })
       .catch((e) => {
         if (!active) return;
-        if (e instanceof ApiError && e.code === 40400) setMissing(true);
-        else if (e instanceof ApiError && e.httpStatus !== 401) toast.error(e.message);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
+        if (e instanceof ApiError && e.code === 40400) {
+          setState({ orderId, status: "missing", order: null, error: null });
+        } else {
+          const message = apiErrorMessage(e);
+          if (message) {
+            setState({ orderId, status: "error", order: null, error: message });
+            toast.error(message);
+          }
+        }
       });
     return () => {
       active = false;
     };
   }, [orderId]);
 
-  if (loading) {
+  if (state.orderId !== orderId || state.status === "loading") {
     return <p className="py-16 text-center text-sm text-muted-foreground">加载中...</p>;
   }
 
-  if (missing || !order) {
+  if (state.status === "error") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl border border-dashed py-16 text-center text-sm text-muted-foreground">
+          {state.error}
+        </div>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/orders">返回订单列表</Link>
+        </Button>
+      </div>
+    );
+  }
+
+  if (state.status === "missing") {
     return (
       <div className="space-y-4">
         <div className="rounded-xl border border-dashed py-16 text-center text-sm text-muted-foreground">
@@ -66,6 +95,8 @@ function OrderDetailInner() {
       </div>
     );
   }
+
+  const order = state.order;
 
   return (
     <Card>

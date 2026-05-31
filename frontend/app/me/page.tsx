@@ -16,10 +16,11 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/use-auth";
+import { ApiError } from "@/lib/api/client";
+import { apiErrorMessage } from "@/lib/api/errors";
 import { userApi } from "@/lib/api/user";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/lib/auth/token-store";
-import { ApiError } from "@/types/api";
 import type { UserVO } from "@/types/user";
 
 function InfoRow({
@@ -109,7 +110,8 @@ function MePageInner() {
         .filter((result) => result.status === "rejected")
         .map((result) => result.reason)
         .filter((e) => e instanceof ApiError && e.httpStatus !== 401);
-      if (errors[0] instanceof ApiError) toast.error(errors[0].message);
+      const message = apiErrorMessage(errors[0]);
+      if (message) toast.error(message);
 
       setLoading(false);
     }
@@ -143,7 +145,8 @@ function MePageInner() {
       setEditingNickname(false);
       toast.success("昵称已保存");
     } catch (e) {
-      if (e instanceof ApiError && e.httpStatus !== 401) toast.error(e.message);
+      const message = apiErrorMessage(e);
+      if (message) toast.error(message);
     } finally {
       setSavingNickname(false);
     }

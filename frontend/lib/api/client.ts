@@ -1,6 +1,9 @@
-import { ApiError, Result } from "@/types/api";
+import type { Result } from "@/types/api";
+import { ApiError } from "@/lib/api/api-error";
 import { readPublicConfig } from "@/lib/config/public-config";
 import { getToken, useAuthStore } from "@/lib/auth/token-store";
+
+export { ApiError } from "@/lib/api/api-error";
 
 type Method = "GET" | "POST";
 
@@ -57,14 +60,14 @@ export async function request<T>(
     throw new ApiError(40100, "请先登录", 401);
   }
   if (resp.status === 429) {
-    throw new ApiError(42900, "请求过于频繁，请稍后再试", 429);
+    throw new ApiError(42900, "操作过于频繁", 429);
   }
 
   let body: Result<T>;
   try {
     body = (await resp.json()) as Result<T>;
   } catch {
-    throw new ApiError(0, "响应格式异常", resp.status);
+    throw new ApiError(0, "网络异常，请稍后重试", resp.status);
   }
 
   if (body.code !== 0) {

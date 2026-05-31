@@ -6,9 +6,9 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
+import { apiErrorMessage } from "@/lib/api/errors";
 import { productApi } from "@/lib/api/product";
 import { useAuthStore } from "@/lib/auth/token-store";
-import { ApiError } from "@/types/api";
 
 export function BuyButton({
   productId,
@@ -36,11 +36,8 @@ export function BuyButton({
       await refreshPoints();
       router.push(`/orders/${res.orderId}`);
     } catch (e) {
-      if (e instanceof ApiError) {
-        if (e.httpStatus !== 401) toast.error(e.message);
-      } else {
-        toast.error("网络异常，请稍后重试");
-      }
+      const message = apiErrorMessage(e, "兑换失败");
+      if (message) toast.error(message);
     } finally {
       setSubmitting(false);
     }
