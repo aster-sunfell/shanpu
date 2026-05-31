@@ -210,7 +210,7 @@ CMD ["node", "server.js"]
 `mysql/init/` 下两个脚本由 `mysql:8.0` 镜像在首次启动时自动执行：
 
 - `01_schema.sql`：DDL（与 `docs/BACKEND.md` 第 10 节一致），创建 `t_user / t_product / t_order / t_point_log` 四张表。
-- `02_seed.sql`：写入 5 个普通商品种子数据（`id` 1~5、`status=1`，其中一个商品库存为 10 供并发防超卖验收）；用户通过注册接口创建。
+- `02_seed.sql`：写入测试用户 `summer`（密码 `123456`，初始积分 10000，带注册赠送积分流水）与 5 个普通商品种子数据（`id` 1~5、`status=1`，其中一个商品库存为 10 供并发防超卖验收）。
 
 两个脚本均以 `SET NAMES utf8mb4;` 开头：`mysql:8.0` 镜像内的 `mysql` 客户端默认 `character_set_client=latin1`，`docker-entrypoint-initdb.d` 按该默认连接导入 UTF-8 脚本，缺少显式声明会把中文按 latin1 双重编码后落库。`SET NAMES utf8mb4` 将导入会话的 client / connection / results 字符集对齐到 utf8mb4，保证种子数据与列注释中的中文按原字节写入。
 
@@ -264,7 +264,7 @@ docker compose ps
 # 4. 浏览器访问
 open http://localhost:3000
 
-# 5. 访问页面后通过注册接口创建账号
+# 5. 使用测试账号 summer / 123456 登录，或通过注册接口创建账号
 ```
 
 ### 6.1 停止与重置

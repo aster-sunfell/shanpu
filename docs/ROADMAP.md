@@ -35,7 +35,7 @@
 
 - 根目录 `docker-compose.yml` 编排 mysql / redis / backend / frontend 四个服务，前两个声明 `deploy.resources.limits`，backend 与 frontend 通过 healthcheck 串联 `depends_on` 启动顺序。
 - 根目录 `.env.example` 包含 `MYSQL_ROOT_PASSWORD` / `MYSQL_DATABASE` / `REDIS_PASSWORD` / `JWT_SECRET` 凭据与 `MYSQL_PORT` / `REDIS_PORT` / `BACKEND_PORT` / `FRONTEND_PORT` / `PUBLIC_API_HOST` 端口主机配置。
-- `mysql/init/01_schema.sql` 仅含 `t_user` / `t_point_log`、`mysql/init/02_seed.sql` 空；MySQL 与 Redis 运行参数写在 `docker-compose.yml` 的对应服务 `command` 中。
+- `mysql/init/01_schema.sql` 创建 `t_user` / `t_point_log`，`mysql/init/02_seed.sql` 写入测试用户 `summer`（密码 `123456`，初始积分 10000，带注册赠送积分流水）；MySQL 与 Redis 运行参数写在 `docker-compose.yml` 的对应服务 `command` 中。
 
 **交付**：
 
@@ -61,7 +61,7 @@
 **后端**：
 
 - 数据表：`t_product`、`t_order`。
-- 种子数据：5 个普通商品，库存与价格遵循 [DEPLOYMENT.md §5.1](./DEPLOYMENT.md)。
+- 种子数据：5 个普通商品，库存与价格遵循 [DEPLOYMENT.md §5.1](./DEPLOYMENT.md)；初始化用户数据由 M1 的 `02_seed.sql` 提供。
 - 业务代码：`ProductController`、`ProductService(Impl)`、`OrderController`、`OrderService(Impl)`、`ProductMapper`、`OrderMapper`、相关 DTO/VO/枚举。
 - 商品接口：`GET /api/products`、`GET /api/products/{id}`。
 - 普通下单接口：`POST /api/products/{id}/order`。
