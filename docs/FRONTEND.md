@@ -87,6 +87,7 @@ frontend/
 ├── hooks/
 │   ├── use-auth.ts
 │   ├── use-countdown.ts
+│   ├── use-seckill-result.ts
 │   └── use-public-config.ts
 └── types/
     ├── api.ts              # Result<T> 泛型
@@ -108,7 +109,7 @@ frontend/
 | `/login` | Client | 否 | 用户名 + 密码登录表单 |
 | `/register` | Client | 否 | 注册表单 |
 | `/orders` | Client | 是 | 我的订单列表，状态 tab 切换 |
-| `/orders/[id]` | Client | 是 | 订单详情，超级秒杀订单在此轮询直到 PAID |
+| `/orders/[id]` | Client | 是 | 订单详情，超级秒杀订单在此轮询直到 `PAID` / `CANCELLED` / 次数上限 |
 | `/me` | Client | 是 | 个人中心，展示用户名、可编辑昵称、积分；进入页面自动同步积分余额 |
 
 需要鉴权的页面在 `app/(authed)/layout.tsx` 或页面顶部包裹 `<AuthGuard>`，未登录跳转 `/login?next=<encoded>`。
@@ -169,7 +170,7 @@ type AuthState = {
 
 - React Context 在跨页面共享登录态时频繁触发整树重渲染，Zustand 提供 `useStore(selector)` 细粒度订阅。
 - 体积约 1KB，远低于 Redux Toolkit，上手成本最低。
-- 业务数据（商品列表、订单列表）**不进 Zustand**，由 RSC fetch 或客户端组件按需 fetch；超级秒杀订单等待逻辑由订单详情页的局部 `useEffect` 维护，无需全局 store。
+- 业务数据（商品列表、订单列表）由 RSC fetch 或客户端组件按需 fetch；Zustand 仅维护登录态；超级秒杀订单等待逻辑由 `use-seckill-result` 在订单详情页局部维护，保持页面局部状态。
 
 ## 7. HTTP 客户端
 
@@ -277,7 +278,7 @@ export const userApi = {
 | `/products` | `GET /api/products?page=&size=` |
 | `/products/[id]` | `GET /api/products/{id}`；下单按钮 `POST /api/products/{id}/order` |
 | `/seckill` | `GET /api/seckills`（可附带 `tier` 过滤） |
-| `/seckill/[id]` | `GET /api/seckills/{id}`；抢购按钮 `POST /api/seckills/{id}/grab`，按响应 `status` 分流：`'PAID'` 直接 `toast.success('抢购成功')` + 刷新积分 + `router.push('/orders/'+orderId)`；`'PENDING'` 直接 `router.push('/orders/'+orderId)`，订单详情页执行短间隔查询等待订单落库 |
+| `/seckill/[id]` | `GET /api/seckills/{id}`；抢购按钮 `POST /api/seckills/{id}/grab`，按响应 `status` 分流：`'PAID'` 直接 `toast.success('抢购成功')` + 刷新积分 + `router.push('/orders/'+orderId)`；`'PENDING'` 直接 `router.push('/orders/'+orderId)`，订单详情页执行 1 秒间隔、最多 10 次查询等待订单落库 |
 | `/login` | `POST /api/users/login` |
 | `/register` | `POST /api/users/register` |
 | `<SiteHeader>` 登出按钮 | `POST /api/users/logout` |
@@ -285,11 +286,11 @@ export const userApi = {
 | `/orders/[id]` | `GET /api/orders/{orderId}`（仅超级档需要轮询） |
 | `/me` | `GET /api/users/me`、`GET /api/users/me/points`；昵称保存调用 `POST /api/users/me/nickname` |
 
-商品详情通过 `loading.tsx` 展示骨架屏；商品不存在时展示稳定空态，后端或网络异常时展示可刷新错误态。订单详情使用 `loading / missing / error / ready` 四类状态，错误态保留返回订单列表入口。登录、注册、普通商品下单按钮在提交中禁用并显示提交中文案。
+商品详情通过 `loading.tsx` 展示骨架屏；商品不存在时展示稳定空态，后端或网络异常时展示可刷新错误态。订单详情使用 `loading / missing / error / ready` 四类状态，错误态保留返回订单列表入口，超级秒杀待确认状态达到轮询上限后展示手动刷新入口。登录、注册、普通商品下单按钮在提交中禁用并显示提交中文案。
 
 ## 10. 超级秒杀异步轮询
 
-`seckillApi.grab(id)` 返回 `status === 'PENDING'`（即超级档 `tier=3`）后直接跳转订单详情。订单详情页先对初始 `40400` 做 1 秒间隔、最多 5 次的短暂重试，覆盖 Kafka 消费尚未落库的窗口；订单存在且状态仍为 `PENDING` 时继续每秒刷新详情，直到状态转为 `PAID` 或页面卸载。
+`seckillApi.grab(id)` 返回 `status === 'PENDING'`（即超级档 `tier=3`）后直接跳转订单详情。`use-seckill-result` 对初始 `40400` 与订单 `PENDING` 状态统一按 1 秒间隔查询，最多 10 次；状态转为 `PAID` 后停止轮询并强制刷新 `/api/users/me/points`，状态转为 `CANCELLED` 后停止轮询并展示失败状态，达到次数上限仍为 `PENDING` 时展示手动刷新入口。
 
 后端 `/api/orders/{orderId}` 命中 30 秒用户级缓存，单用户单订单的最大 QPS 不会击穿到 DB。
 
@@ -330,3 +331,4 @@ export const userApi = {
 - 登录态持久化基于 `localStorage`，刷新页面不丢登录。
 - 个人中心积分徽标 5 秒内复用内存缓存，减少重复 `/api/users/me/points` 请求。
 - 秒杀按钮在前端做一次轻量节流（按下后 1 秒禁用），减轻服务端限流压力。
+- 小屏布局以单栏为基准：header 自动换行，商品列表一列展示，秒杀与订单列表内容纵向排布，按钮和徽标允许换行。

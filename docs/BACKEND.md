@@ -105,6 +105,7 @@ backend/
     ├── mapper/
     └── lua/
         ├── seckill.lua
+        ├── seckill-rollback.lua
         └── rate-limit.lua
 ```
 
@@ -550,15 +551,18 @@ public OrderVO grab(long activityId);
 
 ```lua
 -- KEYS[1] = stock  KEYS[2] = bought  ARGV[1] = userId
-redis.call('INCR', KEYS[1])
-redis.call('SREM', KEYS[2], ARGV[1])
-return 1
+local removed = redis.call('SREM', KEYS[2], ARGV[1])
+if removed == 1 then
+    redis.call('INCR', KEYS[1])
+end
+return removed
 ```
 
 调用时机：
 
 - 限时档 `executeSyncOrder` 抛异常导致事务回滚后，`grabFlash` 在 `catch` 中调用回滚脚本，再抛 `BusinessException` 给上层。
 - 超级档 `kafkaTemplate.send().get(3s)` 失败后，`grabSuper` 在 `catch` 中调用回滚脚本，再抛 `BusinessException(INTERNAL_ERROR)`。
+- 回滚脚本以 `bought` 集合成员作为幂等门，只有实际移除已购用户时才回补库存。
 
 普惠档事务回滚由 MySQL 自身处理，不涉及 Redis 回补。
 
@@ -686,12 +690,34 @@ DefaultErrorHandler errorHandler = new DefaultErrorHandler(
 
 | 任务                | Cron            | 行为                                                                                                                                                                                                                                                                                                                       | 幂等性                                                |
 | ------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `OrderTimeoutJob`   | `0 */1 * * * *` | 扫描 `t_order` 中 `status=PENDING_PAY` 且 `created_at < now - 15min` 的订单 → 设 `status=CANCELLED`；秒杀订单同时回补 Redis 库存（`INCR`）与移除已购集合（`SREM`）                                                                                                                                                         | 状态机：只有 `PENDING_PAY` 才被改写，重复执行无副作用 |
+| `OrderTimeoutJob`   | `0 */1 * * * *` | 扫描 `t_order` 中 `status=PENDING_PAY` 且 `created_at < now - 15min` 的订单 → 条件更新为 `CANCELLED`；限时 / 超级秒杀订单调用回滚 Lua 回补 Redis 库存与移除已购集合；清理对应用户订单详情缓存                                                                                                                              | 状态机：只有 `PENDING_PAY` 才被改写；回滚 Lua 以 `SREM` 结果保证重复执行无副作用 |
 | `KafkaDlqRescueJob` | `0 */1 * * * *` | 扫描 `t_order_dlq_log.status=0` 的 DLQ 记录，反序列化 payload 后回投主 Topic；成功标记已回投，失败累加 `fail_count`，达到 5 次标记错误并写 ERROR 日志                                                                                                                                                                     | 主流程 `INSERT IGNORE` 保证不重复落单                 |
 | `StockReconcileJob` | `0 */5 * * * *` | 对每个进行中或刚结束的限时 / 超级活动读取 MySQL 剩余库存 `activity.total_stock` 与 Redis 库存；`Redis 库存 > MySQL 剩余库存` 时 `SET shanpu:seckill:stock:{id}` 修复并写 ERROR 日志                                                                                                                                       | 修复操作幂等（SET 覆写到正确值）                      |
-| `SeckillWarmupJob`  | `0 */1 * * * *` | 扫描未来 60 分钟内开始的活动：库存用 `SETNX` 写入（已存在不覆盖）、活动详情按逻辑过期写入                                                                                                                                                                                                                                  | SETNX + 覆盖写，幂等                                  |
+| `SeckillWarmupJob`  | `0 */1 * * * *` | 扫描未来 60 分钟内开始的活动：库存用 `SETNX` 写入、活动详情按逻辑过期写入                                                                                                                                                                                                                                                  | SETNX + 覆盖写，幂等                                  |
+| `OrderReconcileJob` | `0 */5 * * * *` | 扫描 `PAID` 订单中缺少 `biz_type=2` 消费流水的记录，按当前用户积分余额补写 `t_point_log` 并输出 ERROR 对账日志                                                                                                                                                                                                              | 写入前再次检查 `biz_type + biz_ref`，单实例调度下幂等 |
 
 `StockReconcileJob` 自动修复仅在 `Redis > 应有库存` 方向触发——这是消息丢失或 Redis 数据丢失的明确信号；反向差异交给消费在途自然收敛。
+
+所有兜底任务均暴露 `runOnce()`，定时调度与手动触发接口复用同一实现。手动触发接口返回：
+
+```java
+public class JobRunVO {
+    private String job;
+    private long scanned;
+    private long succeeded;
+    private long failed;
+}
+```
+
+DLQ 统计接口返回：
+
+```java
+public class DlqStatsVO {
+    private long pending;
+    private long republished;
+    private long error;
+}
+```
 
 ## 10. MySQL DDL
 
@@ -981,6 +1007,19 @@ public class SeckillOrderMsg {
 | GET  | `/api/health` | 否   | `{ status: "UP", mysql: "UP", redis: "UP", kafka: "UP" }` |
 
 `/api/health` 探测 MySQL（`SELECT 1`）、Redis（`PING`）与 Kafka（AdminClient `describeCluster`），供 Docker `depends_on: condition: service_healthy` 使用。任一依赖 `DOWN`，整体 `status` 转为 `DOWN`。
+
+### 13.6 管理任务
+
+管理任务接口沿用 JWT 登录态鉴权，鉴权粒度与普通登录态接口一致。所有手动触发接口返回 `JobRunVO`，DLQ 统计接口返回 `DlqStatsVO`。
+
+| 方法 | 路径 | 鉴权 | 响应 data |
+| ---- | ---- | ---- | --------- |
+| POST | `/api/admin/jobs/order-timeout/run` | 是 | `{ job, scanned, succeeded, failed }` |
+| POST | `/api/admin/jobs/dlq-rescue/run` | 是 | `{ job, scanned, succeeded, failed }` |
+| POST | `/api/admin/jobs/stock-reconcile/run` | 是 | `{ job, scanned, succeeded, failed }` |
+| POST | `/api/admin/jobs/seckill-warmup/run` | 是 | `{ job, scanned, succeeded, failed }` |
+| POST | `/api/admin/jobs/order-reconcile/run` | 是 | `{ job, scanned, succeeded, failed }` |
+| GET  | `/api/admin/jobs/dlq/stats` | 是 | `{ pending, republished, error }` |
 
 ## 14. 设计取舍
 
