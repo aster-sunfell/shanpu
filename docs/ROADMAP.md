@@ -131,7 +131,7 @@
 
 **后端**：
 
-- 数据表：`t_seckill_activity`（含 `tier` 列与 `idx_tier_status` 索引）、`t_order_dlq_log`。
+- 数据表：`t_seckill_activity`（含 `tier` 列与 `idx_tier_status` 索引）、`t_order_dlq_log`（保存 payload、失败次数、状态、最后失败时间、回投时间）。
 - 种子数据：9 条三档秒杀活动，普惠 `1001/1002/1003`、限时 `2001/2002/2003`、超级 `3001/3002/3003`。
 - Lua 脚本：`seckill.lua`、`seckill-rollback.lua`。
 - `SeckillController` 提供统一 `/grab` 入口。
@@ -140,7 +140,7 @@
 - 限时档：Redis + Lua 预扣库存 + 同步事务落库。
 - 超级档：Redis + Lua 预扣库存 + Kafka 异步落库，响应 `PENDING`。
 - `SeckillActivityMapper`、`SeckillProducer`、`SeckillConsumer`、`KafkaConfig`、`KafkaTopics`、`SeckillOrderMsg`。
-- `SeckillWarmupJob`、`StockReconcileJob`。
+- `SeckillWarmupJob`、`StockReconcileJob`、`KafkaDlqRescueJob`。
 - 秒杀接口：`GET /api/seckills`、`GET /api/seckills/{id}`、`POST /api/seckills/{id}/grab`。
 - `/api/health` 增加 Kafka 状态。
 
@@ -165,7 +165,7 @@
 - `SeckillWarmupJob` 在活动开始前 60 分钟内写入活动缓存；限时与超级档写入 Redis 库存与已购集合。
 - `/api/health` 返回 `kafka=UP`。
 - 浏览器可浏览三档秒杀活动，徽标严格按响应 `tier` 渲染；普惠与限时成功后进入 `PAID` 订单；超级成功后进入待确认订单详情；重复抢购、售罄、未开始、已结束均显示对应提示。
-- 文档：BACKEND.md 第 7、8、9（warmup/reconcile）、10（`t_seckill_activity`）、12、13.3 节与 FRONTEND.md 秒杀页面、组件、API 映射内容落地完成。
+- 文档：BACKEND.md 第 7、8、9（warmup/reconcile/DLQ rescue）、10（`t_seckill_activity` / `t_order_dlq_log`）、12、13.3 节与 FRONTEND.md 秒杀页面、组件、API 映射内容落地完成。
 
 **前置依赖**：M3 完成。
 
@@ -176,8 +176,8 @@
 **后端**：
 
 - `OrderTimeoutJob` 处理超时未支付与异常待处理订单。
-- `KafkaDlqRescueJob` 处理 DLQ 消息回投与失败次数记录。
-- 超级秒杀消费链路补齐幂等、补偿与错误记录。
+- DLQ 回投链路补充手动触发、统计指标与告警出口。
+- 超级秒杀消费链路补强异常待处理订单与对账记录。
 - 订单状态与积分流水对账补强。
 - 兜底任务支持手动触发与定时调度。
 
@@ -202,7 +202,7 @@
 - 关闭后端 8080，前端任意业务操作均提示网络异常且页面稳定。
 - 手动注入 `status=PENDING_PAY`、`created_at = now - 20min` 的订单后，1 分钟内被 `OrderTimeoutJob` 改为 `CANCELLED`；秒杀订单同步回补 Redis 库存并移除已购用户。
 - 同一用户对秒杀活动 1 秒内连续点击 6 次抢购按钮，前端提示“操作过于频繁”。
-- 文档：FRONTEND.md 全章节内容落地完成；BACKEND.md 第 9 节中 `OrderTimeoutJob`、`KafkaDlqRescueJob` 内容落地完成。
+- 文档：FRONTEND.md 全章节内容落地完成；BACKEND.md 第 9 节中 `OrderTimeoutJob` 与兜底任务补强内容落地完成。
 
 **前置依赖**：M4 完成。
 
@@ -231,14 +231,14 @@
   5 分钟内所有服务健康，`docker compose ps` 全部 `healthy`（k6 仅在 `loadtest` profile 中按需拉起，不参与默认健康检查）。
 - 浏览器访问 `http://localhost:3000` 可完成 M5 全部端到端流程。
 - 修改 `PUBLIC_API_HOST` 或 `BACKEND_PORT` 后，重启 frontend 容器即可生效。
-- 执行 `bash scripts/k6-run.sh` 后，四个场景全部跑完，`load/reports/<timestamp>/` 生成 4 份 JSON 摘要。
+- 执行 `bash scripts/k6-run.sh` 后，四个场景全部跑完，`load/reports/<timestamp>/` 生成 4 份 JSON 摘要；A/B/C 摘要包含 `success_req_duration` 与 `order_success_total`。
 - 三场景压测后 SQL 验证无超卖：
   - `SELECT COUNT(*) FROM t_order WHERE source=2 AND activity_id=1001` 不超过压测注入库存。
   - `SELECT COUNT(*) FROM t_order WHERE source=3 AND activity_id=2001` 不超过压测注入库存。
   - `SELECT COUNT(*) FROM t_order WHERE source=4 AND activity_id=3001` 不超过压测注入库存。
 - 压测峰值 `docker stats` 抓拍：backend、mysql、kafka 每服务内存使用不超过 `deploy.resources.limits.memory` 的 90%，无 OOM Kill。
 - 场景 C 压测结束后，超级档订单数与积分流水数一致，验证消息链路无丢失、无重复扣积分。
-- 三场景吞吐与延迟呈预期梯度：普惠档受 MySQL 单行锁限制；限时档通过 Redis + Lua 降低库存争用；超级档接口响应不包含 DB 落库开销，尾延迟最低。
+- 三场景固定 `100 VU / 30s` 的成功请求吞吐与延迟呈预期梯度：普惠档受 MySQL 单行锁限制；限时档通过 Redis + Lua 降低库存争用；超级档接口响应不包含 DB 落库开销，尾延迟最低。
 - 场景 D 双轮对比验证活动详情 L1 + L2 缓存收益：活动本地缓存命中率不低于 0.95，活动接口 p99 下降不低于 60%，活动 Key Redis `GET` ops/s 下降不低于 95%，商品接口两轮 p99 偏差不超过 5%。
 - 文档：DEPLOYMENT.md 全章节内容落地完成；ROADMAP 压测对比表与缓存层级对比表填入实测数据。
 
@@ -246,15 +246,15 @@
 
 ### 压测对比表
 
-| 场景 | 接口 | VU 峰值 | 平均 RPS | p50 (ms) | p95 (ms) | p99 (ms) | HTTP 错误率 | 业务错误率 | 成功订单数 | 超卖 | 瓶颈观察 |
+| 场景 | 接口 | 压力模型 | 成功 RPS | 成功 p50 (ms) | 成功 p95 (ms) | 成功 p99 (ms) | HTTP 错误率 | 业务错误率 | 成功订单数 | 超卖 | 瓶颈观察 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| A 普惠（tier=1） | `POST /api/seckills/1001/grab` | 100 |  |  |  |  |  |  | ≤500 | 否 | DB 单行 `id=1001` 行锁串行化 |
-| B 限时（tier=2） | `POST /api/seckills/2001/grab` | 100 |  |  |  |  |  |  | ≤500 | 否 | DB 行锁（Redis 减负后落库仍同步） |
-| C 超级（tier=3） | `POST /api/seckills/3001/grab` | 100 |  |  |  |  |  |  | ≤500 | 否 | Kafka producer send ack 延迟 |
+| A 普惠（tier=1） | `POST /api/seckills/1001/grab` | 100 VU / 30s |  |  |  |  |  |  | ≤20000 | 否 | DB 单行 `id=1001` 行锁串行化 |
+| B 限时（tier=2） | `POST /api/seckills/2001/grab` | 100 VU / 30s |  |  |  |  |  |  | ≤20000 | 否 | DB 行锁（Redis 减负后落库仍同步） |
+| C 超级（tier=3） | `POST /api/seckills/3001/grab` | 100 VU / 30s |  |  |  |  |  |  | ≤20000 | 否 | Kafka producer send ack 延迟 |
 
-业务错误率 = `(seckill_duplicate_total + seckill_sold_out_total) / iterations`，独立于 HTTP 错误率。成功订单数上限 500 = 一人一单约束 × 500 压测用户池。
+成功 RPS 取自 `order_success_total / 30s`，成功延迟取自 `success_req_duration`。业务错误率 = `(seckill_duplicate_total + seckill_sold_out_total) / iterations`，独立于 HTTP 错误率。A/B/C 正式横向对比使用 20000 压测用户与 20000 压测库存，成功订单数上限由一人一单约束与压测库存共同限定。
 
-测试硬件、Docker 资源限制、统一 VU 阶梯、瓶颈观察源记录在 `load/reports/<timestamp>/README.md`。
+测试硬件、Docker 资源限制、固定 100 VU 参数、瓶颈观察源记录在 `load/reports/<timestamp>/README.md`。
 
 ### 缓存层级对比表
 
