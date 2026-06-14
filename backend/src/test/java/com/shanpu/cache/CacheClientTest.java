@@ -45,7 +45,7 @@ class CacheClientTest {
         valueOperations = mock(ValueOperations.class);
         objectMapper = new ObjectMapper();
         objectMapper.registerModule(new JavaTimeModule());
-        cacheClient = new CacheClient(redisTemplate, objectMapper);
+        cacheClient = new CacheClient(redisTemplate, objectMapper, new ActivityLocalCache(new ActivityLocalCacheProperties()));
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
     }
 
@@ -148,6 +148,35 @@ class CacheClientTest {
         ArgumentCaptor<String> jsonCaptor = ArgumentCaptor.forClass(String.class);
         verify(valueOperations).set(eq("shanpu:test:1"), jsonCaptor.capture());
         assertTrue(jsonCaptor.getValue().contains("\"name\":\"fresh\""));
+    }
+
+    @Test
+    void queryWithLogicalExpire_activityLocalCacheHit_skipsRedisAfterFirstRead() throws Exception {
+        RedisData redisData = RedisData.builder()
+                .expireTime(LocalDateTime.now().plusMinutes(1))
+                .data(new TestValue(1L, "activity"))
+                .build();
+        when(valueOperations.get("shanpu:seckill:activity:1"))
+                .thenReturn(objectMapper.writeValueAsString(redisData));
+
+        TestValue first = cacheClient.queryWithLogicalExpire(
+                "shanpu:seckill:activity:",
+                1L,
+                TestValue.class,
+                id -> new TestValue(id, "db"),
+                Duration.ofMinutes(5)
+        );
+        TestValue second = cacheClient.queryWithLogicalExpire(
+                "shanpu:seckill:activity:",
+                1L,
+                TestValue.class,
+                id -> new TestValue(id, "db"),
+                Duration.ofMinutes(5)
+        );
+
+        assertEquals("activity", first.getName());
+        assertEquals("activity", second.getName());
+        verify(valueOperations).get("shanpu:seckill:activity:1");
     }
 
     @Test

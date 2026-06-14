@@ -164,6 +164,27 @@ services:
       retries: 10
       start_period: 20s
 
+  k6:
+    image: grafana/k6:0.50.0
+    profiles:
+      - loadtest
+    working_dir: /load
+    entrypoint:
+      - k6
+    environment:
+      API_BASE: http://backend:8080/api
+      TOKEN_FILE: /load/.runtime/bench-tokens.txt
+    volumes:
+      - ./load:/load:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+
 volumes:
   mysql-data:
   redis-data:

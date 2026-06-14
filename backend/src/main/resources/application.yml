@@ -38,6 +38,12 @@ shanpu:
   snowflake:
     worker-id: 0
     datacenter-id: 0
+  cache:
+    local:
+      activity:
+        enabled: ${SHANPU_CACHE_LOCAL_ACTIVITY_ENABLED:true}
+        max-size: ${SHANPU_CACHE_LOCAL_ACTIVITY_MAX_SIZE:256}
+        expire-ms: ${SHANPU_CACHE_LOCAL_ACTIVITY_EXPIRE_MS:1000}
   kafka:
     consumer:
       enabled: true

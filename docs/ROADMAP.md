@@ -212,7 +212,7 @@
 
 **后端**：
 
-- 根目录 `docker-compose.yml` 在既有服务基础上追加 `k6` 服务（`grafana/k6:0.50`，`loadtest` profile，按需 `docker compose --profile loadtest run k6`）。
+- 根目录 `docker-compose.yml` 在既有服务基础上追加 `k6` 服务（`grafana/k6:0.50.0`，`loadtest` profile，按需 `docker compose --profile loadtest run k6`）。
 - 压测脚本：`load/lib/auth.js`、`load/scenario-a-inclusive.js`、`load/scenario-b-redis-sync.js`、`load/scenario-c-redis-kafka.js`、`load/scenario-d-cache-comparison.js`。
 - 辅助脚本：`scripts/dev-up.sh`、`scripts/seed-users.sh`、`scripts/k6-bench-reset.sh`、`scripts/k6-bench-restore.sh`、`scripts/k6-run.sh`。
 
@@ -231,7 +231,7 @@
   5 分钟内所有服务健康，`docker compose ps` 全部 `healthy`（k6 仅在 `loadtest` profile 中按需拉起，不参与默认健康检查）。
 - 浏览器访问 `http://localhost:3000` 可完成 M5 全部端到端流程。
 - 修改 `PUBLIC_API_HOST` 或 `BACKEND_PORT` 后，重启 frontend 容器即可生效。
-- 执行 `bash scripts/k6-run.sh` 后，四个场景全部跑完，`load/reports/<timestamp>/` 生成 4 份 JSON 摘要；A/B/C 摘要包含 `success_req_duration` 与 `order_success_total`。
+- 执行 `bash scripts/k6-run.sh` 后，四个场景全部跑完，控制台输出 A/B/C 压测对比 Markdown 表格与 D 缓存层级对比 Markdown 表格；A/B/C 口径包含 `success_req_duration` 与 `order_success_total`。
 - 三场景压测后 SQL 验证无超卖：
   - `SELECT COUNT(*) FROM t_order WHERE source=2 AND activity_id=1001` 不超过压测注入库存。
   - `SELECT COUNT(*) FROM t_order WHERE source=3 AND activity_id=2001` 不超过压测注入库存。
@@ -254,13 +254,11 @@
 
 成功 RPS 取自 `order_success_total / 30s`，成功延迟取自 `success_req_duration`。业务错误率 = `(seckill_duplicate_total + seckill_sold_out_total) / iterations`，独立于 HTTP 错误率。A/B/C 正式横向对比使用 20000 压测用户与 20000 压测库存，成功订单数上限由一人一单约束与压测库存共同限定。
 
-测试硬件、Docker 资源限制、固定 100 VU 参数、瓶颈观察源记录在 `load/reports/<timestamp>/README.md`。
+测试硬件、Docker 资源限制、固定 100 VU 参数、瓶颈观察源按 `scripts/k6-run.sh` 控制台输出与 Docker/Redis/SQL 校验记录填写。
 
 ### 缓存层级对比表
 
-`load/scenario-d-cache-comparison.js` 同一次压测内并行打两个 scenario：实验组 `activity_l1_l2` 调用 `GET /api/seckills/3001`，对照组 `product_l2_only` 调用 `GET /api/products/1`。两个 scenario 共享 VU 阶梯 0→50→100，持续 3 分钟。
-
-第 1 轮 `shanpu.cache.local.activity.enabled=true`，第 2 轮 `false`，中间重启应用并清理缓存。
+`scripts/k6-run.sh` 使用 `load/scenario-d-cache-comparison.js` 依次执行四轮：活动 L1 关闭、活动 L1 开启、商品对照关闭、商品对照开启。每轮固定 `100 VU / 30s`，通过 `/api/admin/cache/activity-local/enabled` 在同一后端进程内切换活动 L1，通过 `/api/admin/cache/activity-local/reset` 清理统计与条目。
 
 | 接口 | 缓存层级 | L1 状态 | 平均 RPS | p50 (ms) | p95 (ms) | p99 (ms) | Redis GET ops/s | L1 hitRate |
 |---|---|---|---|---|---|---|---|---|
@@ -269,7 +267,7 @@
 | `GET /api/products/1` | Redis | 开启 |  |  |  |  |  | — |
 | `GET /api/products/1` | Redis | 关闭 |  |  |  |  |  | — |
 
-Redis ops 取自 `redis-cli INFO commandstats` 两轮压测前后差分；L1 hitRate 取自 `GET /api/admin/cache/stats`。
+Redis ops 取自 `redis-cli INFO commandstats` 每轮压测前后差分；L1 hitRate 取自 `GET /api/admin/cache/stats`。
 
 ---
 
