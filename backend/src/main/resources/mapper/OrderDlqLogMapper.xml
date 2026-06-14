@@ -4,12 +4,52 @@
 <mapper namespace="com.shanpu.module.seckill.mapper.OrderDlqLogMapper">
 
     <insert id="upsert">
-        INSERT INTO t_order_dlq_log (order_id, fail_reason, fail_count, last_failed_at)
-        VALUES (#{orderId}, #{failReason}, 1, CURRENT_TIMESTAMP)
+        INSERT INTO t_order_dlq_log (order_id, payload, fail_reason, fail_count, status, last_failed_at)
+        VALUES (#{orderId}, #{payload}, #{failReason}, 1, 0, CURRENT_TIMESTAMP)
         ON DUPLICATE KEY UPDATE
+            payload = VALUES(payload),
             fail_reason = VALUES(fail_reason),
             fail_count = fail_count + 1,
-            last_failed_at = CURRENT_TIMESTAMP
+            status = 0,
+            last_failed_at = CURRENT_TIMESTAMP,
+            republished_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
     </insert>
+
+    <select id="selectPending" resultType="com.shanpu.module.seckill.domain.entity.OrderDlqLog">
+        SELECT id, order_id, payload, fail_reason, fail_count, status,
+               last_failed_at, republished_at, created_at, updated_at
+        FROM t_order_dlq_log
+        WHERE status = 0
+        ORDER BY last_failed_at ASC, id ASC
+        LIMIT #{limit}
+    </select>
+
+    <update id="markRepublished">
+        UPDATE t_order_dlq_log
+        SET status = 1,
+            republished_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+
+    <update id="incrementFailure">
+        UPDATE t_order_dlq_log
+        SET fail_reason = #{failReason},
+            fail_count = fail_count + 1,
+            last_failed_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+
+    <update id="markError">
+        UPDATE t_order_dlq_log
+        SET status = 2,
+            fail_reason = #{failReason},
+            fail_count = #{failCount},
+            last_failed_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
 
 </mapper>

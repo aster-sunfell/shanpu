@@ -84,9 +84,15 @@ CREATE TABLE t_point_log (
 CREATE TABLE t_order_dlq_log (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   order_id VARCHAR(32) NOT NULL,
+  payload JSON NOT NULL COMMENT 'SeckillOrderMsg JSON payload',
   fail_reason VARCHAR(512) NOT NULL,
   fail_count INT NOT NULL DEFAULT 1,
+  status TINYINT NOT NULL DEFAULT 0 COMMENT '0待回投 1已回投 2错误',
   last_failed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  republished_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_order_id (order_id)
+  UNIQUE KEY uk_order_id (order_id),
+  KEY idx_status_failed (status, last_failed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

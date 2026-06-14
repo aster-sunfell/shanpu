@@ -41,6 +41,11 @@ shanpu:
   kafka:
     consumer:
       enabled: true
+    dlq-rescue:
+      enabled: true
+      cron: "0 */1 * * * *"
+      max-fail-count: 5
+      batch-size: 50
 
 mybatis:
   mapper-locations: classpath:mapper/*.xml

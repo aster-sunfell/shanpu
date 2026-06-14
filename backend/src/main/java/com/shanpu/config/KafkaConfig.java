@@ -44,7 +44,8 @@ public class KafkaConfig {
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
                 kafkaTemplate,
                 (record, ex) -> {
-                    orderDlqLogService.record(String.valueOf(record.key()), ex.getMessage());
+                    SeckillOrderMsg payload = record.value() instanceof SeckillOrderMsg msg ? msg : null;
+                    orderDlqLogService.record(String.valueOf(record.key()), payload, ex.getMessage());
                     return new TopicPartition(KafkaTopics.SECKILL_ORDER_DLQ, 0);
                 });
         return new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3));
