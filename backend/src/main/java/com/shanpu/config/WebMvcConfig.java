@@ -22,7 +22,8 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         "/api/users/login",
                         "/api/products",
                         "/api/products/{id:[0-9]+}",
-                        "/api/seckills/**",
+                        "/api/seckills",
+                        "/api/seckills/{id:[0-9]+}",
                         "/api/health"
                 );
     }

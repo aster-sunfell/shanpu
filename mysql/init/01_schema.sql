@@ -30,6 +30,24 @@ CREATE TABLE t_product (
   KEY idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 秒杀活动
+CREATE TABLE t_seckill_activity (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  product_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(128) NOT NULL,
+  tier TINYINT NOT NULL COMMENT '1普惠 2限时 3超级',
+  seckill_price INT NOT NULL,
+  total_stock INT NOT NULL,
+  start_at DATETIME NOT NULL,
+  end_at DATETIME NOT NULL,
+  status TINYINT NOT NULL DEFAULT 0 COMMENT '0待开始 1进行中 2已结束',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_tier_status (tier, status),
+  KEY idx_status_start (status, start_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- 订单
 CREATE TABLE t_order (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -60,4 +78,21 @@ CREATE TABLE t_point_log (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_user_created (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- DLQ 失败日志
+CREATE TABLE t_order_dlq_log (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  order_id VARCHAR(32) NOT NULL,
+  payload JSON NOT NULL COMMENT 'SeckillOrderMsg JSON payload',
+  fail_reason VARCHAR(512) NOT NULL,
+  fail_count INT NOT NULL DEFAULT 1,
+  status TINYINT NOT NULL DEFAULT 0 COMMENT '0待回投 1已回投 2错误',
+  last_failed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  republished_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_order_id (order_id),
+  KEY idx_status_failed (status, last_failed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

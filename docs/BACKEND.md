@@ -33,7 +33,7 @@
 面向高并发秒杀场景的积分商城，核心解决秒杀链路的防超卖、流量削峰、热点缓存与最终一致问题。
 
 - **Redis + Lua 原子库存扣减**：将秒杀的库存校验、一人一单判断与预扣减压缩至单次 Lua 调用，绕开 MySQL 单行锁串行化瓶颈，**大幅降低尾延迟**。压测对比（100 VU 横向）：**平均吞吐 200 → 300 RPS（1.5×）**，**p99 500ms → 150ms（-70%）**。
-- **Kafka 异步削峰下单**：秒杀链路从同步事务落库升级为 Kafka 异步消费，接口 RT 不含 DB 写入开销，**显著降低成功请求的尾延迟**（同 VU 同载下吞吐贴近 B，价值在尾延迟而非纯吞吐）。压测对比（100 VU 横向）：**平均吞吐 300 → 350 RPS（1.17×）**，**p99 150ms → 80ms（-47%）**。
+- **Kafka 异步削峰下单**：秒杀链路从同步事务落库升级为 Kafka 异步消费，接口 RT 不含 DB 写入开销，**显著降低成功请求的尾延迟**。压测对比（100 VU 横向）：**平均吞吐 300 → 350 RPS（1.17×）**，**p99 150ms → 80ms（-47%）**。
 - **Caffeine（L1）+ Redis（L2）二级缓存**：为热点活动详情 Key 增设 Caffeine 本地缓存抗读，微秒级命中，减轻 Redis 单 Key 高 QPS 压力。压测对比：**活动接口 p99 15ms → 5ms（-67%）**，**L1 命中率 ≥ 95%**。
 - **缓存防穿透 + 防击穿组合**：商品访问采用"缓存空值占位"拦截恶意 ID 扫描，避免空查询直击 MySQL；活动访问采用"逻辑过期 + 后台异步重建"，避免缓存重建期间大量请求穿透到 MySQL。
 - **滑动窗口限流（ZSet + Lua + AOP）**：基于 Redis ZSet 实现原子滑动窗口，自定义 `@RateLimit` 注解支持 USER / IP / API 三维度，挂到登录、抢购等敏感接口，业务代码零侵入。
@@ -41,18 +41,18 @@
 
 #### 1.3.1 压测数据估算说明
 
-上述前三个亮点的压测数字为 M6 实跑前的**预估值**，实测数据待 M6 完成后以 `load/reports/<timestamp>/` JSON 摘要替换。预估推算依据如下。
+上述前三个亮点的压测数字为 M6 实跑前的**预估值**，实测数据待 M6 完成后以 `load/reports/<timestamp>/` JSON 摘要替换。A/B/C 三档秒杀横向对比采用固定 `100 VU / 30s`，配套 20000 压测用户与 20000 临时库存，报告口径取成功请求的 `order_success_total` 与 `success_req_duration`。
 
 **硬件假设**：宿主机 7.6 GiB WSL2 / 4 vCPU，Docker 资源限额遵循 [DEPLOYMENT.md §2.4](./DEPLOYMENT.md)；Redis 单实例本地部署，网络往返 ~0.5ms；Kafka 单节点 KRaft 同机部署，acks=1 写入磁盘 ~2-10ms。
 
 **场景 A vs B（亮点 1）**：
 
 - 场景 A 普惠：单事务包含 `UPDATE total_stock` + `UPDATE points` + `INSERT order` + `INSERT point_log` 四步，InnoDB 本地无 fsync 优化下事务平均 ~5ms；活动单行锁串行化将吞吐压在 ~200 RPS，100 VU 排队深度（≈ 2×Tomcat 线程上限）下 ⇒ p99 ≈ 500ms。
-- 场景 B 限时：Lua 扣减 ~0.5ms，库存售罄后的失败请求（重复购买 / 售罄）在 Lua 层 ~1ms 直接返回，100 VU 下平均 RPS ~300（由 Lua fail-fast 路径与 VU 共同决定）；命中事务路径的 p99 仍由 DB 写入延迟主导，但 100 VU 下 DB 排队远轻于 A ⇒ ~150ms。
+- 场景 B 限时：Lua 扣减 ~0.5ms，库存校验与一人一单判断前置到 Redis 原子脚本，DB 事务只承担最终库存扣减、扣积分、写订单与写积分流水；100 VU 下平均 RPS ~300，成功请求 p99 仍由 DB 写入延迟主导，但排队深度低于 A ⇒ ~150ms。
 
 **场景 B vs C（亮点 2）**：
 
-- 场景 C 超级：Lua 扣减后调 `kafkaTemplate.send().get(3s)`，本地单节点 KRaft `acks=1` 下 ack 延迟 ~2-10ms；接口 RT 不含 DB 落库（消费端异步），100 VU 下平均 RPS ~350（与 B 接近，因 fail-fast 路径相同；成功路径 Kafka send ~5ms 略短于 B 的 DB txn ~10ms 带来 ~17% 边际）；p99 由 Kafka producer ack 上限决定 ⇒ ~80ms。
+- 场景 C 超级：Lua 扣减后调 `kafkaTemplate.send().get(3s)`，本地单节点 KRaft `acks=1` 下 ack 延迟 ~2-10ms；接口 RT 不含 DB 落库（消费端异步），100 VU 下平均 RPS ~350（成功路径 Kafka send ~5ms 短于 B 的 DB txn ~10ms，带来 ~17% 边际）；p99 由 Kafka producer ack 上限决定 ⇒ ~80ms。
 
 **场景 D（亮点 3）**：
 
@@ -479,7 +479,7 @@ Caffeine `recordStats()` 暴露命中率与请求数；`GET /api/admin/cache/sta
 
 普惠档完全跳过 Redis 库存层，库存与一人一单全部由 MySQL 行锁与 `uk_user_activity` 唯一索引承担。
 
-本设计假设单场限时/超级活动的 `bought` 集合上界 ≤ 5000；超过需将 `bought` 改用 Bitmap（key 内按 userId 落位）以规避大 key 与 `SREM` 慢命令风险。
+本设计假设单场限时/超级活动的 `bought` 集合上界 ≤ 20000；超过需将 `bought` 改用 Bitmap（key 内按 userId 落位）以规避大 key 与 `SREM` 慢命令风险。
 
 ### 7.3 `seckill.lua`
 
@@ -564,35 +564,49 @@ return 1
 
 ### 7.6 档位热切换
 
-运营通过 `UPDATE t_seckill_activity SET tier = ? WHERE id = ?` 切换档位。任何切换必须同步执行缓存与库存初始化动作，确保下一次 `grab` 按数据库中的当前 tier 路由：
+运营通过 `UPDATE t_seckill_activity SET tier = ? WHERE id = ?` 切换档位。热切换入口为运维手工命令，流程固定为 SQL 更新、Redis 缓存处理、库存 Key 预热、`/grab` 验证，确保下一次抢购按数据库中的当前 tier 路由：
 
-**升级（1→2 / 1→3 / 2→3）**
+**升级为限时或超级档（1→2 / 1→3 / 2→3）**
 
 ```sql
 -- 例：1001 普惠升超级
 UPDATE t_seckill_activity SET tier = 3 WHERE id = 1001;
 ```
 
-随后必须依次调用：
+随后按活动 ID 处理 Redis：
 
-1. `CacheClient.evict(KEY_PREFIX_ACTIVITY, 1001)`：同步清 L1 Caffeine 与 L2 Redis，下一次详情查询回源 DB 拿到新 tier。
-2. `SeckillWarmupJob.warmupOne(1001)`：写入 `shanpu:seckill:stock:{1001}` 与 `shanpu:seckill:bought:{1001}`，`SETNX` 不覆盖已有值故幂等。
+```bash
+redis-cli DEL shanpu:seckill:activity:1001 shanpu:seckill:activity:lock:1001
+redis-cli DEL shanpu:seckill:stock:1001 shanpu:seckill:bought:1001
+redis-cli SET shanpu:seckill:stock:1001 <t_seckill_activity.total_stock>
+```
 
 下一次 `grab(1001)` 拿到 `tier=3` 走超级链路。
 
-**降级（3→2 / 3→1 / 2→1）**
+**降级为普惠或限时档（3→2 / 3→1 / 2→1）**
 
 ```sql
 UPDATE t_seckill_activity SET tier = 1 WHERE id = 3001;
 ```
 
-随后调用 `CacheClient.evict(...)` 即可。无需手动清理 Redis 残留的 `stock` 与 `bought` Key：
+随后按目标档位处理 Redis：
+
+```bash
+redis-cli DEL shanpu:seckill:activity:3001 shanpu:seckill:activity:lock:3001
+
+# 目标 tier=1
+redis-cli DEL shanpu:seckill:stock:3001 shanpu:seckill:bought:3001
+
+# 目标 tier=2
+redis-cli DEL shanpu:seckill:stock:3001 shanpu:seckill:bought:3001
+redis-cli SET shanpu:seckill:stock:3001 <t_seckill_activity.total_stock>
+```
 
 - 后续 `grab` 请求按当前 tier 路由，降级后的链路不读取这两个 Key。
 - 在途 Kafka 消息（已 `send` 但未消费）由 `SeckillConsumer` 处理时按消息体内携带的 `source` 字段落库，`source` 在 `grabSuper` 时已固化，不受 tier 后续变更影响。
 - Redis 残留 Key 由 `StockReconcileJob` 周期性维护，过期自然清理。
 
-切换动作由后台管理触发（教学版无 UI，运维直接 SQL + 调用 `/api/admin/cache/evict` 接口），不开放给前端用户。
+切换完成后使用新登录用户调用 `POST /api/seckills/{id}/grab` 验证返回：`tier=1/2` 对应 `PAID`，`tier=3` 对应 `PENDING`。
 
 ## 8. Kafka 设计
 
@@ -600,21 +614,21 @@ UPDATE t_seckill_activity SET tier = 1 WHERE id = 3001;
 
 - 单节点 KRaft 模式，进程同时担任 controller 与 broker。
 - 不开 SASL，部署在私网信任域内，10 人规模够用。
-- 副本因子 1，无 `min.insync.replicas`；消息持久化由容器卷 `kafka-data:/bitnami/kafka` 落盘承担。
+- 副本因子 1，无 `min.insync.replicas`；消息持久化由容器卷 `kafka-data:/var/lib/kafka/data` 落盘承担。
 - 单机宿主部署下"跨节点副本容错"无法落地（宿主死所有 broker 一起死），消息不丢由 Producer 幂等 + 同步 `send().get(3s)` + 回滚 Lua + Consumer `INSERT IGNORE` 幂等门 + DLQ + `StockReconcileJob` 对账六层兜底，详见 §14.4。
 
 ### 8.2 Topic
 
-| Topic                      | 分区 | 副本 | Key       | Value（JSON）                                                  |
-| -------------------------- | ---- | ---- | --------- | -------------------------------------------------------------- |
-| `shanpu.seckill.order`     | 3    | 1    | `orderId` | `{ orderId, userId, activityId, productId, price, createdAt }` |
-| `shanpu.seckill.order.dlq` | 1    | 1    | `orderId` | 原消息 + Header：`failReason`、`failCount`                     |
+| Topic                      | 分区 | 副本 | Key       | Value（JSON）                                                          |
+| -------------------------- | ---- | ---- | --------- | ---------------------------------------------------------------------- |
+| `shanpu.seckill.order`     | 3    | 1    | `orderId` | `{ orderId, userId, activityId, productId, price, source, createdAt }` |
+| `shanpu.seckill.order.dlq` | 1    | 1    | `orderId` | 原消息；失败详情同步保存在 `t_order_dlq_log`                           |
 
 ### 8.3 生产者
 
 | 配置                                    | 值                | 说明                                                    |
 | --------------------------------------- | ----------------- | ------------------------------------------------------- |
-| `acks`                                  | 1                 | leader 写入即返回（单 broker，与 `all` 等价）           |
+| `acks`                                  | all               | 幂等 Producer 要求所有 ISR ack；单 broker 下即 leader 写入 |
 | `enable.idempotence`                    | true              | broker 基于 producer epoch + 序列号去重内部重试         |
 | `retries`                               | Integer.MAX_VALUE | 配合幂等性，重试直到 `delivery.timeout.ms`              |
 | `max.in.flight.requests.per.connection` | 5                 | 幂等性允许的最大未确认请求数                            |
@@ -630,16 +644,17 @@ UPDATE t_seckill_activity SET tier = 1 WHERE id = 3001;
     topics = KafkaTopics.SECKILL_ORDER,
     groupId = "shanpu-seckill-consumer",
     containerFactory = "manualAckListenerContainerFactory",
-    concurrency = "3"
 )
-public void consume(ConsumerRecord<String, String> record, Acknowledgment ack);
+public void consume(ConsumerRecord<String, SeckillOrderMsg> record, Acknowledgment ack);
 ```
 
 消费逻辑封装在 `SeckillConsumer.handle(SeckillOrderMsg)` 中，单个本地事务完成：
 
-1. `INSERT IGNORE INTO t_order(...)`，依赖 `uk_order_id` 实现幂等。**若受影响行数为 0（订单已存在，本条为重投），直接 `ack.acknowledge()` 返回。**
-2. 扣减用户积分（行锁 `UPDATE t_user SET points = points - ? WHERE id = ? AND points >= ?`，受影响行数为 0 抛业务异常）。
-3. 写 `t_point_log` 流水。
+1. 先查 `uk_order_id`；订单已存在说明本条为重投，直接 `ack.acknowledge()` 返回。
+2. `INSERT IGNORE INTO t_order(...)`，依赖 `uk_order_id` 与 `uk_user_activity` 兜底幂等与一人一单。
+3. `UPDATE t_seckill_activity SET total_stock = total_stock - 1 WHERE id = ? AND total_stock > 0`，受影响行数为 0 抛 `STOCK_SHORTAGE`。
+4. 扣减用户积分（行锁 `UPDATE t_user SET points = points - ? WHERE id = ? AND points >= ?`，受影响行数为 0 抛业务异常）。
+5. 写 `t_point_log` 流水。
 
 成功后调用 `ack.acknowledge()`；抛异常则由 `DefaultErrorHandler` 处理。
 
@@ -654,12 +669,16 @@ public void consume(ConsumerRecord<String, String> record, Acknowledgment ack);
 ```java
 DefaultErrorHandler errorHandler = new DefaultErrorHandler(
     new DeadLetterPublishingRecoverer(kafkaTemplate,
-        (record, ex) -> new TopicPartition("shanpu.seckill.order.dlq", 0)),
+        (record, ex) -> {
+            SeckillOrderMsg payload = record.value() instanceof SeckillOrderMsg msg ? msg : null;
+            orderDlqLogService.record(String.valueOf(record.key()), payload, ex.getMessage());
+            return new TopicPartition("shanpu.seckill.order.dlq", 0);
+        }),
     new FixedBackOff(1000L, 3)   // 间隔 1s，重试 3 次
 );
 ```
 
-重试耗尽后消息进入 DLQ，`KafkaDlqRescueJob` 周期性拉回主 Topic。**当 `t_order_dlq_log.fail_count >= 5` 时停止该消息的重投并写 ERROR 日志**，依赖运维介入排查。
+重试耗尽后消息进入 DLQ，并同步写入 `t_order_dlq_log`：完整 `SeckillOrderMsg` payload、失败原因、失败次数、状态、最后失败时间。`KafkaDlqRescueJob` 每分钟扫描 `status=0` 的记录，反序列化 payload 后发回 `shanpu.seckill.order`；回投成功标记 `status=1` 并写入 `republished_at`，解析或发送失败累加 `fail_count`，达到 5 次标记 `status=2` 并输出 ERROR 日志。回投消息仍经过消费端 `uk_order_id`、`uk_user_activity` 与 `INSERT IGNORE` 幂等门，不会重复扣积分。
 
 ## 9. 定时任务
 
@@ -668,8 +687,8 @@ DefaultErrorHandler errorHandler = new DefaultErrorHandler(
 | 任务                | Cron            | 行为                                                                                                                                                                                                                                                                                                                       | 幂等性                                                |
 | ------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | `OrderTimeoutJob`   | `0 */1 * * * *` | 扫描 `t_order` 中 `status=PENDING_PAY` 且 `created_at < now - 15min` 的订单 → 设 `status=CANCELLED`；秒杀订单同时回补 Redis 库存（`INCR`）与移除已购集合（`SREM`）                                                                                                                                                         | 状态机：只有 `PENDING_PAY` 才被改写，重复执行无副作用 |
-| `KafkaDlqRescueJob` | `0 */5 * * * *` | 用一次性 Consumer 拉 DLQ → 重投主 Topic → 累加 `t_order_dlq_log` 失败计数；`fail_count >= 5` 时停止该条重投并写 ERROR 日志                                                                                                                                                                                                 | 主流程 `INSERT IGNORE` 保证不重复落单                 |
-| `StockReconcileJob` | `0 */5 * * * *` | 对每个进行中或刚结束的活动计算 `应有库存 = activity.total_stock - 已成功订单数`。`Redis 库存 < 应有库存`（消费在途的临时差异）跳过本轮等待下次确认；`Redis 库存 > 应有库存`（消息丢失/Redis 数据丢）`SET shanpu:seckill:stock:{id} = 应有库存` 修复并写 ERROR 日志，同步修复 `bought` 集合（移除非 DB 真实下单成功的用户） | 修复操作幂等（SET 覆写到正确值）                      |
+| `KafkaDlqRescueJob` | `0 */1 * * * *` | 扫描 `t_order_dlq_log.status=0` 的 DLQ 记录，反序列化 payload 后回投主 Topic；成功标记已回投，失败累加 `fail_count`，达到 5 次标记错误并写 ERROR 日志                                                                                                                                                                     | 主流程 `INSERT IGNORE` 保证不重复落单                 |
+| `StockReconcileJob` | `0 */5 * * * *` | 对每个进行中或刚结束的限时 / 超级活动读取 MySQL 剩余库存 `activity.total_stock` 与 Redis 库存；`Redis 库存 > MySQL 剩余库存` 时 `SET shanpu:seckill:stock:{id}` 修复并写 ERROR 日志                                                                                                                                       | 修复操作幂等（SET 覆写到正确值）                      |
 | `SeckillWarmupJob`  | `0 */1 * * * *` | 扫描未来 60 分钟内开始的活动：库存用 `SETNX` 写入（已存在不覆盖）、活动详情按逻辑过期写入                                                                                                                                                                                                                                  | SETNX + 覆盖写，幂等                                  |
 
 `StockReconcileJob` 自动修复仅在 `Redis > 应有库存` 方向触发——这是消息丢失或 Redis 数据丢失的明确信号；反向差异交给消费在途自然收敛。
@@ -761,11 +780,17 @@ CREATE TABLE t_point_log (
 CREATE TABLE t_order_dlq_log (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   order_id VARCHAR(32) NOT NULL,
+  payload JSON NOT NULL COMMENT 'SeckillOrderMsg JSON payload',
   fail_reason VARCHAR(512) NOT NULL,
   fail_count INT NOT NULL DEFAULT 1,
+  status TINYINT NOT NULL DEFAULT 0 COMMENT '0待回投 1已回投 2错误',
   last_failed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  republished_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_order_id (order_id)
+  UNIQUE KEY uk_order_id (order_id),
+  KEY idx_status_failed (status, last_failed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
@@ -776,6 +801,7 @@ CREATE TABLE t_order_dlq_log (
 - `t_seckill_activity.idx_tier_status`：运营按档位筛选活动用，亦可用于"列出某档全部进行中活动"查询。
 - `t_seckill_activity.idx_status_start`：`SeckillWarmupJob` 扫描即将开始的活动用。
 - `t_point_log.idx_user_created`：用户积分流水分页。
+- `t_order_dlq_log.idx_status_failed`：`KafkaDlqRescueJob` 按待回投状态与失败时间顺序扫描。
 
 ### `source` 与 `tier` 关系
 
@@ -866,7 +892,7 @@ Hutool `Snowflake` 检测到 `currentMs < lastMs` 直接抛 `IllegalStateExcepti
 | `shanpu:seckill:activity:{id}`         | String(JSON+RedisData) | 逻辑过期 10 分钟   | 秒杀活动详情（含 `tier` 字段），三档统一写入              |
 | `shanpu:seckill:activity:null:{id}`    | String("")             | 2 分钟             | 活动空值占位                                              |
 | `shanpu:seckill:stock:{activityId}`    | String(int)            | 活动 `end_at + 1h` | 秒杀剩余库存，仅 `tier=2/3` 写入；`tier=1` 普惠档无此 Key |
-| `shanpu:seckill:bought:{activityId}`   | Set                    | 活动 `end_at + 1h` | 已购用户 ID 集合，仅 `tier=2/3` 写入；单场上限 5000       |
+| `shanpu:seckill:bought:{activityId}`   | Set                    | 活动 `end_at + 1h` | 已购用户 ID 集合，仅 `tier=2/3` 写入；单场上限 20000      |
 | `shanpu:order:detail:user:{userId}:{orderId}` | String(JSON)   | 30 秒              | 订单详情用户级缓存，缓解轮询风暴；同 Key 空字符串表示空值占位 |
 | `shanpu:order:detail:lock:user:{userId}:{orderId}` | String        | 10 秒              | 订单详情互斥重建锁                                        |
 | `shanpu:rate:user:{userId}:{methodSig}` | ZSet                  | window             | 用户维度限流                                              |
@@ -881,8 +907,8 @@ Hutool `Snowflake` 检测到 `currentMs < lastMs` 直接抛 `IllegalStateExcepti
 
 | Topic                      | 分区 | 副本 | Key       | Header                    | Value                                                          |
 | -------------------------- | ---- | ---- | --------- | ------------------------- | -------------------------------------------------------------- |
-| `shanpu.seckill.order`     | 3    | 1    | `orderId` | -                         | `{ orderId, userId, activityId, productId, price, createdAt }` |
-| `shanpu.seckill.order.dlq` | 1    | 1    | `orderId` | `failReason`、`failCount` | 同主 Topic 消息体                                              |
+| `shanpu.seckill.order`     | 3    | 1    | `orderId` | -                         | `{ orderId, userId, activityId, productId, price, source, createdAt }` |
+| `shanpu.seckill.order.dlq` | 1    | 1    | `orderId` | Spring Kafka DLT headers  | 同主 Topic 消息体；失败详情同步保存在 `t_order_dlq_log`                |
 
 消费组：`shanpu-seckill-consumer`。
 
@@ -895,6 +921,7 @@ public class SeckillOrderMsg {
     private Long activityId;
     private Long productId;
     private Integer price;        // 积分
+    private Integer source;       // 固化订单来源，超级档为 4
     private LocalDateTime createdAt;
 }
 ```
@@ -951,9 +978,9 @@ public class SeckillOrderMsg {
 
 | 方法 | 路径          | 鉴权 | 响应                                                                               |
 | ---- | ------------- | ---- | ---------------------------------------------------------------------------------- |
-| GET  | `/api/health` | 否   | `{ status: "UP", mysql: "UP", redis: "UP" }` |
+| GET  | `/api/health` | 否   | `{ status: "UP", mysql: "UP", redis: "UP", kafka: "UP" }` |
 
-`/api/health` 探测 MySQL（`SELECT 1`）与 Redis（`PING`），供 Docker `depends_on: condition: service_healthy` 使用。任一依赖 `DOWN`，整体 `status` 转为 `DOWN`。
+`/api/health` 探测 MySQL（`SELECT 1`）、Redis（`PING`）与 Kafka（AdminClient `describeCluster`），供 Docker `depends_on: condition: service_healthy` 使用。任一依赖 `DOWN`，整体 `status` 转为 `DOWN`。
 
 ## 14. 设计取舍
 
@@ -991,5 +1018,5 @@ public class SeckillOrderMsg {
 | 三档活动数据互相污染                   | 各场景使用独立 seed 活动 ID（1xxx 普惠 / 2xxx 限时 / 3xxx 超级），k6 setup 阶段重置对应库存与已购集合                                                                                                         |
 | 前端轮询订单造成接口风暴               | `/api/orders/{orderId}` 命中 30s 用户级缓存；超级档前端轮询 1s × 最多 10 次后改为手动刷新；普惠 / 限时档直接 PAID 无需轮询                                                                                    |
 | ThreadLocal 串号                       | `AuthInterceptor#afterCompletion` 强制 `UserContext.remove()`，覆盖异常分支                                                                                                                                   |
-| Redis 大 key                           | `t_product.description` 限长 `VARCHAR(4096)`；商品列表 VO 不携带 `description`；`shanpu:seckill:bought:{activityId}` 单场上限 5000，超过改 Bitmap                                                             |
-| 单 Key 高 QPS（热 Key）                | 活动详情 `shanpu:seckill:activity:{id}` 叠 Caffeine L1 抗读（详见 §6.5）；库存 / 已购集合 / 限流 ZSet 等强一致 RW Key 不进 L1；当前压测 200 VU 高峰 ≈ 400 ops/s，距 Redis 单节点能力余量 200×，不构成真实瓶颈 |
+| Redis 大 key                           | `t_product.description` 限长 `VARCHAR(4096)`；商品列表 VO 不携带 `description`；`shanpu:seckill:bought:{activityId}` 单场上限 20000，超过改 Bitmap                                                            |
+| 单 Key 高 QPS（热 Key）                | 活动详情 `shanpu:seckill:activity:{id}` 叠 Caffeine L1 抗读（详见 §6.5）；库存 / 已购集合 / 限流 ZSet 等强一致 RW Key 不进 L1；固定 100 VU 压测高峰按 C 场景预估约 350 RPS，距 Redis 单节点能力仍有充足余量 |

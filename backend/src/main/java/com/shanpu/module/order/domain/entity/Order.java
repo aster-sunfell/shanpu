@@ -12,6 +12,9 @@ import java.time.LocalDateTime;
 public class Order {
 
     public static final int SOURCE_NORMAL = 1;
+    public static final int SOURCE_SECKILL_INCLUSIVE = 2;
+    public static final int SOURCE_SECKILL_FLASH = 3;
+    public static final int SOURCE_SECKILL_SUPER = 4;
 
     public static final int STATUS_PENDING_PAY = 1;
     public static final int STATUS_PAID = 2;

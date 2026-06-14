@@ -53,7 +53,9 @@ frontend/
 │   │       └── buy-button.tsx
 │   ├── seckill/
 │   │   ├── page.tsx
-│   │   └── [id]/page.tsx
+│   │   └── [id]/
+│   │       ├── page.tsx
+│   │       └── grab-button.tsx
 │   ├── orders/
 │   │   ├── page.tsx
 │   │   └── [id]/page.tsx
@@ -64,6 +66,7 @@ frontend/
 │   ├── product-card.tsx
 │   ├── seckill-card.tsx
 │   ├── seckill-countdown.tsx
+│   ├── seckill-tier-badge.tsx
 │   ├── points-badge.tsx
 │   ├── order-status-badge.tsx
 │   ├── auth-guard.tsx
@@ -84,8 +87,7 @@ frontend/
 ├── hooks/
 │   ├── use-auth.ts
 │   ├── use-countdown.ts
-│   ├── use-public-config.ts
-│   └── use-seckill-result.ts
+│   └── use-public-config.ts
 └── types/
     ├── api.ts              # Result<T> 泛型
     ├── user.ts
@@ -102,7 +104,7 @@ frontend/
 | `/products` | RSC | 否 | 商品列表，分页 |
 | `/products/[id]` | RSC + Client | 否 | 商品详情 + "用积分兑换"按钮（点击触发 client 端 fetch） |
 | `/seckill` | RSC | 否 | 秒杀专区：进行中 + 即将开始（按 tier 过滤展示，徽标区分普惠/限时/超级三档） |
-| `/seckill/[id]` | RSC + Client | 否 | 活动详情 + 倒计时 + "立即抢"按钮（按响应 status 分流：PAID 直跳订单详情，PENDING 启动轮询） |
+| `/seckill/[id]` | RSC + Client | 否 | 活动详情 + 倒计时 + "立即抢"按钮（按响应 status 分流：PAID 刷新积分并跳订单详情，PENDING 跳订单详情等待确认） |
 | `/login` | Client | 否 | 用户名 + 密码登录表单 |
 | `/register` | Client | 否 | 注册表单 |
 | `/orders` | Client | 是 | 我的订单列表，状态 tab 切换 |
@@ -167,7 +169,7 @@ type AuthState = {
 
 - React Context 在跨页面共享登录态时频繁触发整树重渲染，Zustand 提供 `useStore(selector)` 细粒度订阅。
 - 体积约 1KB，远低于 Redux Toolkit，上手成本最低。
-- 业务数据（商品列表、订单列表）**不进 Zustand**，由 RSC fetch 或客户端组件按需 fetch；秒杀订单轮询单独由 `use-seckill-result` Hook 维护 `setInterval`，无需全局 store。
+- 业务数据（商品列表、订单列表）**不进 Zustand**，由 RSC fetch 或客户端组件按需 fetch；超级秒杀订单等待逻辑由订单详情页的局部 `useEffect` 维护，无需全局 store。
 
 ## 7. HTTP 客户端
 
@@ -275,7 +277,7 @@ export const userApi = {
 | `/products` | `GET /api/products?page=&size=` |
 | `/products/[id]` | `GET /api/products/{id}`；下单按钮 `POST /api/products/{id}/order` |
 | `/seckill` | `GET /api/seckills`（可附带 `tier` 过滤） |
-| `/seckill/[id]` | `GET /api/seckills/{id}`；抢购按钮 `POST /api/seckills/{id}/grab`，按响应 `status` 分流：`'PAID'` 直接 `toast.success('抢购成功')` + `router.push('/orders/'+orderId)`；`'PENDING'` 直接 `router.push('/orders/'+orderId)` 由订单详情页 `use-seckill-result` 启动轮询 |
+| `/seckill/[id]` | `GET /api/seckills/{id}`；抢购按钮 `POST /api/seckills/{id}/grab`，按响应 `status` 分流：`'PAID'` 直接 `toast.success('抢购成功')` + 刷新积分 + `router.push('/orders/'+orderId)`；`'PENDING'` 直接 `router.push('/orders/'+orderId)`，订单详情页执行短间隔查询等待订单落库 |
 | `/login` | `POST /api/users/login` |
 | `/register` | `POST /api/users/register` |
 | `<SiteHeader>` 登出按钮 | `POST /api/users/logout` |
@@ -287,16 +289,7 @@ export const userApi = {
 
 ## 10. 超级秒杀异步轮询
 
-仅当 `seckillApi.grab(id)` 返回 `status === 'PENDING'`（即超级档 `tier=3`）时启动轮询；普惠 / 限时档直接命中订单详情 PAID 状态，无需轮询。
-
-`use-seckill-result(orderId)` Hook 流程：
-
-1. `useEffect` 启动定时器，间隔 `NEXT_PUBLIC_POLL_INTERVAL_MS`，调用 `orderApi.detail(orderId)`。
-2. 最多轮询 `NEXT_PUBLIC_POLL_MAX_TIMES` 次。
-3. 命中 `status === 'PAID'`：停止轮询，触发 `onPaid` 回调，更新积分余额。
-4. 命中 `status === 'CANCELLED'`：停止轮询，触发 `onCancelled`。
-5. 超过最大次数仍 `PENDING`：停止轮询，显示"系统繁忙，请稍后到订单列表查看"。
-6. 组件卸载时 `clearInterval` 防止泄漏。
+`seckillApi.grab(id)` 返回 `status === 'PENDING'`（即超级档 `tier=3`）后直接跳转订单详情。订单详情页先对初始 `40400` 做 1 秒间隔、最多 5 次的短暂重试，覆盖 Kafka 消费尚未落库的窗口；订单存在且状态仍为 `PENDING` 时继续每秒刷新详情，直到状态转为 `PAID` 或页面卸载。
 
 后端 `/api/orders/{orderId}` 命中 30 秒用户级缓存，单用户单订单的最大 QPS 不会击穿到 DB。
 
