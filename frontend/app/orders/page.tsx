@@ -72,12 +72,12 @@ function OrdersInner() {
           {orders.map((o) => (
             <Link key={o.orderId} href={`/orders/${o.orderId}`} className="block">
               <Card className="transition-shadow hover:shadow-md">
-                <CardContent className="flex items-center justify-between gap-3">
+                <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <p className="truncate font-medium">{o.productTitle}</p>
                     <p className="mt-1 text-xs text-muted-foreground">{o.createdAt}</p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end">
                     <PointsBadge points={o.price} />
                     <OrderStatusBadge status={o.status} />
                   </div>

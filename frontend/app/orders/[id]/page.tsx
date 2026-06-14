@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState, type ReactNode } from "react";
+import { Suspense, useEffect, type ReactNode } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
@@ -10,20 +10,11 @@ import { OrderStatusBadge } from "@/components/order-status-badge";
 import { PointsBadge } from "@/components/points-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ApiError } from "@/lib/api/client";
-import { apiErrorMessage } from "@/lib/api/errors";
-import { orderApi } from "@/lib/api/order";
-import type { OrderDetailVO } from "@/types/order";
-
-type DetailState =
-  | { orderId: string; status: "loading"; order: null; error: null }
-  | { orderId: string; status: "ready"; order: OrderDetailVO; error: null }
-  | { orderId: string; status: "missing"; order: null; error: null }
-  | { orderId: string; status: "error"; order: null; error: string };
+import { useSeckillResult } from "@/hooks/use-seckill-result";
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[80px_minmax(0,1fr)] items-center gap-2">
+    <div className="grid gap-1 sm:grid-cols-[80px_minmax(0,1fr)] sm:items-center sm:gap-2">
       <span className="text-muted-foreground">{label}</span>
       {children}
     </div>
@@ -33,77 +24,13 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 function OrderDetailInner() {
   const params = useParams<{ id: string }>();
   const orderId = params.id;
-  const [state, setState] = useState<DetailState>({
-    orderId,
-    status: "loading",
-    order: null,
-    error: null,
-  });
+  const { state, refresh } = useSeckillResult(orderId);
 
   useEffect(() => {
-    let active = true;
-    let timer: number | undefined;
-    let attempts = 0;
-
-    const load = () => {
-      orderApi
-        .detail(orderId)
-        .then((o) => {
-          if (active) {
-            setState({ orderId, status: "ready", order: o, error: null });
-          }
-        })
-        .catch((e) => {
-          if (!active) return;
-          if (e instanceof ApiError && e.code === 40400 && attempts < 5) {
-            attempts += 1;
-            timer = window.setTimeout(load, 1000);
-            return;
-          }
-          if (e instanceof ApiError && e.code === 40400) {
-            setState({ orderId, status: "missing", order: null, error: null });
-          } else {
-            const message = apiErrorMessage(e);
-            if (message) {
-              setState({ orderId, status: "error", order: null, error: message });
-              toast.error(message);
-            }
-          }
-        });
-    };
-
-    load();
-
-    return () => {
-      active = false;
-      if (timer !== undefined) {
-        window.clearTimeout(timer);
-      }
-    };
-  }, [orderId]);
-
-  useEffect(() => {
-    if (state.status !== "ready" || state.order.status !== "PENDING") {
-      return;
+    if (state.status === "error") {
+      toast.error(state.error);
     }
-    let active = true;
-    const id = window.setInterval(() => {
-      orderApi
-        .detail(orderId)
-        .then((o) => {
-          if (active) {
-            setState({ orderId, status: "ready", order: o, error: null });
-          }
-        })
-        .catch(() => {
-          // Keep the last known pending order stable while polling.
-        });
-    }, 1000);
-    return () => {
-      active = false;
-      window.clearInterval(id);
-    };
-  }, [orderId, state]);
+  }, [state.status, state.error]);
 
   if (state.orderId !== orderId || state.status === "loading") {
     return <p className="py-16 text-center text-sm text-muted-foreground">加载中...</p>;
@@ -144,7 +71,7 @@ function OrderDetailInner() {
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         <Row label="订单号">
-          <span className="truncate font-mono text-xs">{order.orderId}</span>
+          <span className="break-all font-mono text-xs">{order.orderId}</span>
         </Row>
         <Row label="商品">
           <span className="font-medium">{order.productTitle}</span>
@@ -163,7 +90,22 @@ function OrderDetailInner() {
             <span className="text-muted-foreground">{order.paidAt}</span>
           </Row>
         ) : null}
-        <div className="pt-2">
+        {order.source === 4 && order.status === "PENDING" ? (
+          <div className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
+            {state.exhausted ? "订单仍在确认中。" : "订单确认中..."}
+          </div>
+        ) : null}
+        {order.source === 4 && order.status === "CANCELLED" ? (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+            抢购未完成。
+          </div>
+        ) : null}
+        <div className="flex flex-col gap-2 pt-2 sm:flex-row">
+          {state.exhausted ? (
+            <Button variant="default" size="sm" onClick={refresh}>
+              手动刷新
+            </Button>
+          ) : null}
           <Button asChild variant="outline" size="sm">
             <Link href="/orders">返回订单列表</Link>
           </Button>

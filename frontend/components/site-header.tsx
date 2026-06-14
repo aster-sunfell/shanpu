@@ -17,11 +17,11 @@ export function SiteHeader() {
 
   return (
     <header className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-        <Link href="/" className="text-lg font-semibold tracking-tight">
+      <div className="mx-auto flex min-h-14 max-w-6xl flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:py-0">
+        <Link href="/" className="shrink-0 text-lg font-semibold tracking-tight">
           闪铺
         </Link>
-        <nav className="flex items-center gap-1 sm:gap-3">
+        <nav className="flex w-full flex-wrap items-center gap-1 sm:w-auto sm:justify-end sm:gap-3">
           <Button asChild variant="ghost" size="sm">
             <Link href="/products">商品</Link>
           </Button>
@@ -41,7 +41,7 @@ export function SiteHeader() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="max-w-36 bg-background px-3"
+                  className="max-w-32 bg-background px-3 sm:max-w-36"
                 >
                   <span className="truncate">{user.nickname || user.username}</span>
                 </Button>

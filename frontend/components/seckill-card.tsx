@@ -45,7 +45,7 @@ export function SeckillCard({ activity }: { activity: SeckillActivityVO }) {
               {activity.productTitle}
             </p>
           </div>
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <PointsBadge points={activity.seckillPrice} />
             <Badge variant={soldOut ? "destructive" : "outline"}>
               {soldOut ? "已售罄" : `库存 ${activity.stock}`}

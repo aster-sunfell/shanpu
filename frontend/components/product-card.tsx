@@ -27,7 +27,7 @@ export function ProductCard({ product }: { product: ProductVO }) {
           <h3 className="line-clamp-2 min-h-10 text-sm font-medium">
             {product.title}
           </h3>
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <PointsBadge points={product.price} />
             <Badge variant={soldOut ? "destructive" : "outline"}>
               {soldOut ? "已售罄" : `库存 ${product.stock}`}
