@@ -10,6 +10,8 @@ shanpu/
 ├── .sdkmanrc
 ├── docker-compose.yml
 ├── .env.example
+├── load/                   # k6 场景脚本
+├── scripts/                # 启动、压测重置、压测编排脚本
 ├── backend/                 # Spring Boot 工程（详见 BACKEND.md）
 ├── frontend/                # Next.js 工程（详见 FRONTEND.md）
 ├── mysql/
@@ -26,7 +28,7 @@ shanpu/
 
 ## 2. Docker Compose 服务清单
 
-根目录 `docker-compose.yml` 定义 5 个服务。每个服务通过 `deploy.resources.limits` 显式声明 CPU 与内存上限（见 §2.4 设计逻辑）。下表"暴露端口"列引用 `.env` 变量，默认值见 §2.3。
+根目录 `docker-compose.yml` 定义 6 个服务。`mysql / redis / kafka / backend / frontend` 属于默认启动路径；`k6` 挂在 `loadtest` profile 下，仅由压测脚本按需拉起。每个服务通过 `deploy.resources.limits` 显式声明 CPU 与内存上限（见 §2.4 设计逻辑）。下表"暴露端口"列引用 `.env` 变量，默认值见 §2.3。
 
 | 服务 | 镜像 | 内部端口 | 暴露端口 | CPU 上限 | 内存上限 | 卷 | 健康检查 |
 |---|---|---|---|---|---|---|---|
@@ -35,6 +37,7 @@ shanpu/
 | `kafka` | `apache/kafka:3.7.2` | 9092 | `${KAFKA_PORT}` | 1.0 | 768m | `kafka-data:/var/lib/kafka/data` | `/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list` |
 | `backend` | 本仓 `backend/Dockerfile` | 8080 | `${BACKEND_PORT}` | 2.0 | 1.5g | - | `wget -q --spider http://127.0.0.1:8080/api/health` |
 | `frontend` | 本仓 `frontend/Dockerfile` | 3000 | `${FRONTEND_PORT}` | 0.5 | 384m | - | `wget -q --spider http://127.0.0.1:3000/` |
+| `k6` | `grafana/k6:0.50.0` | - | - | 1.0 | 512m | `./load:/load:ro` | profile `loadtest` 按需运行 |
 
 ### 2.1 依赖关系
 
@@ -132,7 +135,9 @@ PUBLIC_API_HOST=localhost
 | `mysql` | 1.5 | 1g | `innodb_buffer_pool_size=384M`、`max_connections=200`、`innodb_log_buffer_size=16M` |
 | `redis` | 1.0 | 384m | `maxmemory 256mb`、`maxmemory-policy allkeys-lru`、`save ""` |
 | `kafka` | 1.0 | 768m | 单节点 KRaft，内部 listener `kafka:9092`，宿主调试端口 `${KAFKA_PORT}` |
-| 合计 | 6.0 | 4.1g | 留 ≥ 2 GiB 内存给宿主 |
+| `k6` | 1.0 | 512m | `loadtest` profile 按需运行，默认栈不占用 |
+| 默认合计 | 6.0 | 4.1g | 留 ≥ 2 GiB 内存给宿主 |
+| 压测合计 | 7.0 | 4.6g | k6 运行窗口内的峰值预算 |
 
 按机器规模缩放指引：
 - **内存 ≥ 16 GiB**：可把 `backend` 提到 3g（`-Xmx2g`）、`mysql` 提到 2g（buffer pool 1g）。
@@ -303,39 +308,24 @@ docker compose down -v         # 同时清空 MySQL / Redis 数据
 
 统一 VU 峰值 100 取自 backend Tomcat 100 线程上限，三档共享同一压力刻度，RT 与 RPS 可 apples-to-apples 直接横向对比。固定 100 VU 是正式报告口径；容量探底使用独立脚本按更高 VU 运行，并归档到独立报告目录。
 
-### 7.3 通用 setup：批量登录
+### 7.3 通用 setup：压测用户与 token 池
 
-`load/lib/auth.js`：
+`scripts/seed-users.sh` 负责准备 `u0001` ~ `u20000` 压测用户、生成 JWT token 文件，并把 token hash 批量写入 Redis session 白名单。k6 运行期只从 `load/.runtime/bench-tokens.txt` 读取 token，不调用 `/api/users/login`，避免登录 IP 限流与 BCrypt 成本污染秒杀链路指标。
 
-```js
-import http from 'k6/http';
-import { check } from 'k6';
+`load/lib/auth.js` 依据 `exec.scenario.iterationInTest` 从 token 池轮转取 token；一轮压测中的前 20000 次迭代天然分配到不同压测用户，超出后进入一人一单的业务失败路径并由 `seckill_duplicate_total` 独立计数。
 
-// 20000 用户串行登录在 setup 阶段一次性完成，运行期复用 token。
-export function loginAll(baseUrl, prefix = 'u', count = 20000, password = 'pwd123456') {
-  const tokens = [];
-  for (let i = 1; i <= count; i++) {
-    const username = `${prefix}${String(i).padStart(4, '0')}`;
-    const res = http.post(`${baseUrl}/users/login`,
-      JSON.stringify({ username, password }),
-      { headers: { 'Content-Type': 'application/json' } });
-    check(res, { 'login 200': r => r.status === 200 });
-    tokens.push(res.json('data.token'));
-  }
-  return tokens;
-}
-```
+### 7.4 场景脚本与固定 100 VU
 
-### 7.4 三个脚本骨架与固定 100 VU
+| 脚本 | 默认活动 | 成功语义 |
+|---|---|---|
+| `load/scenario-a-inclusive.js` | `1001` | `code=0` 且 `data.status=PAID` |
+| `load/scenario-b-redis-sync.js` | `2001` | `code=0` 且 `data.status=PAID` |
+| `load/scenario-c-redis-kafka.js` | `3001` | `code=0` 且 `data.status=PAID/PENDING` |
+| `load/scenario-d-cache-comparison.js` | `3001` / `1` | GET 活动详情或商品详情返回 `code=0` |
+
+A/B/C 三场景均使用：
 
 ```js
-// load/scenario-a-inclusive.js（普惠档,activity_id=1001,tier=1）
-import http from 'k6/http';
-import { check } from 'k6';
-import exec from 'k6/execution';
-import { Counter, Trend } from 'k6/metrics';
-import { loginAll } from './lib/auth.js';
-
 export const options = {
   scenarios: {
     fixed_100vu: {
@@ -345,54 +335,12 @@ export const options = {
       gracefulStop: '5s',
     },
   },
-  thresholds: {
-    http_req_failed: ['rate<0.01'],
-    success_req_duration: ['p(99)<2000'],
-  },
 };
-
-const orderOk = new Counter('order_success_total');
-const orderFail = new Counter('order_fail_total');
-const dupCnt = new Counter('seckill_duplicate_total');
-const soldOut = new Counter('seckill_sold_out_total');
-const successDuration = new Trend('success_req_duration');
-
-export function setup() {
-  const base = __ENV.API_BASE || 'http://backend:8080/api';
-  return { base, tokens: loginAll(base) };
-}
-
-export default function (data) {
-  const idx = exec.scenario.iterationInTest;
-  if (idx >= data.tokens.length) {
-    throw new Error(`token pool exhausted: idx=${idx}, size=${data.tokens.length}`);
-  }
-
-  const token = data.tokens[idx];
-  const activityId = __ENV.ACTIVITY_ID || '1001';
-  const res = http.post(`${data.base}/seckills/${activityId}/grab`, '{}', {
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-  });
-  const body = res.json();
-  if (res.status === 200 && body.code === 0) {
-    orderOk.add(1);
-    successDuration.add(res.timings.duration);
-  } else if (res.status === 200 && body.code === 40900) {
-    dupCnt.add(1);
-    orderFail.add(1);
-  } else if (res.status === 200 && body.code === 41000) {
-    soldOut.add(1);
-    orderFail.add(1);
-  } else {
-    orderFail.add(1);
-  }
-  check(res, { '200 status': r => r.status === 200 });
-}
 ```
 
-场景 B 与 C 复用同一份骨架，默认 `ACTIVITY_ID` 分别为 `2001` 与 `3001`。C 场景中 `body.code === 0 && body.data.status === 'PENDING'` 计入 `order_success_total` 与 `success_req_duration`，因为超级档接口成功语义是完成 Redis 预扣与 Kafka 发送确认，DB 落库由消费端异步完成。
+C 场景把 `PENDING` 计入 `order_success_total` 与 `success_req_duration`，因为超级档接口成功语义是完成 Redis 预扣与 Kafka 发送确认，DB 落库由消费端异步完成。
 
-A/B/C 三场景均以固定 `100 VU / 30s` 的 `success_req_duration` 为正式延迟口径。`http_req_duration` 保留为 HTTP 全量观测指标，`BACKEND.md` 中成功链路 p99 估算的填表来源为 `success_req_duration`。
+A/B/C 三场景均以固定 `100 VU / 30s` 的 `success_req_duration` 为正式延迟口径。`http_req_duration` 保留为 HTTP 全量观测指标，`BACKEND.md` 中成功链路 p99 的填表来源为 `success_req_duration`。
 
 ### 7.5 自定义指标
 
@@ -404,79 +352,21 @@ A/B/C 三场景均以固定 `100 VU / 30s` 的 `success_req_duration` 为正式�
 | `seckill_duplicate_total` | Counter | `code == 40900` 计数（一人一单冲突） |
 | `seckill_sold_out_total` | Counter | `code == 41000` 计数（库存售罄） |
 
-`http_req_failed` 仅统计 HTTP 5xx/超时，业务错误码（40900/41000）由 `seckill_duplicate_total` / `seckill_sold_out_total` 独立计数。`check(res, { '200 status': r => r.status === 200 })` 仅校验 HTTP 层成功。正式横向对比使用 `success_req_duration` 与 `order_success_total`，业务失败指标用于确认压测数据未被重复购买或售罄路径污染。
-
-可选 Trend 指标（若后端在响应 header 回写 `X-Kafka-Send-Ms` 与 `X-Db-Wait-Ms`，则 k6 用 `import { Trend } from 'k6/metrics'` 单独收集）：
-
-| 指标名 | 类型 | 适用场景 |
-|---|---|---|
-| `kafka_send_duration` | Trend | C 场景：Kafka `send().get()` 同步等待 ack 耗时 |
-| `db_row_lock_wait_ms` | Trend | A/B 场景：MySQL 行锁等待耗时 |
-
-调试 header 缺省时，压测中执行 `docker stats backend` 与 `redis-cli INFO commandstats` 差分人工记录；k6 自定义 Trend 采集作为增强指标。
+`http_error_rate` 统计 HTTP 4xx/5xx/超时，业务错误码（40900/41000）由 `seckill_duplicate_total` / `seckill_sold_out_total` 独立计数。正式横向对比使用 `success_req_duration` 与 `order_success_total`，业务失败指标用于确认压测数据未被重复购买或售罄路径污染。
 
 ### 7.6 输出与报告
 
-`scripts/k6-run.sh` 串跑三档秒杀场景 + 场景 D 缓存对比，并按时间戳归档：
+`scripts/k6-run.sh` 串跑三档秒杀场景 + 场景 D 缓存对比。k6 的 `handleSummary` 向 stdout 输出单行摘要，runner 解析后在控制台打印两张对齐 Markdown 表格，作为正式压测产物。
 
 ```bash
-#!/usr/bin/env bash
-set -e
-TS=$(date +%Y%m%d-%H%M%S)
-REPORT_DIR=load/reports/$TS
-mkdir -p "$REPORT_DIR"
-
-bash scripts/seed-users.sh
-
-# 三档秒杀横向对比
-for SCENARIO in a-inclusive:1001 b-redis-sync:2001 c-redis-kafka:3001; do
-  NAME=${SCENARIO%:*}
-  ID=${SCENARIO#*:}
-
-  echo "[$NAME] reset stock and users for fixed 100 VU..."
-  bash scripts/k6-bench-reset.sh "$ID"
-
-  echo "[$NAME] warmup 5s..."
-  sleep 5
-
-  echo "[$NAME] run k6..."
-  docker compose --profile loadtest run --rm \
-    -e ACTIVITY_ID="$ID" \
-    -e API_BASE="http://backend:8080/api" \
-    k6 run --summary-export=/reports/$TS/scenario-$NAME.json \
-           /scripts/scenario-$NAME.js
-
-  echo "[$NAME] snapshot redis commandstats..."
-  docker compose exec -T redis redis-cli INFO commandstats \
-    > "$REPORT_DIR/redis-cmdstats-$NAME.txt"
-done
-
-# 场景 D 缓存层级对比(独立流程,见 ROADMAP M6 缓存层级对比表)
-docker compose --profile loadtest run --rm k6 \
-  run --summary-export=/reports/$TS/scenario-d-cache-comparison.json \
-      /scripts/scenario-d-cache-comparison.js
-
-# 恢复种子库存
-bash scripts/k6-bench-restore.sh
-
-echo "Report: $REPORT_DIR"
+bash scripts/k6-run.sh
 ```
 
-每轮归档目录结构：
+输出格式：
 
-```
-load/reports/<timestamp>/
-├── scenario-a-inclusive.json         # k6 summary export
-├── scenario-b-redis-sync.json
-├── scenario-c-redis-kafka.json
-├── scenario-d-cache-comparison.json
-├── redis-cmdstats-a-inclusive.txt    # redis-cli INFO commandstats 抓拍
-├── redis-cmdstats-b-redis-sync.txt
-├── redis-cmdstats-c-redis-kafka.txt
-├── docker-stats-peak.txt             # 高峰期 docker stats 抓拍
-├── kafka-consumer-lag.txt            # C 场景 lag 每 10s 抓一次
-└── README.md                         # 硬件配置、固定 100 VU 参数、瓶颈观察
-```
+- A/B/C 压测对比表：成功 RPS、成功 p50/p95/p99、HTTP 错误率、业务错误率、SQL 成功订单数、超卖判定、瓶颈观察。
+- D 缓存层级对比表：活动详情与商品详情在 L1 开启/关闭时的 RPS、p50/p95/p99、Redis GET ops/s、活动 L1 hitRate。
+- 表后输出活动接口 p99 收益、活动 Redis GET 降幅、商品接口 p99 偏差与 backend/mysql/kafka 的 OOMKilled 状态。
 
 ### 7.7 超卖检测
 
@@ -497,121 +387,17 @@ SELECT COUNT(*) FROM t_order WHERE source = 4 AND activity_id = 3001;
 
 ### 7.8 对比报告
 
-`docs/ROADMAP.md` M6 章节附压测对比表，由人工填入实测值。统一记录固定 VU、持续时间、成功请求平均 RPS、`success_req_duration` p50/p95/p99、HTTP 错误率、业务错误率、成功订单数、是否超卖与瓶颈观察。瓶颈观察通过压测高峰期 `docker stats`、`redis-cli INFO commandstats` 差分、`kafka-consumer-groups.sh --describe --group shanpu-seckill-consumer` lag 三处采集。
+`docs/ROADMAP.md` M6 章节附压测对比表，字段与 `scripts/k6-run.sh` 控制台输出一致。瓶颈观察由压测高峰期 `docker stats` 快照、Redis `INFO commandstats` 差分、C 场景订单与积分流水一致性校验共同支撑。
 
 ### 7.9 压测前置脚本
 
-#### `scripts/seed-users.sh`
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-USER_RANGE_MAX=${USER_RANGE_MAX:-20000}
-PASSWORD_HASH='$2a$10$7RkPGUSAzrJ8nNu2TK4dAOdGrsLYbMQIkxsRiz2EnKys2YyOVjw8S'
-DB_USER=root
-DB_PASS=${MYSQL_ROOT_PASSWORD}
-DB_NAME=${MYSQL_DATABASE:-shanpu}
-
-docker compose exec -T mysql mysql -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" <<SQL
-SET SESSION cte_max_recursion_depth = $USER_RANGE_MAX;
-WITH RECURSIVE seq(n) AS (
-  SELECT 1
-  UNION ALL
-  SELECT n + 1 FROM seq WHERE n < $USER_RANGE_MAX
-)
-INSERT IGNORE INTO t_user (username, password, nickname, points)
-SELECT CONCAT('u', IF(n < 10000, LPAD(n, 4, '0'), n)), '$PASSWORD_HASH', CONCAT('压测用户', n), 10000000
-FROM seq;
-SQL
-
-echo "[seed-users] done: users=1..$USER_RANGE_MAX"
-```
-
-#### `scripts/k6-bench-reset.sh`
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-ACTIVITY_IDS=${1:-"1001 2001 3001"}
-PRESSURE_STOCK=${PRESSURE_STOCK:-20000}
-USER_RANGE_MAX=${USER_RANGE_MAX:-20000}
-DB_USER=root
-DB_PASS=${MYSQL_ROOT_PASSWORD}
-DB_NAME=${MYSQL_DATABASE:-shanpu}
-
-# 1. MySQL 重置库存 / 激活活动 / 清旧订单
-for ID in $ACTIVITY_IDS; do
-  docker compose exec -T mysql mysql -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" <<SQL
-UPDATE t_seckill_activity
-SET total_stock = $PRESSURE_STOCK, status = 1,
-    start_at = NOW() - INTERVAL 1 HOUR,
-    end_at   = NOW() + INTERVAL 6 HOUR
-WHERE id = $ID;
-DELETE o FROM t_order o
-JOIN t_user u ON u.id = o.user_id
-WHERE o.activity_id = $ID
-  AND u.username REGEXP '^u[0-9]{4,5}\$'
-  AND CAST(SUBSTRING(u.username, 2) AS UNSIGNED) BETWEEN 1 AND $USER_RANGE_MAX;
-SQL
-done
-
-# 2. 压测用户积分补足(避免 POINTS_NOT_ENOUGH 干扰)
-docker compose exec -T mysql mysql -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" <<SQL
-UPDATE t_user SET points = 10000000
-WHERE username REGEXP '^u[0-9]{4,5}\$'
-  AND CAST(SUBSTRING(username, 2) AS UNSIGNED) BETWEEN 1 AND $USER_RANGE_MAX;
-DELETE p FROM t_point_log p
-JOIN t_user u ON u.id = p.user_id
-WHERE u.username REGEXP '^u[0-9]{4,5}\$'
-  AND CAST(SUBSTRING(u.username, 2) AS UNSIGNED) BETWEEN 1 AND $USER_RANGE_MAX
-  AND p.biz_type IN (2, 3);
-SQL
-
-# 3. Redis 重置(普惠档 tier=1 不写库存,跳过)
-for ID in $ACTIVITY_IDS; do
-  if [ "$ID" != "1001" ]; then
-    docker compose exec -T redis redis-cli DEL "shanpu:seckill:stock:$ID" "shanpu:seckill:bought:$ID"
-    docker compose exec -T redis redis-cli SET "shanpu:seckill:stock:$ID" "$PRESSURE_STOCK"
-  fi
-  docker compose exec -T redis redis-cli DEL "shanpu:seckill:activity:$ID"
-done
-
-echo "[bench-reset] done: activities=$ACTIVITY_IDS stock=$PRESSURE_STOCK users=1..$USER_RANGE_MAX"
-```
-
-#### `scripts/k6-bench-restore.sh`
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-USER_RANGE_MAX=${USER_RANGE_MAX:-20000}
-DB_USER=root
-DB_PASS=${MYSQL_ROOT_PASSWORD}
-DB_NAME=${MYSQL_DATABASE:-shanpu}
-
-docker compose exec -T mysql mysql -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" <<SQL
-UPDATE t_seckill_activity SET total_stock = 5000 WHERE id IN (1001, 1002, 1003);
-UPDATE t_seckill_activity SET total_stock = 500  WHERE id IN (2001, 2002, 2003);
-UPDATE t_seckill_activity SET total_stock = 200  WHERE id IN (3001, 3002, 3003);
-DELETE o FROM t_order o
-JOIN t_user u ON u.id = o.user_id
-WHERE o.activity_id IN (1001, 2001, 3001)
-  AND u.username REGEXP '^u[0-9]{4,5}\$'
-  AND CAST(SUBSTRING(u.username, 2) AS UNSIGNED) BETWEEN 1 AND $USER_RANGE_MAX;
-UPDATE t_user SET points = 10000000
-WHERE username REGEXP '^u[0-9]{4,5}\$'
-  AND CAST(SUBSTRING(username, 2) AS UNSIGNED) BETWEEN 1 AND $USER_RANGE_MAX;
-SQL
-
-for ID in 1001 2001 3001; do
-  docker compose exec -T redis redis-cli DEL \
-    "shanpu:seckill:stock:$ID" "shanpu:seckill:bought:$ID" "shanpu:seckill:activity:$ID"
-done
-
-echo "[bench-restore] seed stocks restored"
-```
+| 脚本 | 职责 |
+|---|---|
+| `scripts/dev-up.sh` | 准备 `.env`，启动 mysql/redis/kafka/backend/frontend，等待健康检查；不启动 `k6` profile |
+| `scripts/seed-users.sh` | 插入或刷新 `u0001` ~ `u20000` 压测用户，生成 `load/.runtime/bench-tokens.txt`，批量写入 Redis session |
+| `scripts/k6-bench-reset.sh` | 按活动重置库存、活动时间、压测用户积分、订单、积分流水、Redis 库存/已购集合/活动缓存与 L1 统计 |
+| `scripts/k6-bench-restore.sh` | 恢复种子活动库存并清理压测订单、积分流水、Redis 活动污染 |
+| `scripts/k6-run.sh` | 编排 A/B/C/D，采集 SQL 校验、Redis GET 差分、L1 hitRate、docker stats 快照并输出 Markdown 表格 |
 
 ### 7.10 关键设计取舍
 

@@ -39,9 +39,9 @@
 - **滑动窗口限流（ZSet + Lua + AOP）**：基于 Redis ZSet 实现原子滑动窗口，自定义 `@RateLimit` 注解支持 USER / IP / API 三维度，挂到登录、抢购等敏感接口，业务代码零侵入。
 - **DLQ + 幂等定时任务保证最终一致**：消息消费失败重试 3 次后入 DLQ，定时回投主 Topic 并累加失败计数，超 5 次写 ERROR 日志告警；周期对账修复 Redis 库存与 MySQL 真实订单数偏差，覆盖消息丢失与 Redis 数据丢失场景。
 
-#### 1.3.1 压测数据估算说明
+#### 1.3.1 压测数据口径
 
-上述前三个亮点的压测数字为 M6 实跑前的**预估值**，实测数据待 M6 完成后以 `load/reports/<timestamp>/` JSON 摘要替换。A/B/C 三档秒杀横向对比采用固定 `100 VU / 30s`，配套 20000 压测用户与 20000 临时库存，报告口径取成功请求的 `order_success_total` 与 `success_req_duration`。
+A/B/C 三档秒杀横向对比采用固定 `100 VU / 30s`，配套 20000 压测用户与 20000 临时库存，报告口径取成功请求的 `order_success_total` 与 `success_req_duration`。`scripts/k6-run.sh` 串跑四个场景并在控制台输出 Markdown 表格，作为正式压测产物。
 
 **硬件假设**：宿主机 7.6 GiB WSL2 / 4 vCPU，Docker 资源限额遵循 [DEPLOYMENT.md §2.4](./DEPLOYMENT.md)；Redis 单实例本地部署，网络往返 ~0.5ms；Kafka 单节点 KRaft 同机部署，acks=1 写入磁盘 ~2-10ms。
 
@@ -59,7 +59,7 @@
 - L1 命中率：Caffeine `expireAfterWrite=1s`，100 VU 持续访问同一活动 Key，每秒数千次访问中仅有重建窗口的 1 次 miss，理论命中率 ≈ (n-1)/n。考虑 Caffeine evict、压测启停冷启动等损耗，保守取 **0.95**（与 ROADMAP 验收门槛对齐）。
 - 接口 p99：L1 关时所有请求走 Redis GET（~0.5-1ms 网络 + 反序列化），p99 受 Tomcat 100 线程上限制约 ~**15ms**；L1 开时 JVM 内存指针访问 ~微秒级，p99 主要由 HTTP 框架开销决定 ~**5ms**（对齐验收门槛 -60%）。
 
-实测数据来源：[ROADMAP §M6 压测对比表](./ROADMAP.md) 与 [ROADMAP §M6 缓存层级对比表](./ROADMAP.md)，由 `scripts/k6-run.sh` 在 M6 完成后自动产出。
+压测数据来源：[ROADMAP §M6 压测对比表](./ROADMAP.md) 与 [ROADMAP §M6 缓存层级对比表](./ROADMAP.md)，由 `scripts/k6-run.sh` 控制台输出。
 
 ## 2. 目录结构
 
