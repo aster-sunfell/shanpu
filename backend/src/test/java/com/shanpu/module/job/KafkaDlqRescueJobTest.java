@@ -3,6 +3,7 @@ package com.shanpu.module.job;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.shanpu.module.job.domain.vo.JobRunVO;
 import com.shanpu.module.seckill.domain.entity.OrderDlqLog;
 import com.shanpu.module.seckill.domain.msg.SeckillOrderMsg;
 import com.shanpu.module.seckill.infra.SeckillProducer;
@@ -43,8 +44,12 @@ class KafkaDlqRescueJobTest {
         OrderDlqLog dlqLog = dlqLog(1L, "9000000000001", objectMapper.writeValueAsString(message()), 1);
         when(orderDlqLogService.listPending(10)).thenReturn(List.of(dlqLog));
 
-        rescueJob.rescue();
+        JobRunVO result = rescueJob.runOnce();
 
+        assertEquals("dlq-rescue", result.getJob());
+        assertEquals(1, result.getScanned());
+        assertEquals(1, result.getSucceeded());
+        assertEquals(0, result.getFailed());
         ArgumentCaptor<SeckillOrderMsg> msgCaptor = ArgumentCaptor.forClass(SeckillOrderMsg.class);
         verify(seckillProducer).send(msgCaptor.capture());
         assertEquals("9000000000001", msgCaptor.getValue().getOrderId());
@@ -59,8 +64,11 @@ class KafkaDlqRescueJobTest {
         dlqLog.setFailReason("points not enough");
         when(orderDlqLogService.listPending(10)).thenReturn(List.of(dlqLog));
 
-        rescueJob.rescue();
+        JobRunVO result = rescueJob.runOnce();
 
+        assertEquals(1, result.getScanned());
+        assertEquals(0, result.getSucceeded());
+        assertEquals(1, result.getFailed());
         verify(seckillProducer, never()).send(org.mockito.ArgumentMatchers.any());
         verify(orderDlqLogService).markError(1L, "points not enough", 5);
     }
@@ -70,10 +78,25 @@ class KafkaDlqRescueJobTest {
         OrderDlqLog dlqLog = dlqLog(1L, "9000000000001", "{invalid", 1);
         when(orderDlqLogService.listPending(10)).thenReturn(List.of(dlqLog));
 
-        rescueJob.rescue();
+        JobRunVO result = rescueJob.runOnce();
 
+        assertEquals(1, result.getScanned());
+        assertEquals(0, result.getSucceeded());
+        assertEquals(1, result.getFailed());
         verify(seckillProducer, never()).send(org.mockito.ArgumentMatchers.any());
         verify(orderDlqLogService).incrementFailure(org.mockito.ArgumentMatchers.eq(1L), anyString());
+    }
+
+    @Test
+    void rescue_invalidPayloadAtNextThresholdMarksError() {
+        OrderDlqLog dlqLog = dlqLog(1L, "9000000000001", "{invalid", 4);
+        when(orderDlqLogService.listPending(10)).thenReturn(List.of(dlqLog));
+
+        JobRunVO result = rescueJob.runOnce();
+
+        assertEquals(1, result.getFailed());
+        verify(seckillProducer, never()).send(org.mockito.ArgumentMatchers.any());
+        verify(orderDlqLogService).markError(org.mockito.ArgumentMatchers.eq(1L), anyString(), org.mockito.ArgumentMatchers.eq(5));
     }
 
     private SeckillOrderMsg message() {

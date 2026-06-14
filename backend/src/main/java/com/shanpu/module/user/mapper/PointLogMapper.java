@@ -9,6 +9,9 @@ public interface PointLogMapper {
 
     int insert(PointLog pointLog);
 
+    int countByBizTypeAndRef(@Param("bizType") int bizType,
+                             @Param("bizRef") String bizRef);
+
     List<PointLog> selectByUserId(@Param("userId") Long userId,
                                   @Param("offset") int offset,
                                   @Param("limit") int limit);

@@ -27,6 +27,37 @@
         WHERE activity_id = #{activityId} AND status = 2
     </select>
 
+    <select id="selectTimeoutPending" resultType="com.shanpu.module.order.domain.entity.Order">
+        SELECT id, order_id, user_id, product_id, activity_id, source, price, status,
+               created_at, paid_at, updated_at
+        FROM t_order
+        WHERE status = 1
+          AND created_at &lt; #{timeoutBefore}
+        ORDER BY created_at ASC, id ASC
+        LIMIT #{limit}
+    </select>
+
+    <update id="cancelPendingByOrderId">
+        UPDATE t_order
+        SET status = 3,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE order_id = #{orderId}
+          AND status = 1
+    </update>
+
+    <select id="selectPaidOrdersMissingPointLog" resultType="com.shanpu.module.order.domain.entity.Order">
+        SELECT o.id, o.order_id, o.user_id, o.product_id, o.activity_id, o.source,
+               o.price, o.status, o.created_at, o.paid_at, o.updated_at
+        FROM t_order o
+        LEFT JOIN t_point_log l
+          ON l.biz_type = 2
+         AND l.biz_ref = o.order_id
+        WHERE o.status = 2
+          AND l.id IS NULL
+        ORDER BY o.created_at ASC, o.id ASC
+        LIMIT #{limit}
+    </select>
+
     <select id="selectPageByUser" resultType="com.shanpu.module.order.domain.vo.OrderItemVO">
         SELECT o.order_id   AS orderId,
                o.product_id AS productId,

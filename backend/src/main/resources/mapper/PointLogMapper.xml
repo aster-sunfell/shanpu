@@ -8,6 +8,13 @@
         VALUES (#{userId}, #{delta}, #{balanceAfter}, #{bizType}, #{bizRef})
     </insert>
 
+    <select id="countByBizTypeAndRef" resultType="int">
+        SELECT COUNT(*)
+        FROM t_point_log
+        WHERE biz_type = #{bizType}
+          AND biz_ref = #{bizRef}
+    </select>
+
     <select id="selectByUserId" resultType="com.shanpu.module.user.domain.entity.PointLog">
         SELECT id, user_id, delta, balance_after, biz_type, biz_ref, created_at
         FROM t_point_log

@@ -1,6 +1,7 @@
 package com.shanpu.module.job;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.shanpu.module.job.domain.vo.JobRunVO;
 import com.shanpu.module.seckill.domain.entity.OrderDlqLog;
 import com.shanpu.module.seckill.domain.msg.SeckillOrderMsg;
 import com.shanpu.module.seckill.infra.SeckillProducer;
@@ -17,6 +18,8 @@ import java.util.List;
 @Component
 @ConditionalOnProperty(prefix = "shanpu.kafka.dlq-rescue", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class KafkaDlqRescueJob {
+
+    private static final String JOB_NAME = "dlq-rescue";
 
     private final OrderDlqLogService orderDlqLogService;
     private final SeckillProducer seckillProducer;
@@ -38,17 +41,28 @@ public class KafkaDlqRescueJob {
 
     @Scheduled(cron = "${shanpu.kafka.dlq-rescue.cron:0 */1 * * * *}")
     public void rescue() {
-        List<OrderDlqLog> logs = orderDlqLogService.listPending(batchSize);
-        for (OrderDlqLog dlqLog : logs) {
-            rescueOne(dlqLog);
-        }
+        runOnce();
     }
 
-    private void rescueOne(OrderDlqLog dlqLog) {
+    public JobRunVO runOnce() {
+        List<OrderDlqLog> logs = orderDlqLogService.listPending(batchSize);
+        int succeeded = 0;
+        int failed = 0;
+        for (OrderDlqLog dlqLog : logs) {
+            if (rescueOne(dlqLog)) {
+                succeeded++;
+            } else {
+                failed++;
+            }
+        }
+        return JobRunVO.of(JOB_NAME, logs.size(), succeeded, failed);
+    }
+
+    private boolean rescueOne(OrderDlqLog dlqLog) {
         int failCount = currentFailCount(dlqLog);
         if (failCount >= maxFailCount) {
             markError(dlqLog, dlqLog.getFailReason(), failCount);
-            return;
+            return false;
         }
 
         try {
@@ -57,8 +71,10 @@ public class KafkaDlqRescueJob {
             seckillProducer.send(msg);
             orderDlqLogService.markRepublished(dlqLog.getId());
             log.info("Kafka DLQ message republished: orderId={}", dlqLog.getOrderId());
+            return true;
         } catch (Exception e) {
             recordFailure(dlqLog, e);
+            return false;
         }
     }
 

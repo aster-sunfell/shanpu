@@ -52,4 +52,10 @@
         WHERE id = #{id}
     </update>
 
+    <select id="countByStatus" resultType="long">
+        SELECT COUNT(*)
+        FROM t_order_dlq_log
+        WHERE status = #{status}
+    </select>
+
 </mapper>

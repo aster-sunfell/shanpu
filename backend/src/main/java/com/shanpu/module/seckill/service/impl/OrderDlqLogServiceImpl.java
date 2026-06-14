@@ -2,6 +2,7 @@ package com.shanpu.module.seckill.service.impl;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.shanpu.module.job.domain.vo.DlqStatsVO;
 import com.shanpu.module.seckill.domain.entity.OrderDlqLog;
 import com.shanpu.module.seckill.domain.msg.SeckillOrderMsg;
 import com.shanpu.module.seckill.mapper.OrderDlqLogMapper;
@@ -42,6 +43,15 @@ public class OrderDlqLogServiceImpl implements OrderDlqLogService {
     @Override
     public void markError(Long id, String failReason, int failCount) {
         orderDlqLogMapper.markError(id, normalizeReason(failReason), Math.max(1, failCount));
+    }
+
+    @Override
+    public DlqStatsVO stats() {
+        return DlqStatsVO.builder()
+                .pending(orderDlqLogMapper.countByStatus(OrderDlqLog.STATUS_PENDING))
+                .republished(orderDlqLogMapper.countByStatus(OrderDlqLog.STATUS_REPUBLISHED))
+                .error(orderDlqLogMapper.countByStatus(OrderDlqLog.STATUS_ERROR))
+                .build();
     }
 
     private String normalizeOrderId(String orderId, SeckillOrderMsg payload) {

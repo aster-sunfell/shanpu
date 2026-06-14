@@ -5,6 +5,7 @@ import com.shanpu.module.order.domain.vo.OrderDetailVO;
 import com.shanpu.module.order.domain.vo.OrderItemVO;
 import org.apache.ibatis.annotations.Param;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 public interface OrderMapper {
@@ -18,6 +19,13 @@ public interface OrderMapper {
     int countByUserActivity(@Param("userId") Long userId, @Param("activityId") Long activityId);
 
     long countPaidByActivity(@Param("activityId") Long activityId);
+
+    List<Order> selectTimeoutPending(@Param("timeoutBefore") LocalDateTime timeoutBefore,
+                                      @Param("limit") int limit);
+
+    int cancelPendingByOrderId(@Param("orderId") String orderId);
+
+    List<Order> selectPaidOrdersMissingPointLog(@Param("limit") int limit);
 
     List<OrderItemVO> selectPageByUser(@Param("userId") Long userId,
                                        @Param("status") Integer status,

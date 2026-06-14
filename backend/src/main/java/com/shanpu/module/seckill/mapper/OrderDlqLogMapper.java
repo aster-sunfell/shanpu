@@ -21,4 +21,6 @@ public interface OrderDlqLogMapper {
     int markError(@Param("id") Long id,
                   @Param("failReason") String failReason,
                   @Param("failCount") int failCount);
+
+    long countByStatus(@Param("status") int status);
 }

@@ -2,6 +2,7 @@ package com.shanpu.module.seckill.service;
 
 import com.shanpu.module.seckill.domain.entity.OrderDlqLog;
 import com.shanpu.module.seckill.domain.msg.SeckillOrderMsg;
+import com.shanpu.module.job.domain.vo.DlqStatsVO;
 
 import java.util.List;
 
@@ -16,4 +17,6 @@ public interface OrderDlqLogService {
     void incrementFailure(Long id, String failReason);
 
     void markError(Long id, String failReason, int failCount);
+
+    DlqStatsVO stats();
 }

@@ -1,7 +1,9 @@
 package com.shanpu.module.seckill.service.impl;
 
+import com.shanpu.cache.CacheClient;
 import com.shanpu.common.exception.BusinessException;
 import com.shanpu.common.result.ResultCode;
+import com.shanpu.infra.redis.RedisKeys;
 import com.shanpu.module.order.domain.entity.Order;
 import com.shanpu.module.order.mapper.OrderMapper;
 import com.shanpu.module.seckill.domain.msg.SeckillOrderMsg;
@@ -10,6 +12,7 @@ import com.shanpu.module.user.domain.entity.PointLog;
 import com.shanpu.module.user.mapper.PointLogMapper;
 import com.shanpu.module.user.mapper.UserMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -17,6 +20,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.LocalDateTime;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class SeckillOrderWriter {
 
@@ -25,6 +29,7 @@ public class SeckillOrderWriter {
     private final UserMapper userMapper;
     private final PointLogMapper pointLogMapper;
     private final TransactionTemplate transactionTemplate;
+    private final CacheClient cacheClient;
 
     public void createSyncPaidOrder(Long userId, String orderId, Long activityId,
                                     Long productId, int price, int source) {
@@ -38,6 +43,7 @@ public class SeckillOrderWriter {
             insertOrder(userId, orderId, activityId, productId, price, source);
             insertPointLog(userId, orderId, price);
         });
+        invalidateOrderCache(userId, orderId);
     }
 
     public boolean createAsyncPaidOrder(SeckillOrderMsg msg) {
@@ -61,7 +67,11 @@ public class SeckillOrderWriter {
             insertPointLog(msg.getUserId(), msg.getOrderId(), msg.getPrice());
             return true;
         });
-        return Boolean.TRUE.equals(created);
+        boolean orderCreated = Boolean.TRUE.equals(created);
+        if (orderCreated) {
+            invalidateOrderCache(msg.getUserId(), msg.getOrderId());
+        }
+        return orderCreated;
     }
 
     private void insertOrder(Long userId, String orderId, Long activityId,
@@ -104,5 +114,14 @@ public class SeckillOrderWriter {
         pointLog.setBizType(PointLog.BIZ_ORDER_CONSUME);
         pointLog.setBizRef(orderId);
         pointLogMapper.insert(pointLog);
+    }
+
+    private void invalidateOrderCache(Long userId, String orderId) {
+        try {
+            cacheClient.delete(RedisKeys.orderDetail(userId, orderId));
+        } catch (RuntimeException e) {
+            log.warn("Order detail cache invalidation failed after seckill order write: orderId={}, error={}: {}",
+                    orderId, e.getClass().getSimpleName(), e.getMessage());
+        }
     }
 }
