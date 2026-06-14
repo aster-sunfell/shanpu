@@ -88,8 +88,11 @@ backend/
 │   ├── interceptor/
 │   │   └── AuthInterceptor.java
 │   ├── cache/
+│   │   ├── ActivityLocalCache.java
+│   │   ├── ActivityLocalCacheProperties.java
 │   │   └── CacheClient.java
 │   ├── module/
+│   │   ├── admin/
 │   │   ├── user/
 │   │   ├── product/
 │   │   ├── seckill/
@@ -413,18 +416,18 @@ shanpu:
         expire-ms: 1000
 ```
 
-`enabled: false` 时 `LocalCacheConfig` 不注册 `activityLocal` Bean，`CacheClient` 回退到纯 L2 路径——压测对比开关在此。
+`enabled: false` 时 `CacheClient` 回退到纯 L2 路径。管理接口提供运行时开关，供场景 D 在同一进程内切换 L1 与纯 Redis 访问路径。
 
 #### CacheClient 旁路逻辑
 
 `queryWithLogicalExpire(keyPrefix, id, ...)` 内部包含 L1 旁路：
 
-1. 取注册表 `local = registry.get(keyPrefix)`；未注册（商品 Key 不注册）跳过 L1，沿用现有 Redis 路径。
-2. `local.getIfPresent(key)` 命中直接返回。
-3. 未命中走 §6.2 逻辑过期流程；Redis 命中后 `local.put(key, value)` 回填 L1。
-4. 空值占位 `shanpu:seckill:activity:null:{id}` 命中时回填 L1 `NullValue` 哨兵，避免 L1 反复回源。
+1. `ActivityLocalCache.supports(key)` 只接受 `shanpu:seckill:activity:{id}`，锁 Key 与其他 Redis Key 直接跳过 L1。
+2. L1 命中时返回 Redis 中同格式的 JSON 字符串，由 `CacheClient` 继续按逻辑过期结构反序列化。
+3. L1 未命中走 §6.2 逻辑过期流程；Redis 命中或 DB 回源写入后把相同 JSON 回填 L1。
+4. 空值占位 `""` 也可进入 L1，避免不存在活动在 L1 过期窗口内反复打到 Redis。
 
-写操作（活动状态变更、`SeckillWarmupJob` 预热）调用 `CacheClient.evict(keyPrefix, id)`：先 `DEL` Redis，再 `local.invalidate(key)`。允许 L1 存在 ≤ 1s 不一致窗口（与 L1 TTL 同量级）。
+写操作（活动状态变更、`SeckillWarmupJob` 预热）调用 `CacheClient.delete` 或 `setWithLogicalExpire`：删除时同步失效 L1，写入时同步回填 L1。允许非统一入口的运维手工 Redis 操作存在 ≤ 1s 不一致窗口（与 L1 TTL 同量级）。
 
 #### 不进入 L1 的 Key
 
@@ -441,7 +444,7 @@ shanpu:
 
 #### 可观测
 
-Caffeine `recordStats()` 暴露命中率与请求数；`GET /api/admin/cache/stats` 输出：
+`ActivityLocalCache` 维护 L1 请求数与命中数，`GET /api/admin/cache/stats` 输出：
 
 ```json
 {
@@ -455,6 +458,14 @@ Caffeine `recordStats()` 暴露命中率与请求数；`GET /api/admin/cache/sta
 ```
 
 该接口作为 M6 场景 D 验收的主要指标来源。
+
+场景 D 使用以下管理接口在压测轮次间切换与清理 L1；接口沿用 JWT 登录态鉴权。
+
+| 方法 | 路径 | 用途 |
+| ---- | ---- | ---- |
+| GET | `/api/admin/cache/stats` | 读取 `activityLocal.enabled / hitRate / requestCount / size` |
+| POST | `/api/admin/cache/activity-local/enabled?enabled=true|false` | 运行时开启或关闭活动 L1 |
+| POST | `/api/admin/cache/activity-local/reset` | 清空活动 L1 条目与统计计数 |
 
 ## 7. 秒杀核心
 
@@ -1020,6 +1031,9 @@ public class SeckillOrderMsg {
 | POST | `/api/admin/jobs/seckill-warmup/run` | 是 | `{ job, scanned, succeeded, failed }` |
 | POST | `/api/admin/jobs/order-reconcile/run` | 是 | `{ job, scanned, succeeded, failed }` |
 | GET  | `/api/admin/jobs/dlq/stats` | 是 | `{ pending, republished, error }` |
+| GET  | `/api/admin/cache/stats` | 是 | `{ activityLocal: { enabled, hitRate, requestCount, size } }` |
+| POST | `/api/admin/cache/activity-local/enabled?enabled=true|false` | 是 | `{ activityLocal: { enabled, hitRate, requestCount, size } }` |
+| POST | `/api/admin/cache/activity-local/reset` | 是 | `{ activityLocal: { enabled, hitRate, requestCount, size } }` |
 
 ## 14. 设计取舍
 

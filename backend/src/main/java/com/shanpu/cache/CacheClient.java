@@ -2,6 +2,7 @@ package com.shanpu.cache;
 
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.shanpu.infra.redis.RedisKeys;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.Cursor;
@@ -30,10 +31,13 @@ public class CacheClient {
 
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
+    private final ActivityLocalCache activityLocalCache;
 
     public void set(String key, Object value, Duration ttl) {
         try {
-            redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(value), ttl);
+            String json = objectMapper.writeValueAsString(value);
+            redisTemplate.opsForValue().set(key, json, ttl);
+            activityLocalCache.put(key, json);
         } catch (Exception e) {
             throw new IllegalStateException("Failed to serialize cache value for key " + key, e);
         }
@@ -45,7 +49,9 @@ public class CacheClient {
                 .expireTime(LocalDateTime.now().plus(ttl))
                 .build();
         try {
-            redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(redisData));
+            String json = objectMapper.writeValueAsString(redisData);
+            redisTemplate.opsForValue().set(key, json);
+            activityLocalCache.put(key, json);
         } catch (Exception e) {
             throw new IllegalStateException("Failed to serialize logical cache value for key " + key, e);
         }
@@ -53,9 +59,13 @@ public class CacheClient {
 
     public void delete(String key) {
         redisTemplate.delete(key);
+        activityLocalCache.invalidate(key);
     }
 
     public void deleteByPattern(String pattern) {
+        if (pattern != null && pattern.startsWith(RedisKeys.SECKILL_ACTIVITY_PREFIX)) {
+            activityLocalCache.invalidateAll();
+        }
         ScanOptions options = ScanOptions.scanOptions().match(pattern).count(100).build();
         List<String> batch = new ArrayList<>(100);
         try (Cursor<String> cursor = redisTemplate.scan(options)) {
@@ -82,7 +92,7 @@ public class CacheClient {
 
     public <R> R queryWithPassThrough(String key, JavaType type, Supplier<R> dbFallback,
                                       Duration ttl, Duration nullTtl) {
-        String json = redisTemplate.opsForValue().get(key);
+        String json = getCacheValue(key);
         if (json != null) {
             return json.isEmpty() ? null : read(json, type);
         }
@@ -90,6 +100,7 @@ public class CacheClient {
         R value = dbFallback.get();
         if (value == null) {
             redisTemplate.opsForValue().set(key, EMPTY_VALUE, nullTtl);
+            activityLocalCache.put(key, EMPTY_VALUE);
             return null;
         }
         set(key, value, ttl);
@@ -116,7 +127,7 @@ public class CacheClient {
 
     public <R> R queryWithLogicalExpire(String key, JavaType type, Supplier<R> dbFallback,
                                         String lockKey, Duration ttl, Duration nullTtl) {
-        String json = redisTemplate.opsForValue().get(key);
+        String json = getCacheValue(key);
         if (json != null && json.isEmpty()) {
             return null;
         }
@@ -125,6 +136,7 @@ public class CacheClient {
             if (value == null) {
                 if (nullTtl != null) {
                     redisTemplate.opsForValue().set(key, EMPTY_VALUE, nullTtl);
+                    activityLocalCache.put(key, EMPTY_VALUE);
                 }
                 return null;
             }
@@ -164,7 +176,7 @@ public class CacheClient {
 
     public <R> R queryWithMutex(String key, JavaType type, Supplier<R> dbFallback,
                                 String lockKey, Duration ttl, Duration nullTtl) {
-        String json = redisTemplate.opsForValue().get(key);
+        String json = getCacheValue(key);
         if (json != null) {
             return json.isEmpty() ? null : read(json, type);
         }
@@ -176,11 +188,13 @@ public class CacheClient {
                 if (locked) {
                     String doubleCheck = redisTemplate.opsForValue().get(key);
                     if (doubleCheck != null) {
+                        activityLocalCache.put(key, doubleCheck);
                         return doubleCheck.isEmpty() ? null : read(doubleCheck, type);
                     }
                     R value = dbFallback.get();
                     if (value == null) {
                         redisTemplate.opsForValue().set(key, EMPTY_VALUE, nullTtl);
+                        activityLocalCache.put(key, EMPTY_VALUE);
                         return null;
                     }
                     set(key, value, ttl);
@@ -189,12 +203,14 @@ public class CacheClient {
                 TimeUnit.MILLISECONDS.sleep(50);
                 json = redisTemplate.opsForValue().get(key);
                 if (json != null) {
+                    activityLocalCache.put(key, json);
                     return json.isEmpty() ? null : read(json, type);
                 }
             }
             R value = dbFallback.get();
             if (value == null) {
                 redisTemplate.opsForValue().set(key, EMPTY_VALUE, nullTtl);
+                activityLocalCache.put(key, EMPTY_VALUE);
                 return null;
             }
             set(key, value, ttl);
@@ -223,6 +239,18 @@ public class CacheClient {
 
     private void unlock(String key) {
         redisTemplate.delete(key);
+    }
+
+    private String getCacheValue(String key) {
+        String local = activityLocalCache.get(key);
+        if (local != null) {
+            return local;
+        }
+        String json = redisTemplate.opsForValue().get(key);
+        if (json != null) {
+            activityLocalCache.put(key, json);
+        }
+        return json;
     }
 
     private <T> T read(String json, Class<T> type) {
