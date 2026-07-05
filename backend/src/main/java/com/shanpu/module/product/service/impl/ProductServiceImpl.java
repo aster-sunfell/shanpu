@@ -37,23 +37,25 @@ public class ProductServiceImpl implements ProductService {
         int p = Math.max(page, 1);
         int s = size <= 0 ? DEFAULT_SIZE : Math.min(size, MAX_SIZE);
         JavaType pageType = cacheClient.javaType(PageResult.class, ProductVO.class);
-        return cacheClient.queryWithPassThrough(
+        return cacheClient.queryWithCacheAside(
                 RedisKeys.productList(p, s),
                 pageType,
                 () -> queryProductPage(p, s),
-                PRODUCT_LIST_TTL,
-                PRODUCT_NULL_TTL
+                PRODUCT_LIST_TTL
         );
     }
 
     @Override
     public ProductDetailVO getDetail(Long id) {
-        ProductDetailVO vo = cacheClient.queryWithLogicalExpire(
-                RedisKeys.PRODUCT_DETAIL_PREFIX,
-                id,
-                ProductDetailVO.class,
-                this::queryProductDetail,
-                PRODUCT_DETAIL_TTL,
+        ProductDetailVO vo = cacheClient.queryWithNullCache(
+                RedisKeys.productDetailNull(id),
+                () -> cacheClient.queryWithLogicalExpire(
+                        RedisKeys.PRODUCT_DETAIL_PREFIX,
+                        id,
+                        ProductDetailVO.class,
+                        this::queryProductDetail,
+                        PRODUCT_DETAIL_TTL
+                ),
                 PRODUCT_NULL_TTL
         );
         if (vo == null) {

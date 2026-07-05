@@ -50,17 +50,16 @@ class CacheClientTest {
     }
 
     @Test
-    void queryWithPassThrough_hit_returnsCachedValue() throws Exception {
+    void queryWithCacheAside_hit_returnsCachedValue() throws Exception {
         when(valueOperations.get("shanpu:test:1"))
                 .thenReturn(objectMapper.writeValueAsString(new TestValue(1L, "cached")));
 
-        TestValue value = cacheClient.queryWithPassThrough(
+        TestValue value = cacheClient.queryWithCacheAside(
                 "shanpu:test:",
                 1L,
                 TestValue.class,
                 id -> new TestValue(id, "db"),
-                Duration.ofMinutes(5),
-                Duration.ofMinutes(1)
+                Duration.ofMinutes(5)
         );
 
         assertEquals(1L, value.getId());
@@ -69,16 +68,15 @@ class CacheClientTest {
     }
 
     @Test
-    void queryWithPassThrough_miss_loadsDbAndWritesCache() {
+    void queryWithCacheAside_miss_loadsDbAndWritesCache() {
         when(valueOperations.get("shanpu:test:1")).thenReturn(null);
 
-        TestValue value = cacheClient.queryWithPassThrough(
+        TestValue value = cacheClient.queryWithCacheAside(
                 "shanpu:test:",
                 1L,
                 TestValue.class,
                 id -> new TestValue(id, "db"),
-                Duration.ofMinutes(5),
-                Duration.ofMinutes(1)
+                Duration.ofMinutes(5)
         );
 
         assertEquals("db", value.getName());
@@ -88,41 +86,68 @@ class CacheClientTest {
     }
 
     @Test
-    void queryWithPassThrough_nullValue_writesEmptyPlaceholder() {
-        when(valueOperations.get("shanpu:test:1")).thenReturn(null);
-
-        TestValue value = cacheClient.queryWithPassThrough(
-                "shanpu:test:",
-                1L,
-                TestValue.class,
-                id -> null,
-                Duration.ofMinutes(5),
-                Duration.ofMinutes(1)
-        );
-
-        assertNull(value);
-        verify(valueOperations).set("shanpu:test:1", "", Duration.ofMinutes(1));
-    }
-
-    @Test
-    void queryWithPassThrough_emptyPlaceholder_skipsDb() {
+    void queryWithNullCache_nullPlaceholderHit_skipsValueSupplier() {
         AtomicInteger fallbackCalls = new AtomicInteger();
-        when(valueOperations.get("shanpu:test:1")).thenReturn("");
+        when(valueOperations.get("shanpu:test:null:1")).thenReturn("");
 
-        TestValue value = cacheClient.queryWithPassThrough(
-                "shanpu:test:",
-                1L,
-                TestValue.class,
-                id -> {
+        TestValue value = cacheClient.queryWithNullCache(
+                "shanpu:test:null:1",
+                () -> {
                     fallbackCalls.incrementAndGet();
-                    return new TestValue(id, "db");
+                    return new TestValue(1L, "db");
                 },
-                Duration.ofMinutes(5),
                 Duration.ofMinutes(1)
         );
 
         assertNull(value);
         assertEquals(0, fallbackCalls.get());
+    }
+
+    @Test
+    void queryWithNullCache_nullValue_writesOnlyNullPlaceholder() {
+        when(valueOperations.get("shanpu:test:null:1")).thenReturn(null);
+
+        TestValue value = cacheClient.queryWithNullCache(
+                "shanpu:test:null:1",
+                () -> null,
+                Duration.ofMinutes(1)
+        );
+
+        assertNull(value);
+        verify(valueOperations).set("shanpu:test:null:1", "", Duration.ofMinutes(1));
+        verify(valueOperations, never()).set(eq("shanpu:test:1"), eq(""), any(Duration.class));
+    }
+
+    @Test
+    void queryWithMutex_nullValue_skipsEmptyPlaceholder() {
+        when(valueOperations.setIfAbsent("shanpu:order:lock:1", "1", Duration.ofSeconds(10))).thenReturn(true);
+
+        TestValue value = cacheClient.queryWithMutex(
+                "shanpu:order:1",
+                cacheClient.javaType(TestValue.class),
+                () -> null,
+                "shanpu:order:lock:1",
+                Duration.ofSeconds(30)
+        );
+
+        assertNull(value);
+        verify(valueOperations, never()).set(eq("shanpu:order:1"), eq(""), any(Duration.class));
+    }
+
+    @Test
+    void queryWithLogicalExpire_nullValue_skipsEmptyPlaceholder() {
+        when(valueOperations.get("shanpu:test:1")).thenReturn(null);
+
+        TestValue value = cacheClient.queryWithLogicalExpire(
+                "shanpu:test:",
+                1L,
+                TestValue.class,
+                id -> null,
+                Duration.ofMinutes(5)
+        );
+
+        assertNull(value);
+        verify(valueOperations, never()).set(eq("shanpu:test:1"), eq(""), any(Duration.class));
     }
 
     @Test

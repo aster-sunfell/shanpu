@@ -29,8 +29,16 @@ public final class RedisKeys {
         return PRODUCT_DETAIL_PREFIX + productId;
     }
 
+    public static String productDetailNull(Long productId) {
+        return PRODUCT_DETAIL_PREFIX + "null:" + productId;
+    }
+
     public static String seckillActivity(Long activityId) {
         return SECKILL_ACTIVITY_PREFIX + activityId;
+    }
+
+    public static String seckillActivityNull(Long activityId) {
+        return SECKILL_ACTIVITY_PREFIX + "null:" + activityId;
     }
 
     public static String seckillActivityLock(Long activityId) {
@@ -53,6 +61,13 @@ public final class RedisKeys {
         return ORDER_DETAIL_PREFIX + "lock:user:" + userId + ":" + orderId;
     }
 
+    /**
+     * 生成滑动窗口限流 Redis Key。
+     *
+     * @param dimension 限流维度和值，例如 {@code user:1}、{@code ip:127.0.0.1} 或 {@code api}
+     * @param apiKey 接口标识，默认是声明类名加方法名
+     * @return 形如 {@code shanpu:rate:{dimension}:{apiKey}} 的限流 Key
+     */
     public static String rateLimit(String dimension, String apiKey) {
         return RATE_LIMIT_PREFIX + dimension + ":" + apiKey;
     }

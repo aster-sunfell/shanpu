@@ -1,11 +1,13 @@
 package com.shanpu.module.order.service.impl;
 
 import cn.hutool.core.lang.Snowflake;
+import com.fasterxml.jackson.databind.JavaType;
 import com.shanpu.cache.CacheClient;
 import com.shanpu.common.exception.BusinessException;
 import com.shanpu.common.result.ResultCode;
 import com.shanpu.infra.redis.RedisKeys;
 import com.shanpu.module.order.domain.entity.Order;
+import com.shanpu.module.order.domain.vo.OrderDetailVO;
 import com.shanpu.module.order.domain.vo.OrderVO;
 import com.shanpu.module.order.mapper.OrderMapper;
 import com.shanpu.module.product.domain.entity.Product;
@@ -20,6 +22,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Duration;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -27,7 +31,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -128,6 +134,7 @@ class OrderServiceImplTest {
         assertEquals("9000000000001", log.getBizRef());
 
         verify(cacheClient).delete(RedisKeys.productDetail(5L));
+        verify(cacheClient).delete(RedisKeys.productDetailNull(5L));
         verify(cacheClient).deleteByPattern(RedisKeys.productListPattern());
     }
 
@@ -147,6 +154,7 @@ class OrderServiceImplTest {
         assertEquals("PAID", vo.getStatus());
         verify(orderMapper).insert(any(Order.class));
         verify(pointLogMapper).insert(any(PointLog.class));
+        verify(cacheClient).delete(RedisKeys.productDetailNull(5L));
         verify(cacheClient).deleteByPattern(RedisKeys.productListPattern());
     }
 
@@ -159,5 +167,23 @@ class OrderServiceImplTest {
         assertEquals(ResultCode.NOT_FOUND, ex.getResultCode());
 
         verify(productMapper, never()).deductStock(anyLong(), anyInt());
+    }
+
+    @Test
+    void getOrderDetail_cacheMiss_usesNoNullPlaceholder() {
+        JavaType type = mock(JavaType.class);
+        when(cacheClient.javaType(OrderDetailVO.class)).thenReturn(type);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.getOrderDetail(7L, "9000000000003"));
+
+        assertEquals(ResultCode.NOT_FOUND, ex.getResultCode());
+        verify(cacheClient).queryWithMutex(
+                eq(RedisKeys.orderDetail(7L, "9000000000003")),
+                eq(type),
+                any(),
+                eq(RedisKeys.orderDetailLock(7L, "9000000000003")),
+                eq(Duration.ofSeconds(30))
+        );
     }
 }

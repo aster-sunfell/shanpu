@@ -292,7 +292,7 @@ export const userApi = {
 
 `seckillApi.grab(id)` 返回 `status === 'PENDING'`（即超级档 `tier=3`）后直接跳转订单详情。`use-seckill-result` 对初始 `40400` 与订单 `PENDING` 状态统一按 1 秒间隔查询，最多 10 次；状态转为 `PAID` 后停止轮询并强制刷新 `/api/users/me/points`，状态转为 `CANCELLED` 后停止轮询并展示失败状态，达到次数上限仍为 `PENDING` 时展示手动刷新入口。
 
-后端 `/api/orders/{orderId}` 命中 30 秒用户级缓存，单用户单订单的最大 QPS 不会击穿到 DB。
+后端 `/api/orders/{orderId}` 命中 30 秒用户级缓存；超级档 Kafka ack 后会先写入 `PENDING` 订单详情占位，消费落库后失效该缓存，单用户单订单的最大 QPS 不会击穿到 DB。
 
 ## 11. 错误与 Toast
 

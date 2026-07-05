@@ -6,6 +6,7 @@ import com.shanpu.common.exception.BusinessException;
 import com.shanpu.common.result.ResultCode;
 import com.shanpu.infra.redis.RedisKeys;
 import com.shanpu.module.order.domain.entity.Order;
+import com.shanpu.module.order.domain.vo.OrderDetailVO;
 import com.shanpu.module.seckill.domain.entity.SeckillActivity;
 import com.shanpu.module.seckill.domain.msg.SeckillOrderMsg;
 import com.shanpu.module.seckill.domain.vo.SeckillActivityVO;
@@ -22,7 +23,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.function.Function;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -56,6 +57,25 @@ class SeckillServiceImplTest {
 
     @InjectMocks
     private SeckillServiceImpl seckillService;
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void detail_notFound_usesIndependentNullCacheKey() {
+        when(cacheClient.queryWithNullCache(
+                eq(RedisKeys.seckillActivityNull(3001L)),
+                any(Supplier.class),
+                eq(Duration.ofMinutes(2))
+        )).thenReturn(null);
+
+        BusinessException ex = assertThrows(BusinessException.class, () -> seckillService.detail(3001L));
+
+        assertEquals(ResultCode.NOT_FOUND, ex.getResultCode());
+        verify(cacheClient).queryWithNullCache(
+                eq(RedisKeys.seckillActivityNull(3001L)),
+                any(Supplier.class),
+                eq(Duration.ofMinutes(2))
+        );
+    }
 
     @Test
     void grabInclusive_routesToSyncPaidOrder() {
@@ -115,6 +135,20 @@ class SeckillServiceImplTest {
         assertEquals(Order.SOURCE_SECKILL_SUPER, msgCaptor.getValue().getSource());
         assertEquals(3001L, msgCaptor.getValue().getActivityId());
         assertEquals(7L, msgCaptor.getValue().getUserId());
+
+        ArgumentCaptor<OrderDetailVO> detailCaptor = ArgumentCaptor.forClass(OrderDetailVO.class);
+        verify(cacheClient).set(
+                eq(RedisKeys.orderDetail(7L, "9000000000003")),
+                detailCaptor.capture(),
+                eq(Duration.ofSeconds(30))
+        );
+        OrderDetailVO pending = detailCaptor.getValue();
+        assertEquals("9000000000003", pending.getOrderId());
+        assertEquals(1L, pending.getProductId());
+        assertEquals("机械键盘 87 键", pending.getProductTitle());
+        assertEquals(1080, pending.getPrice());
+        assertEquals("PENDING", pending.getStatus());
+        assertEquals(Order.SOURCE_SECKILL_SUPER, pending.getSource());
     }
 
     @Test
@@ -133,16 +167,40 @@ class SeckillServiceImplTest {
 
         assertEquals(ResultCode.INTERNAL_ERROR, ex.getResultCode());
         verify(redisExecutor).rollback(3001L, 7L);
+        verify(cacheClient, never()).set(
+                eq(RedisKeys.orderDetail(7L, "9000000000004")),
+                any(OrderDetailVO.class),
+                any(Duration.class)
+        );
+    }
+
+    @Test
+    void grabSuper_pendingCacheFailureStillReturnsPending() {
+        SeckillActivityVO activity = activity(3001L, SeckillActivity.TIER_SUPER);
+        mockActivityCache(activity);
+        when(redisExecutor.currentStock(activity)).thenReturn(99);
+        when(snowflake.nextIdStr()).thenReturn("9000000000005");
+        when(redisExecutor.preDeduct(3001L, 7L, "9000000000005"))
+                .thenReturn(SeckillRedisExecutor.OK);
+        doThrow(new IllegalStateException("redis down"))
+                .when(cacheClient).set(
+                        eq(RedisKeys.orderDetail(7L, "9000000000005")),
+                        any(OrderDetailVO.class),
+                        eq(Duration.ofSeconds(30))
+                );
+
+        SeckillGrabVO result = seckillService.grab(7L, 3001L);
+
+        assertEquals("9000000000005", result.getOrderId());
+        assertEquals("PENDING", result.getStatus());
+        verify(redisExecutor, never()).rollback(3001L, 7L);
     }
 
     @SuppressWarnings("unchecked")
     private void mockActivityCache(SeckillActivityVO activity) {
-        when(cacheClient.queryWithLogicalExpire(
-                eq(RedisKeys.SECKILL_ACTIVITY_PREFIX),
-                eq(activity.getId()),
-                eq(SeckillActivityVO.class),
-                any(Function.class),
-                any(Duration.class),
+        when(cacheClient.queryWithNullCache(
+                eq(RedisKeys.seckillActivityNull(activity.getId())),
+                any(Supplier.class),
                 any(Duration.class)
         )).thenReturn(activity);
     }

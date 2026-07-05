@@ -35,7 +35,7 @@
 - **Redis + Lua 原子库存扣减**：将秒杀的库存校验、一人一单判断与预扣减压缩至单次 Lua 调用，绕开 MySQL 单行锁串行化瓶颈，**大幅降低尾延迟**。压测对比（100 VU 横向）：**平均吞吐 200 → 300 RPS（1.5×）**，**p99 500ms → 150ms（-70%）**。
 - **Kafka 异步削峰下单**：秒杀链路从同步事务落库升级为 Kafka 异步消费，接口 RT 不含 DB 写入开销，**显著降低成功请求的尾延迟**。压测对比（100 VU 横向）：**平均吞吐 300 → 350 RPS（1.17×）**，**p99 150ms → 80ms（-47%）**。
 - **Caffeine（L1）+ Redis（L2）二级缓存**：为热点活动详情 Key 增设 Caffeine 本地缓存抗读，微秒级命中，减轻 Redis 单 Key 高 QPS 压力。压测对比：**活动接口 p99 15ms → 5ms（-67%）**，**L1 命中率 ≥ 95%**。
-- **缓存防穿透 + 防击穿组合**：商品访问采用"缓存空值占位"拦截恶意 ID 扫描，避免空查询直击 MySQL；活动访问采用"逻辑过期 + 后台异步重建"，避免缓存重建期间大量请求穿透到 MySQL。
+- **缓存防穿透 + 防击穿拆分**：商品和活动不存在态使用独立空值 Key 拦截恶意 ID 扫描；热点详情使用"逻辑过期 + 后台异步重建"防击穿；订单详情使用互斥锁压住轮询回源并避免异步落库窗口写空值。
 - **滑动窗口限流（ZSet + Lua + AOP）**：基于 Redis ZSet 实现原子滑动窗口，自定义 `@RateLimit` 注解支持 USER / IP / API 三维度，挂到登录、抢购等敏感接口，业务代码零侵入。
 - **DLQ + 幂等定时任务保证最终一致**：消息消费失败重试 3 次后入 DLQ，定时回投主 Topic 并累加失败计数，超 5 次写 ERROR 日志告警；周期对账修复 Redis 库存与 MySQL 真实订单数偏差，覆盖消息丢失与 Redis 数据丢失场景。
 
@@ -309,28 +309,32 @@ ZSET 的 score 存毫秒时间戳，`ZREMRANGEBYSCORE` 滚动清理过期点，`
 
 ## 6. 缓存模板 CacheClient
 
-`CacheClient` 封装 Redis 访问，对外暴露三种查询模式。序列化统一走 Jackson。
+`CacheClient` 封装 Redis 访问，对外暴露四种单一职责查询模式。序列化统一走 Jackson。
 
 ```java
 public class CacheClient {
 
-    // 1. 缓存空值，防穿透
-    public <R, ID> R queryWithPassThrough(
-        String keyPrefix, ID id, Class<R> type,
-        Function<ID, R> dbFallback,
-        Duration ttl, Duration nullTtl);
+    // 1. 普通 cache-aside，只缓存真实值
+    public <R> R queryWithCacheAside(
+        String key, JavaType type, Supplier<R> dbFallback,
+        Duration ttl);
 
-    // 2. 逻辑过期，防击穿
+    // 2. 独立空值 Key，防穿透
+    public <R> R queryWithNullCache(
+        String nullKey, Supplier<R> valueSupplier,
+        Duration nullTtl);
+
+    // 3. 逻辑过期，防击穿
     public <R, ID> R queryWithLogicalExpire(
         String keyPrefix, ID id, Class<R> type,
         Function<ID, R> dbFallback,
-        Duration logicalTtl, Duration nullTtl);
+        Duration logicalTtl);
 
-    // 3. 互斥锁，防击穿
+    // 4. 互斥锁，防并发回源
     public <R, ID> R queryWithMutex(
         String keyPrefix, ID id, Class<R> type,
         Function<ID, R> dbFallback,
-        Duration ttl, Duration nullTtl);
+        Duration ttl);
 
     public void set(String key, Object value, Duration ttl);
     public void setWithLogicalExpire(String key, Object value, Duration logicalTtl);
@@ -338,17 +342,16 @@ public class CacheClient {
 }
 ```
 
-### 6.1 缓存空值
+### 6.1 空值缓存
 
-`queryWithPassThrough` 流程：
+`queryWithNullCache` 专门解决缓存穿透，空值占位使用独立 `nullKey`，不写入真实数据 Key。
 
-1. 查 `keyPrefix + id`，命中且非空值占位则反序列化返回。
-2. 命中空值占位（约定值 `""`）则直接返回 `null`。
-3. 未命中则调 `dbFallback`：
-   - DB 返回非空：写入 Redis 并设 `ttl`，返回。
-   - DB 返回空：写入空字符串并设 `nullTtl`（默认 2 分钟），返回 `null`。
+1. 查 `nullKey`，命中空值占位（约定值 `""`）则直接返回 `null`。
+2. 调用 `valueSupplier` 获取真实数据：
+   - 返回非空：直接返回，由内部真实读取策略负责缓存。
+   - 返回空：写入 `nullKey = ""` 并设置 `nullTtl`，返回 `null`。
 
-适用：商品列表等按查询条件区分的读路径。
+适用：商品详情、秒杀活动详情等“资源稳定不存在”的读路径。订单详情不使用空值缓存。
 
 ### 6.2 逻辑过期
 
@@ -363,13 +366,13 @@ public class RedisData {
 
 `queryWithLogicalExpire` 流程：
 
-1. 查 Key，命中空值占位（约定值 `""`）则直接返回 `null`。
+1. 查 Key，命中则解析 `RedisData`。
 2. 未命中则同步调用 `dbFallback` 回源：
    - DB 返回非空：写入 `RedisData` 并设置逻辑过期时间，返回。
-   - DB 返回空：写入空字符串并设 `nullTtl`，返回 `null`。
+   - DB 返回空：直接返回 `null`，不写空值。
 3. 命中后解析 `RedisData`：
    - `expireTime > now`：直接返回 `data`。
-   - 已过期：返回旧 `data`，同时提交一个后台任务异步重建（尝试获取 `{keyPrefix}lock:{id}` 锁，拿到则 `dbFallback` 后 `setWithLogicalExpire`，未拿到说明其他线程在重建，跳过）。
+   - 已过期：返回旧 `data`，同时提交一个后台任务异步重建（尝试获取 `{keyPrefix}lock:{id}` 锁，拿到则 `dbFallback` 后 `setWithLogicalExpire`；DB 返回空则删除真实数据 Key；未拿到说明其他线程在重建，跳过）。
 
 后台线程池：`ExecutorService rebuildExecutor = Executors.newFixedThreadPool(4)`。
 
@@ -377,15 +380,15 @@ public class RedisData {
 
 ### 6.3 互斥锁
 
-`queryWithMutex` 用于订单详情等低 TTL 读路径：未命中时尝试获取 Redis 互斥锁，拿到则查 DB 并回填缓存，未拿到则短暂等待后重试缓存；DB 返回空时写入空值占位并设置 `nullTtl`。
+`queryWithMutex` 用于订单详情等低 TTL 读路径：未命中时尝试获取 Redis 互斥锁，拿到则查 DB 并回填真实缓存，未拿到则短暂等待后重试缓存；DB 返回空直接返回 `null`，不写空值占位。
 
 ### 6.4 商品 / 活动落点
 
 | 数据         | 模式     | TTL                    | VO 字段                                                                                                         |
 | ------------ | -------- | ---------------------- | --------------------------------------------------------------------------------------------------------------- |
-| 商品详情     | 逻辑过期 | 30 分钟                | 完整字段（含 `description`）                                                                                    |
-| 秒杀活动详情 | 逻辑过期 | 10 分钟                | 完整字段                                                                                                        |
-| 商品列表     | 缓存空值 | 5 分钟（列表查询级别） | 仅 `id / title / coverUrl / price / stock / status`，**不携带 `description`**，防止分页缓存体积随 size 倍数放大 |
+| 商品详情     | 独立空值 Key + 逻辑过期 | 30 分钟                | 完整字段（含 `description`）                                                                                    |
+| 秒杀活动详情 | 独立空值 Key + 逻辑过期 | 10 分钟                | 完整字段                                                                                                        |
+| 商品列表     | 普通 TTL | 5 分钟（列表查询级别） | 仅 `id / title / coverUrl / price / stock / status`，**不携带 `description`**，防止分页缓存体积随 size 倍数放大 |
 | 我的订单详情 | 互斥锁   | 30 秒                  | 完整字段；Key 包含 `userId`，防止订单跨用户泄露                                                                 |
 
 普通商品下单事务提交后清理对应 `shanpu:product:detail:{id}` 与 `shanpu:product:list:*` 缓存。缓存清理由事务 `afterCommit` 触发，保证后续商品详情与列表查询回源读取扣减后的库存；Redis 异常仅记录告警，不改变已提交订单的接口响应。
@@ -422,10 +425,10 @@ shanpu:
 
 `queryWithLogicalExpire(keyPrefix, id, ...)` 内部包含 L1 旁路：
 
-1. `ActivityLocalCache.supports(key)` 只接受 `shanpu:seckill:activity:{id}`，锁 Key 与其他 Redis Key 直接跳过 L1。
+1. `ActivityLocalCache.supports(key)` 只接受 `shanpu:seckill:activity:{id}` 与 `shanpu:seckill:activity:null:{id}`，锁 Key 与其他 Redis Key 直接跳过 L1。
 2. L1 命中时返回 Redis 中同格式的 JSON 字符串，由 `CacheClient` 继续按逻辑过期结构反序列化。
 3. L1 未命中走 §6.2 逻辑过期流程；Redis 命中或 DB 回源写入后把相同 JSON 回填 L1。
-4. 空值占位 `""` 也可进入 L1，避免不存在活动在 L1 过期窗口内反复打到 Redis。
+4. 独立活动空值 Key `shanpu:seckill:activity:null:{id}` 也可进入 L1，避免不存在活动在 L1 过期窗口内反复打到 Redis。
 
 写操作（活动状态变更、`SeckillWarmupJob` 预热）调用 `CacheClient.delete` 或 `setWithLogicalExpire`：删除时同步失效 L1，写入时同步回填 L1。允许非统一入口的运维手工 Redis 操作存在 ≤ 1s 不一致窗口（与 L1 TTL 同量级）。
 
@@ -536,7 +539,7 @@ public OrderVO grab(long activityId);
 
 实现按以下流程路由：
 
-1. 通过 `CacheClient.queryWithLogicalExpire(KEY_PREFIX_ACTIVITY, activityId, ActivityVO.class, ...)` 取活动详情，命中 L1 Caffeine / L2 Redis / L3 MySQL 任一层。
+1. 通过 `CacheClient.queryWithNullCache(activityNullKey, () -> queryWithLogicalExpire(...))` 取活动详情，不存在活动命中独立空值 Key，真实活动命中 L1 Caffeine / L2 Redis / L3 MySQL 任一层。
 2. 检查 `activity != null`（否则抛 `ACTIVITY_NOT_FOUND`）、`activity.startAt <= now`（否则抛 `ACTIVITY_NOT_START`）、`activity.endAt > now`（否则抛 `ACTIVITY_ENDED`）。
 3. 由 `Snowflake.nextIdStr()` 生成 `orderId`。
 4. 按 `activity.tier` 分支：
@@ -923,14 +926,15 @@ Hutool `Snowflake` 检测到 `currentMs < lastMs` 直接抛 `IllegalStateExcepti
 | Key 模板                               | 类型                   | TTL                | 用途                                                      |
 | -------------------------------------- | ---------------------- | ------------------ | --------------------------------------------------------- |
 | `shanpu:user:session:{tokenHash}`      | String(userId)         | 7 天               | 登录态会话白名单；登出 DEL，自然过期同 JWT                |
-| `shanpu:product:detail:{id}`           | String(JSON+RedisData) | 逻辑过期 30 分钟   | 商品详情；同 Key 空字符串表示空值占位                     |
+| `shanpu:product:detail:{id}`           | String(JSON+RedisData) | 逻辑过期 30 分钟   | 商品详情真实数据                                          |
+| `shanpu:product:detail:null:{id}`      | String("")             | 2 分钟             | 商品详情空值占位                                          |
 | `shanpu:product:detail:lock:{id}`      | String                 | 10 秒              | 商品详情逻辑过期重建锁                                    |
 | `shanpu:product:list:page:{page}:size:{size}` | String(JSON)   | 5 分钟             | 商品列表分页缓存                                          |
-| `shanpu:seckill:activity:{id}`         | String(JSON+RedisData) | 逻辑过期 10 分钟   | 秒杀活动详情（含 `tier` 字段），三档统一写入              |
+| `shanpu:seckill:activity:{id}`         | String(JSON+RedisData) | 逻辑过期 10 分钟   | 秒杀活动详情真实数据（含 `tier` 字段），三档统一写入      |
 | `shanpu:seckill:activity:null:{id}`    | String("")             | 2 分钟             | 活动空值占位                                              |
 | `shanpu:seckill:stock:{activityId}`    | String(int)            | 活动 `end_at + 1h` | 秒杀剩余库存，仅 `tier=2/3` 写入；`tier=1` 普惠档无此 Key |
 | `shanpu:seckill:bought:{activityId}`   | Set                    | 活动 `end_at + 1h` | 已购用户 ID 集合，仅 `tier=2/3` 写入；单场上限 20000      |
-| `shanpu:order:detail:user:{userId}:{orderId}` | String(JSON)   | 30 秒              | 订单详情用户级缓存，缓解轮询风暴；同 Key 空字符串表示空值占位 |
+| `shanpu:order:detail:user:{userId}:{orderId}` | String(JSON)   | 30 秒              | 订单详情用户级缓存，缓解轮询风暴；超级档 Kafka ack 后会先写 `PENDING` 占位，落库成功后删除并回源真实订单 |
 | `shanpu:order:detail:lock:user:{userId}:{orderId}` | String        | 10 秒              | 订单详情互斥重建锁                                        |
 | `shanpu:rate:user:{userId}:{methodSig}` | ZSet                  | window             | 用户维度限流                                              |
 | `shanpu:rate:ip:{clientIp}:{methodSig}` | ZSet                  | window             | IP 维度限流                                               |
@@ -938,7 +942,7 @@ Hutool `Snowflake` 检测到 `currentMs < lastMs` 直接抛 `IllegalStateExcepti
 
 `RedisKeys` 类集中维护 Key 模板常量，业务代码禁止硬编码字符串。
 
-`shanpu:seckill:activity:{id}` 与对应空值占位 Key 同时在 JVM 内驻留 Caffeine L1（容量 256、`expireAfterWrite=1s`），其余 Key 仅驻留 Redis 单层；详见 §6.5。
+`shanpu:seckill:activity:{id}` 与对应独立空值占位 Key 同时在 JVM 内驻留 Caffeine L1（容量 256、`expireAfterWrite=1s`），其余 Key 仅驻留 Redis 单层；详见 §6.5。
 
 ## 12. Kafka Topic 设计
 

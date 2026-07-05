@@ -43,7 +43,6 @@ public class OrderServiceImpl implements OrderService {
     private static final int DEFAULT_SIZE = 20;
     private static final int MAX_SIZE = 50;
     private static final Duration ORDER_DETAIL_TTL = Duration.ofSeconds(30);
-    private static final Duration ORDER_NULL_TTL = Duration.ofSeconds(30);
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -108,8 +107,7 @@ public class OrderServiceImpl implements OrderService {
                 cacheClient.javaType(OrderDetailVO.class),
                 () -> orderMapper.selectByOrderId(userId, orderId),
                 RedisKeys.orderDetailLock(userId, orderId),
-                ORDER_DETAIL_TTL,
-                ORDER_NULL_TTL
+                ORDER_DETAIL_TTL
         );
         if (vo == null) {
             throw new BusinessException(ResultCode.NOT_FOUND);
@@ -148,6 +146,12 @@ public class OrderServiceImpl implements OrderService {
             cacheClient.delete(RedisKeys.productDetail(productId));
         } catch (RuntimeException e) {
             log.warn("Product detail cache invalidation failed: productId={}, error={}: {}",
+                    productId, e.getClass().getSimpleName(), e.getMessage());
+        }
+        try {
+            cacheClient.delete(RedisKeys.productDetailNull(productId));
+        } catch (RuntimeException e) {
+            log.warn("Product detail null cache invalidation failed: productId={}, error={}: {}",
                     productId, e.getClass().getSimpleName(), e.getMessage());
         }
         try {
