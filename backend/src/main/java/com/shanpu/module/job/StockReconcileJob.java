@@ -52,7 +52,7 @@ public class StockReconcileJob {
                 }
             } catch (RuntimeException e) {
                 failed++;
-                log.warn("Seckill stock reconcile failed: activityId={}, error={}: {}",
+                log.warn("秒杀库存对账失败: activityId={}, error={}: {}",
                         activity.getId(), e.getClass().getSimpleName(), e.getMessage());
             }
         }
@@ -77,7 +77,7 @@ public class StockReconcileJob {
         if (redisRemaining > dbRemaining) {
             // 向下修正 Redis 库存，收敛 Redis 比 DB 多放出库存的超卖风险。
             redisExecutor.setStock(activity.getId(), dbRemaining);
-            log.error("Reconciled seckill stock: activityId={}, redisStock={}, dbStock={}",
+            log.error("秒杀库存对账已修正: activityId={}, redisStock={}, dbStock={}",
                     activity.getId(), redisRemaining, dbRemaining);
             return true;
         }

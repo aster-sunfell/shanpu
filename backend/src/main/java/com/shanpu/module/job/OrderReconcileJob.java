@@ -51,7 +51,7 @@ public class OrderReconcileJob {
                 }
             } catch (RuntimeException e) {
                 failed++;
-                log.warn("Order point-log reconcile failed: orderId={}, error={}: {}",
+                log.warn("订单积分流水对账失败: orderId={}, error={}: {}",
                         order.getOrderId(), e.getClass().getSimpleName(), e.getMessage());
             }
         }
@@ -75,7 +75,7 @@ public class OrderReconcileJob {
         pointLog.setBizType(PointLog.BIZ_ORDER_CONSUME);
         pointLog.setBizRef(order.getOrderId());
         pointLogMapper.insert(pointLog);
-        log.error("Reconciled missing point log: orderId={}, userId={}",
+        log.error("订单缺失积分流水已补齐: orderId={}, userId={}",
                 order.getOrderId(), order.getUserId());
         return true;
     }

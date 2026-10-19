@@ -48,7 +48,7 @@ public class SeckillConsumer {
         boolean created = orderWriter.createAsyncPaidOrder(msg);
         if (!created) {
             // 订单已存在通常来自 Kafka 至少一次投递或 DLQ 回投，幂等跳过后仍可提交 offset。
-            log.info("Duplicate seckill message skipped: orderId={}", msg.getOrderId());
+            log.info("重复的秒杀消息已跳过: orderId={}", msg.getOrderId());
         }
         // 只有业务处理完成或确认重复可跳过后才手动提交 offset。
         ack.acknowledge();

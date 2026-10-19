@@ -191,7 +191,7 @@ public class SeckillOrderWriter {
         try {
             cacheClient.delete(RedisKeys.orderDetail(userId, orderId));
         } catch (RuntimeException e) {
-            log.warn("Order detail cache invalidation failed after seckill order write: orderId={}, error={}: {}",
+            log.warn("秒杀订单写入后，订单详情缓存失效失败: orderId={}, error={}: {}",
                     orderId, e.getClass().getSimpleName(), e.getMessage());
         }
     }

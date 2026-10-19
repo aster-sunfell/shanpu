@@ -77,7 +77,7 @@ public class OrderTimeoutJob {
                 }
             } catch (RuntimeException e) {
                 failed++;
-                log.warn("Order timeout cancellation failed: orderId={}, error={}: {}",
+                log.warn("订单超时关闭失败: orderId={}, error={}: {}",
                         order.getOrderId(), e.getClass().getSimpleName(), e.getMessage());
             }
         }
@@ -127,7 +127,7 @@ public class OrderTimeoutJob {
         try {
             cacheClient.delete(RedisKeys.orderDetail(order.getUserId(), order.getOrderId()));
         } catch (RuntimeException e) {
-            log.warn("Order detail cache invalidation failed after timeout: orderId={}, error={}: {}",
+            log.warn("超时订单详情缓存失效失败: orderId={}, error={}: {}",
                     order.getOrderId(), e.getClass().getSimpleName(), e.getMessage());
         }
     }

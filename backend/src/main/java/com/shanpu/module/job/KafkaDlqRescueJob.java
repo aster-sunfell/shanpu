@@ -98,7 +98,7 @@ public class KafkaDlqRescueJob {
             // 回投仍走生产者的同步 ack 逻辑，确保消息进入主 Topic 后再标记已回投。
             seckillProducer.send(msg);
             orderDlqLogService.markRepublished(dlqLog.getId());
-            log.info("Kafka DLQ message republished: orderId={}", dlqLog.getOrderId());
+            log.info("Kafka 死信队列消息已回投: orderId={}", dlqLog.getOrderId());
             return true;
         } catch (Exception e) {
             recordFailure(dlqLog, e);
@@ -139,7 +139,7 @@ public class KafkaDlqRescueJob {
         }
         // 仍未达到上限时保留 PENDING 状态，等待下一轮定时任务继续回投。
         orderDlqLogService.incrementFailure(dlqLog.getId(), reason);
-        log.warn("Kafka DLQ rescue failed: orderId={}, failCount={}, error={}: {}",
+        log.warn("Kafka 死信队列回投失败: orderId={}, failCount={}, error={}: {}",
                 dlqLog.getOrderId(), nextFailCount, e.getClass().getSimpleName(), e.getMessage());
     }
 
@@ -152,7 +152,7 @@ public class KafkaDlqRescueJob {
      */
     private void markError(OrderDlqLog dlqLog, String reason, int failCount) {
         orderDlqLogService.markError(dlqLog.getId(), reason, failCount);
-        log.error("Kafka DLQ rescue exceeded max fail count: orderId={}, failCount={}, reason={}",
+        log.error("Kafka 死信队列回投超过最大失败次数: orderId={}, failCount={}, reason={}",
                 dlqLog.getOrderId(), failCount, reason);
     }
 
