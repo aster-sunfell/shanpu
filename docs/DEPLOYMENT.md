@@ -4,8 +4,6 @@
 
 ```text
 shanpu/
-├── AGENTS.md
-├── CLAUDE.md
 ├── README.md
 ├── .sdkmanrc
 ├── docker-compose.yml
