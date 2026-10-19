@@ -52,14 +52,14 @@ A/B/C 三档秒杀横向对比采用固定 `100 VU / 30s`，配套 20000 压测�
 
 **场景 B vs C（亮点 2）**：
 
-- 场景 C 超级：Lua 扣减后调 `kafkaTemplate.send().get(3s)`，本地单节点 KRaft `acks=1` 下 ack 延迟 ~2-10ms；接口 RT 不含 DB 落库（消费端异步），100 VU 下平均 RPS ~350（成功路径 Kafka send ~5ms 短于 B 的 DB txn ~10ms，带来 ~17% 边际）；p99 由 Kafka producer ack 上限决定 ⇒ ~80ms。
+- 场景 C 超级：Lua 扣减后调 `kafkaTemplate.send().get(3s)`，本地单节点 KRaft `acks=all` 下 ack 延迟 ~2-10ms；接口 RT 不含 DB 落库（消费端异步），100 VU 下平均 RPS ~350（成功路径 Kafka send ~5ms 短于 B 的 DB txn ~10ms，带来 ~17% 边际）；p99 由 Kafka producer ack 上限决定 ⇒ ~80ms。
 
 **场景 D（亮点 3）**：
 
-- L1 命中率：Caffeine `expireAfterWrite=1s`，100 VU 持续访问同一活动 Key，每秒数千次访问中仅有重建窗口的 1 次 miss，理论命中率 ≈ (n-1)/n。考虑 Caffeine evict、压测启停冷启动等损耗，保守取 **0.95**（与 ROADMAP 验收门槛对齐）。
+- L1 命中率：Caffeine `expireAfterWrite=1s`，100 VU 持续访问同一活动 Key，每秒数千次访问中仅有重建窗口的 1 次 miss，理论命中率 ≈ (n-1)/n。考虑 Caffeine evict、压测启停冷启动等损耗，保守取 **0.95**。
 - 接口 p99：L1 关时所有请求走 Redis GET（~0.5-1ms 网络 + 反序列化），p99 受 Tomcat 100 线程上限制约 ~**15ms**；L1 开时 JVM 内存指针访问 ~微秒级，p99 主要由 HTTP 框架开销决定 ~**5ms**（对齐验收门槛 -60%）。
 
-压测数据来源：[ROADMAP §M6 压测对比表](./ROADMAP.md) 与 [ROADMAP §M6 缓存层级对比表](./ROADMAP.md)，由 `scripts/k6-run.sh` 控制台输出。
+压测执行与报告口径见 [本地开发与压测 §7](./DEPLOYMENT.md#7-k6-压测)，实测结果由 `scripts/k6-run.sh` 输出。
 
 ## 2. 目录结构
 
@@ -228,7 +228,7 @@ JWT 不引入刷新令牌：7 天过期后重新登录。登出通过删除 Redi
 
 ### 4.6 CORS
 
-`WebMvcConfig#addCorsMappings` 为 `/api/**` 开启跨域，供浏览器侧的 Next.js 前端直连 `http://localhost:8080/api`：
+`WebMvcConfig#addCorsMappings` 为 `/api/**` 开启跨域，供调试时浏览器从 Next.js 端口直连宿主机后端 `http://127.0.0.1:8081/api`：
 
 | 项                 | 值                                                       |
 | ------------------ | -------------------------------------------------------- |
@@ -242,7 +242,7 @@ JWT 不引入刷新令牌：7 天过期后重新登录。登出通过删除 Redi
 
 token 经浏览器 `Authorization: Bearer <token>` 头明文携带，不依赖 cookie，故 `allowCredentials=false`。浏览器发起的 `OPTIONS` CORS 预检请求由 `AuthInterceptor` 直接放行，不要求携带 `Authorization`；真实业务请求继续按 §4.1 校验 JWT 与 Redis session。
 
-容器化部署（M6）通过同源访问消除浏览器跨域，CORS 仅服务本地开发场景。
+默认浏览器入口为 Nginx 的 `http://127.0.0.1:8089`，前端使用同源的 `/api`。直接访问 Next.js 时由 rewrite 转发 API；CORS 配置用于显式指定后端绝对地址的调试请求。
 
 ## 5. 限流：滑动窗口 + AOP
 
@@ -397,7 +397,7 @@ public class RedisData {
 
 在 Redis 之上为 `shanpu:seckill:activity:{id}` 叠一层 Caffeine L1，形成「L1 Caffeine → L2 Redis → L3 MySQL」三层结构。同一场秒杀的全部抢购前置查询都会扫这一个 Key，L1 命中率显著高于其他 Key 类型。
 
-`shanpu:product:detail:{id}` 不进入 L1，作为压测对比的"单层 Redis 基线"，便于在 M6 同一轮压测中量化 L1 的提升（详见 ROADMAP M6 场景 D）。
+`shanpu:product:detail:{id}` 不进入 L1，作为压测对比的"单层 Redis 基线"，便于在 M6 同一轮压测中量化 L1 的提升（详见 [本地开发与压测 §7](./DEPLOYMENT.md#7-k6-压测) 的场景 D）。
 
 #### Caffeine 实例
 
@@ -631,9 +631,9 @@ redis-cli SET shanpu:seckill:stock:3001 <t_seckill_activity.total_stock>
 ### 8.1 部署形态
 
 - 单节点 KRaft 模式，进程同时担任 controller 与 broker。
-- 不开 SASL，部署在私网信任域内，10 人规模够用。
+- 本地开发通过 `127.0.0.1:${KAFKA_PORT}` 连接，不开 SASL；只有宿主机 listener 发布到回环地址。
 - 副本因子 1，无 `min.insync.replicas`；消息持久化由容器卷 `kafka-data:/var/lib/kafka/data` 落盘承担。
-- 单机宿主部署下"跨节点副本容错"无法落地（宿主死所有 broker 一起死），消息不丢由 Producer 幂等 + 同步 `send().get(3s)` + 回滚 Lua + Consumer `INSERT IGNORE` 幂等门 + DLQ + `StockReconcileJob` 对账六层兜底，详见 §14.4。
+- Java 17 运行在宿主机，Kafka 在 Docker 中运行，使用 `restart: "no"` 和持久卷。KRaft controller 与 broker 共享一个进程；JSON 消息由 Spring Kafka 处理，死信回投由 Java 定时任务执行。单节点不提供节点级容错，业务补偿机制详见 §14.4。
 
 ### 8.2 Topic
 

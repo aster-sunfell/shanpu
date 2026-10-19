@@ -1,26 +1,31 @@
 # 快速启动
 
-```bash
-cp .env.example .env       # 按需修改密码与 JWT_SECRET
-docker compose up -d
-```
-
-约 90 秒后 `docker compose ps` 全部 `(healthy)`，浏览器访问 [http://localhost:3000](http://localhost:3000)，使用测试账号 `summer` / `123456` 登录，或注册账号后完成浏览商品、用积分下单、查看订单、查看个人中心、登出。
-
-停止容器：
+本地需要 Linux、Docker Compose、SDKMAN、Java 17、Maven、Node.js 22、pnpm 10、Python 3 和 curl。先通过 SDKMAN 安装 `.sdkmanrc` 指定的 JDK；后端脚本加载 SDKMAN 并执行 `sdk env`，确认项目版本后才构建、启动。
 
 ```bash
-docker compose down
+cp .env.example .env
+cd frontend
+pnpm install --frozen-lockfile
 ```
 
-清空 MySQL / Redis 数据卷并重新执行 `01_schema.sql` / `02_seed.sql`（重建表结构、测试用户与商品种子）：
+在 VS Code 中打开仓库根目录，执行“终端 → 运行任务 → 启动开发环境”。任务会启动 Docker 中的 MySQL、Redis、Kafka、Nginx，以及本机 Java 和 Next.js。浏览器访问 [http://127.0.0.1:8089](http://127.0.0.1:8089)，测试账号为 `summer / 123456`。
+
+命令行启动时，在仓库根目录依次执行以下命令；前后端各使用一个终端：
 
 ```bash
-docker compose down -v
-docker compose up -d
+bash scripts/dev-up.sh
+bash scripts/dev-gateway.sh
+bash scripts/start-local-backend.sh
+bash scripts/start-local-frontend.sh
 ```
 
-## M4 手工验收
+通过 `bash scripts/dev-status.sh` 或“检查开发环境”任务验证启动结果。端口可在根目录 `.env` 中配置，默认后端 8081、前端 3000、网关 8089。
+
+前后端通过 VS Code“终止任务”或 Ctrl+C 停止。容器通过“停止中间件与网关”任务或 `bash scripts/dev-stop.sh` 停止，数据卷保留。所有容器设置 `restart: "no"`，需要手动再次启动。关闭 VS Code 不会停止后台容器。
+
+Kafka 单节点使用 KRaft，broker 和 controller 位于同一个容器。详细网络配置、持久化与压测说明见 [本地开发与压测](./DEPLOYMENT.md)。
+
+## 业务手工验收
 
 以下命令在仓库根目录执行，依赖 `curl` 与 `jq`：
 
@@ -28,20 +33,19 @@ docker compose up -d
 set -a
 . ./.env
 set +a
-API="http://localhost:${BACKEND_PORT:-8080}/api"
+API="http://127.0.0.1:${BACKEND_PORT:-8081}/api"
 ```
 
 ### 1. 启动与健康检查
 
 ```bash
-docker compose up -d --build
-docker compose ps
+bash scripts/dev-status.sh
 curl -s "$API/health" | jq
 ```
 
 验收点：
 
-- `docker compose ps` 中 mysql、redis、kafka、backend、frontend 均为 healthy。
+- `docker compose ps` 中 mysql、redis、kafka、nginx 均为 healthy；Java 和 Next.js 由本机任务运行。
 - `/api/health` 返回 `mysql=UP`、`redis=UP`、`kafka=UP`。
 
 ### 2. 三档抢购链路

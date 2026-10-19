@@ -1,0 +1,94 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "启动中间件",
+      "type": "process",
+      "command": "bash",
+      "args": ["scripts/dev-up.sh"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "启动网关",
+      "type": "process",
+      "command": "bash",
+      "args": ["scripts/dev-gateway.sh"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "检查开发环境",
+      "type": "process",
+      "command": "bash",
+      "args": ["scripts/dev-status.sh"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "停止中间件与网关",
+      "type": "process",
+      "command": "bash",
+      "args": ["scripts/dev-stop.sh"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "启动后端",
+      "type": "process",
+      "command": "bash",
+      "args": ["scripts/start-local-backend.sh"],
+      "dependsOn": ["启动中间件"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "shanpu-backend",
+        "pattern": { "regexp": "^(.*):(\\d+): (.*)$", "file": 1, "line": 2, "message": 3 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Scanning for projects",
+          "endsPattern": "Started ShanpuApplication in .* seconds"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "启动前端",
+      "type": "process",
+      "command": "bash",
+      "args": ["scripts/start-local-frontend.sh"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "shanpu-frontend",
+        "pattern": { "regexp": "^(.*):(\\d+): (.*)$", "file": 1, "line": 2, "message": 3 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "> frontend@.* dev",
+          "endsPattern": "Ready in"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "启动开发环境",
+      "type": "process",
+      "command": "bash",
+      "args": ["scripts/dev-status.sh"],
+      "dependsOn": ["启动网关", "启动后端", "启动前端"],
+      "dependsOrder": "parallel",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "runOptions": { "instanceLimit": 1 }
+    }
+  ]
+}

@@ -240,35 +240,29 @@ export const userApi = {
 
 ### 7.3 运行时配置注入
 
-`PUBLIC_API_BASE_URL` 与部署目标的主机名 / 端口耦合，不能在 build-time 烤进 JS bundle，否则用户改 `.env` 后必须重 build 镜像。采用 SSR 注入 + client 端解析机制：
+`scripts/start-local-frontend.sh` 读取根目录 `.env`，启动宿主机 Next.js，并向进程注入浏览器和 SSR 使用的 API 地址。
 
-1. **server 侧渲染**：`app/layout.tsx` 作为 server component，每次请求时读取 `process.env.PUBLIC_API_BASE_URL`，序列化为：
-   ```tsx
-   <script id="__shanpu_config__" type="application/json">
-     {JSON.stringify({ apiBase: process.env.PUBLIC_API_BASE_URL })}
-   </script>
-   ```
-2. **client 侧解析**：`lib/config/public-config.ts` 提供 `readPublicConfig()`，浏览器侧 `JSON.parse(document.getElementById('__shanpu_config__')!.textContent!)`，模块级缓存避免重复解析；SSR/RSC 路径依优先级回退 `process.env.INTERNAL_API_BASE_URL` → `process.env.PUBLIC_API_BASE_URL` → `process.env.NEXT_PUBLIC_API_BASE_URL`，不缓存避免容器跨请求污染。
-3. **Hook 暴露**：`hooks/use-public-config.ts` 暴露 `usePublicConfig()` 供 client 组件订阅 `apiBase`。
-4. **client.ts 适配**：`lib/api/client.ts` 在 `request()` 内按运行环境分流——浏览器侧 lazy 调 `readPublicConfig().apiBase`；服务端侧（SSR/RSC）直接读 `process.env.INTERNAL_API_BASE_URL`，不走 `<script>` 注入路径。
+1. `app/layout.tsx` 读取 `PUBLIC_API_BASE_URL`，以 JSON 嵌入 `__shanpu_config__` 脚本节点，默认值为 `/api`。
+2. 浏览器侧 `readPublicConfig()` 读取节点并缓存结果，回退到 `NEXT_PUBLIC_API_BASE_URL` 或 `/api`。浏览器 API 请求使用当前站点的相对路径。
+3. SSR/RSC 侧 `readPublicConfig()` 优先读取 `INTERNAL_API_BASE_URL`，使用宿主机 Java 的绝对地址。服务端配置不做模块级缓存。
+4. `lib/api/client.ts` 使用 `readPublicConfig().apiBase` 发起请求，浏览器附带登录 token。
 
-效果：用户在根目录 `.env` 改 `PUBLIC_API_HOST` 或 `BACKEND_PORT` 后，`docker compose up -d frontend` 重启容器即可生效，无需重 build 镜像。
-
-容器化部署接管运行时注入；本地开发（`pnpm dev`）下 `lib/config/public-config.ts` 直接读 `NEXT_PUBLIC_API_BASE_URL` 这个 build-time 变量，浏览器与后端跨域由后端 CORS（[BACKEND.md §4.6](./BACKEND.md)）放行，链路与 §7.3 一致。
+Nginx 将 `/api/` 转发到 Java，将页面与热更新 WebSocket 转发到 Next.js。直接访问 Next.js 开发端口时，`next.config.ts` 的 rewrite 将 `/api` 转发到同一个后端。`allowedDevOrigins` 允许 `127.0.0.1` 和 `localhost` 的开发请求。
 
 ## 8. 环境变量
 
-`.env.local`（开发） / 容器 `environment:` 段（部署）：
+根目录 `.env` 中的 `BACKEND_PORT`、`FRONTEND_PORT`、`GATEWAY_PORT` 由启动脚本和 Compose 共同使用。前端启动脚本派生以下进程环境变量，优先于 `frontend/.env.local`：
 
-| 变量 | 范围 | 默认值 | 说明 |
+| 变量 | 范围 | 启动脚本设置值 | 说明 |
 |---|---|---|---|
-| `PUBLIC_API_BASE_URL` | 服务端读取→注入到浏览器 | `http://localhost:8080/api` | 浏览器调用后端的基地址。由 docker-compose 拼自 `${PUBLIC_API_HOST}:${BACKEND_PORT}`；server component 读取后嵌入 HTML 供 client hydrate 时消费（详见 §7.3） |
-| `INTERNAL_API_BASE_URL` | frontend 容器服务端 | `http://backend:8080/api` | SSR/RSC 在 Docker 网络内调用后端，硬编码在 docker-compose `environment:` 段 |
-| `NEXT_PUBLIC_SITE_NAME` | 浏览器 | `闪铺` | 站点名，build-time 烤进 bundle |
-| `NEXT_PUBLIC_POLL_INTERVAL_MS` | 浏览器 | `1000` | 订单轮询间隔，build-time 烤进 bundle |
-| `NEXT_PUBLIC_POLL_MAX_TIMES` | 浏览器 | `10` | 订单最大轮询次数，build-time 烤进 bundle |
+| `PUBLIC_API_BASE_URL` | 服务端读取后注入浏览器 | `/api` | 当前站点 API 路径 |
+| `NEXT_PUBLIC_API_BASE_URL` | 浏览器回退配置 | `/api` | 浏览器配置节点不可用时使用 |
+| `INTERNAL_API_BASE_URL` | SSR/RSC | `http://127.0.0.1:${BACKEND_PORT}/api` | 服务端请求需要绝对 URL |
+| `NEXT_PUBLIC_SITE_NAME` | 浏览器 | 默认 `闪铺` | 站点名 |
+| `NEXT_PUBLIC_POLL_INTERVAL_MS` | 浏览器 | 默认 `1000` | 订单轮询间隔 |
+| `NEXT_PUBLIC_POLL_MAX_TIMES` | 浏览器 | 默认 `10` | 订单最大轮询次数 |
 
-`PUBLIC_API_BASE_URL` 与 `INTERNAL_API_BASE_URL` 走运行时环境变量，与部署目标耦合，改值后重启容器即生效；`NEXT_PUBLIC_*` 三项与部署无关，build-time 编译进静态产物。
+修改根目录端口后重新运行前端和网关启动任务。`PUBLIC_API_BASE_URL` 由服务端读取，`NEXT_PUBLIC_*` 在前端编译时使用。
 
 ## 9. 页面与 API 映射
 

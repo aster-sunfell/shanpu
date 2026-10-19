@@ -2,7 +2,7 @@ type PublicConfig = {
   apiBase: string;
 };
 
-const DEFAULT_API_BASE = "http://localhost:8080/api";
+const DEFAULT_API_BASE = "/api";
 const SCRIPT_ID = "__shanpu_config__";
 
 let browserCache: PublicConfig | null = null;
@@ -13,7 +13,7 @@ export function readPublicConfig(): PublicConfig {
       process.env.INTERNAL_API_BASE_URL ??
       process.env.PUBLIC_API_BASE_URL ??
       process.env.NEXT_PUBLIC_API_BASE_URL ??
-      DEFAULT_API_BASE;
+      "http://127.0.0.1:8081/api";
     return { apiBase };
   }
 

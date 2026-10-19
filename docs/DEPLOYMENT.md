@@ -1,424 +1,134 @@
-# 闪铺(shanpu) 部署与压测
+# 闪铺本地开发与压测
 
-## 1. 仓库顶层布局
+## 1. 运行方式
 
-```text
-shanpu/
-├── README.md
-├── .sdkmanrc
-├── docker-compose.yml
-├── .env.example
-├── load/                   # k6 场景脚本
-├── scripts/                # 启动、压测重置、压测编排脚本
-├── backend/                 # Spring Boot 工程（详见 BACKEND.md）
-├── frontend/                # Next.js 工程（详见 FRONTEND.md）
-├── mysql/
-│   └── init/
-│       ├── 01_schema.sql      # DDL，自动执行
-│       └── 02_seed.sql        # 种子数据
-└── docs/
-    ├── BACKEND.md
-    ├── FRONTEND.md
-    ├── QUICKSTART.md
-    ├── DEPLOYMENT.md
-    └── ROADMAP.md
-```
+本地 Linux 环境中，Docker 运行 MySQL、Redis、Kafka 和 Nginx；Java 17 后端与 Next.js 前端运行在宿主机，由 VS Code tasks 或终端启动。
 
-## 2. Docker Compose 服务清单
-
-根目录 `docker-compose.yml` 定义 6 个服务。`mysql / redis / kafka / backend / frontend` 属于默认启动路径；`k6` 挂在 `loadtest` profile 下，仅由压测脚本按需拉起。每个服务通过 `deploy.resources.limits` 显式声明 CPU 与内存上限（见 §2.4 设计逻辑）。下表"暴露端口"列引用 `.env` 变量，默认值见 §2.3。
-
-| 服务 | 镜像 | 内部端口 | 暴露端口 | CPU 上限 | 内存上限 | 卷 | 健康检查 |
-|---|---|---|---|---|---|---|---|
-| `mysql` | `mysql:8.0` | 3306 | `${MYSQL_PORT}` | 1.5 | 1g | `./mysql/init:/docker-entrypoint-initdb.d:ro`、`mysql-data:/var/lib/mysql` | `mysqladmin ping -p$MYSQL_ROOT_PASSWORD` |
-| `redis` | `redis:7-alpine` | 6379 | `${REDIS_PORT}` | 1.0 | 384m | `redis-data:/data` | `redis-cli -a $REDIS_PASSWORD ping` |
-| `kafka` | `apache/kafka:3.7.2` | 9092 | `${KAFKA_PORT}` | 1.0 | 768m | `kafka-data:/var/lib/kafka/data` | `/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list` |
-| `backend` | 本仓 `backend/Dockerfile` | 8080 | `${BACKEND_PORT}` | 2.0 | 1.5g | - | `wget -q --spider http://127.0.0.1:8080/api/health` |
-| `frontend` | 本仓 `frontend/Dockerfile` | 3000 | `${FRONTEND_PORT}` | 0.5 | 384m | - | `wget -q --spider http://127.0.0.1:3000/` |
-| `k6` | `grafana/k6:0.50.0` | - | - | 1.0 | 512m | `./load:/load:ro` | profile `loadtest` 按需运行 |
-
-### 2.1 依赖关系
-
-`backend.depends_on`：
-
-```yaml
-depends_on:
-  mysql:
-    condition: service_healthy
-  redis:
-    condition: service_healthy
-  kafka:
-    condition: service_healthy
-```
-
-`frontend.depends_on`：
-
-```yaml
-depends_on:
-  backend:
-    condition: service_healthy
-```
-
-### 2.2 MySQL / Redis 命令参数
-
-MySQL 调优通过 `docker-compose.yml` 的 `mysql.command` 维护：
-
-```yaml
-command:
-  - --innodb-buffer-pool-size=384M
-  - --max-connections=200
-  - --innodb-log-buffer-size=16M
-  - --innodb-flush-log-at-trx-commit=2
-  - --character-set-server=utf8mb4
-  - --collation-server=utf8mb4_0900_ai_ci
-  - --default-time-zone=+08:00
-```
-
-`--default-time-zone=+08:00` 与 backend 容器 `TZ=Asia/Shanghai` 统一为东八区，保证 DB 写入的 `created_at` 与应用写入的 `paid_at` 时区一致。
-
-Redis 调优通过 `docker-compose.yml` 的 `redis.command` 维护：
-
-```yaml
-command:
-  - redis-server
-  - --requirepass
-  - ${REDIS_PASSWORD}
-  - --maxmemory
-  - 256mb
-  - --maxmemory-policy
-  - allkeys-lru
-  - --save
-  - ""
-  - --appendonly
-  - "no"
-```
-
-### 2.3 环境变量集中维护
-
-根目录 `.env.example` 提供模板，部署时拷贝为 `.env`：
-
-```bash
-# ===== 凭据 =====
-MYSQL_ROOT_PASSWORD=123456
-MYSQL_DATABASE=shanpu
-REDIS_PASSWORD=123456
-JWT_SECRET=replace-me-with-a-32-byte-random-secret-for-development
-
-# ===== 暴露端口 =====
-MYSQL_PORT=3306
-REDIS_PORT=6379
-KAFKA_PORT=9092
-BACKEND_PORT=8080
-FRONTEND_PORT=3000
-
-# ===== 前端浏览器侧调用后端的主机名 =====
-PUBLIC_API_HOST=localhost
-```
-
-`.env.example` 只承载用户必须感知的三类：凭据、对外暴露端口、前端浏览器侧主机名。以下配置由 `docker-compose.yml` 派生：
-
-- **Compose 内部地址不进 `.env`**：backend 连 `mysql:3306` / `redis:6379` / `kafka:9092`，frontend SSR 连 `http://backend:8080/api`，全部由 `docker-compose.yml` 在容器 `environment:` 段直接硬编码。这些值由 Compose 网络内的 service name 与内部端口决定，用户无须也不应调整。
-- **后端容器以 root 账号连库**：`docker-compose.yml` 在 backend 容器 `environment:` 段拼装 `MYSQL_USERNAME=root` / `MYSQL_PASSWORD=${MYSQL_ROOT_PASSWORD}` 注入 Spring；mysql 镜像不创建额外应用账号，root 承担初始化、健康检查与应用连接三件事，配置最小化便于教学。
-- **Redis 密码强制开启**：`redis.command` 含 `--requirepass ${REDIS_PASSWORD}`（详见 §5.2），后端容器 `REDIS_PASSWORD` 通过 `${REDIS_PASSWORD}` 注入，Redis 健康检查命令为 `redis-cli -a $REDIS_PASSWORD ping`。
-- **前端 BASE_URL 运行时拼接**：浏览器侧调用后端的完整地址 `http://${PUBLIC_API_HOST}:${BACKEND_PORT}/api` 由 `docker-compose.yml` 在 frontend 容器 `environment:` 段拼接后作为运行时变量 `PUBLIC_API_BASE_URL` 注入。前端根 layout 作为 server component 读取 `process.env.PUBLIC_API_BASE_URL`，注入到 HTML 供 client 端 hydrate 时消费（详见 FRONTEND.md §7.3）。**不走 Next.js build-time `NEXT_PUBLIC_*` 通道**，用户改 `PUBLIC_API_HOST` 或 `BACKEND_PORT` 后只需 `docker compose up -d frontend` 重启容器即可生效，无需重 build 镜像。
-
-### 2.4 资源限制设计
-
-`docker-compose.yml` 显式声明每服务 `deploy.resources.limits`，以 7.6 GiB WSL2 单机为基线，全栈总和 ≈ 3.3 GiB，留 ≥ 2.5 GiB 给宿主与压测突发：
-
-| 服务 | CPU | 内存 | 内部硬约束 |
+| 服务 | 运行位置 | 默认地址 | 用途 |
 |---|---|---|---|
-| `backend` | 2.0 | 1.5g | `JAVA_TOOL_OPTIONS=-Xmx1g -Xms512m -XX:MaxMetaspaceSize=128m` 留 25% 余量避 cgroup OOM Kill；Tomcat `server.tomcat.threads.max=100` |
-| `frontend` | 0.5 | 384m | Next.js standalone SSR，压测期间几乎纯静态响应 |
-| `mysql` | 1.5 | 1g | `innodb_buffer_pool_size=384M`、`max_connections=200`、`innodb_log_buffer_size=16M` |
-| `redis` | 1.0 | 384m | `maxmemory 256mb`、`maxmemory-policy allkeys-lru`、`save ""` |
-| `kafka` | 1.0 | 768m | 单节点 KRaft，内部 listener `kafka:9092`，宿主调试端口 `${KAFKA_PORT}` |
-| `k6` | 1.0 | 512m | `loadtest` profile 按需运行，默认栈不占用 |
-| 默认合计 | 6.0 | 4.1g | 留 ≥ 2 GiB 内存给宿主 |
-| 压测合计 | 7.0 | 4.6g | k6 运行窗口内的峰值预算 |
+| MySQL 8.0 | Docker | `127.0.0.1:3306` | 订单、积分、商品、活动与死信日志 |
+| Redis 7 | Docker | `127.0.0.1:6379` | 缓存、登录态、限流、库存与已购集合 |
+| Kafka 3.7.2 | Docker | `127.0.0.1:9092` | 超级秒杀异步下单与死信 Topic |
+| Nginx 1.28 | Docker，host 网络 | `127.0.0.1:8089` | 浏览器统一入口 |
+| Spring Boot | 宿主机 Java 17 | `127.0.0.1:8081` | 后端 API |
+| Next.js | 宿主机 Node.js 22 / pnpm 10 | `127.0.0.1:3000` | SSR、前端开发与热更新 |
+| k6 | Docker，`loadtest` profile，host 网络 | 访问本机后端 | 按需压测 |
 
-按机器规模缩放指引：
-- **内存 ≥ 16 GiB**：可把 `backend` 提到 3g（`-Xmx2g`）、`mysql` 提到 2g（buffer pool 1g）。
-- **内存 ≥ 32 GiB**：`backend` 提到 4g、`mysql` 提到 4g（buffer pool 2g）。
-- **CPU 核心紧张（< 8 核）**：优先保持 `backend` 2.0 CPU，MySQL 可下调到 1.0 CPU。
+`docker-compose.yml` 固定项目名为 `shanpu`，使用 `shanpu_mysql-data`、`shanpu_redis-data`、`shanpu_kafka-data` 三个数据卷。Nginx 和 k6 使用 Linux host 网络，直接访问宿主机回环地址；Nginx 不配置 `ports`。
 
-## 3. 后端 Dockerfile
+## 2. 生命周期
 
-多阶段构建，最终镜像仅含 JRE。
+所有 Compose 服务显式设置 `restart: "no"`，由开发者手动启动和停止。容器退出、Docker 重启或电脑重启后，需要重新执行启动任务。`up -d` 表示容器在后台运行，关闭终端或 VS Code 后仍会继续运行。健康检查判断服务是否就绪，不负责自动重启。
 
-```dockerfile
-# ===== build =====
-FROM maven:3.9-eclipse-temurin-17 AS build
-WORKDIR /workspace
-COPY pom.xml .
-RUN mvn -B -DskipTests dependency:go-offline
-COPY src ./src
-RUN mvn -B -DskipTests package
+日常停止使用 `bash scripts/dev-stop.sh`，保留容器和数据卷。Java 与 Next.js 使用 VS Code 的“终止任务”或所在终端的 Ctrl+C 停止。打开工作区不会自动启动任何服务。
 
-# ===== runtime =====
-FROM eclipse-temurin:17-jre-alpine
-WORKDIR /app
-COPY --from=build /workspace/target/*.jar app.jar
-EXPOSE 8080
-ENV JAVA_OPTS="-XX:+UseG1GC"
-ENV JAVA_TOOL_OPTIONS="-Xmx1g -Xms512m -XX:MaxMetaspaceSize=128m"
-ENV SPRING_PROFILES_ACTIVE=prod
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]
-```
+## 3. 环境变量与宿主机应用
 
-镜像大小约 220 MB。`JAVA_TOOL_OPTIONS` 显式锁定堆与 Metaspace，避免 JVM 自适应突破 cgroup 内存上限被 OOM Kill；运行时可通过 compose `environment` 覆盖以适配更大机器。
+首次执行开发脚本时，如果根目录 `.env` 不存在，会从 `.env.example` 创建。该文件包含数据库名、MySQL / Redis 密码、JWT 密钥，以及六个端口；实际文件不入库。修改端口后重新运行相应启动任务。
 
-## 4. 前端 Dockerfile
-
-利用 Next.js `output: 'standalone'` 产出最小运行时。
-
-```dockerfile
-# ===== deps =====
-FROM node:22-alpine AS deps
-WORKDIR /app
-RUN corepack enable
-COPY package.json pnpm-lock.yaml ./
-RUN pnpm config set minimumReleaseAge 0 \
- && pnpm config set strictDepBuilds false \
- && pnpm config set verifyDepsBeforeRun false \
- && pnpm install --frozen-lockfile
-
-# ===== build =====
-FROM node:22-alpine AS build
-WORKDIR /app
-RUN corepack enable \
- && pnpm config set verifyDepsBeforeRun false
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-RUN pnpm build
-
-# ===== runtime =====
-FROM node:22-alpine AS runtime
-WORKDIR /app
-ENV NODE_ENV=production
-ENV PORT=3000
-ENV HOSTNAME=0.0.0.0
-COPY --from=build /app/.next/standalone ./
-COPY --from=build /app/.next/static ./.next/static
-COPY --from=build /app/public ./public
-EXPOSE 3000
-CMD ["node", "server.js"]
-```
-
-`deps` 阶段三项 `pnpm config set` 关闭 pnpm 11 默认开启的"最小发布年龄"、"严格依赖构建脚本"与"运行前 deps 校验"三条策略——容器构建场景下 lockfile 已在本地验证过，无需在 CI 镜像内重复审计；`build` 阶段同样关闭 `verifyDepsBeforeRun`，避免 `pnpm build` 触发隐式 `pnpm install`。
-
-构建期仅烤进与部署无关的 `NEXT_PUBLIC_*` 静态项（站点名、轮询间隔等）。后端调用地址 `PUBLIC_API_BASE_URL` 与 `INTERNAL_API_BASE_URL` 走运行时 `environment:` 注入，由 server component 在每次请求时读取后嵌入 HTML，机制详见 [FRONTEND.md §7.3](./FRONTEND.md)。
-
-镜像大小约 160 MB。
-
-## 5. 初始化挂载
-
-### 5.1 MySQL
-
-`mysql/init/` 下两个脚本由 `mysql:8.0` 镜像在首次启动时自动执行：
-
-- `01_schema.sql`：DDL（与 `docs/BACKEND.md` 第 10 节一致），创建用户、商品、秒杀活动、订单、积分流水与 DLQ 失败日志及回投状态表。
-- `02_seed.sql`：写入测试用户 `summer`（密码 `123456`，初始积分 10000，带注册赠送积分流水）、5 个普通商品种子数据（`id` 1~5、`status=1`，其中一个商品库存为 10 供并发防超卖验收）与 9 个三档秒杀活动（`1001/1002/1003`、`2001/2002/2003`、`3001/3002/3003`）。
-
-两个脚本均以 `SET NAMES utf8mb4;` 开头：`mysql:8.0` 镜像内的 `mysql` 客户端默认 `character_set_client=latin1`，`docker-entrypoint-initdb.d` 按该默认连接导入 UTF-8 脚本，缺少显式声明会把中文按 latin1 双重编码后落库。`SET NAMES utf8mb4` 将导入会话的 client / connection / results 字符集对齐到 utf8mb4，保证种子数据与列注释中的中文按原字节写入。
-
-MySQL 运行参数写在 `docker-compose.yml` 的 `mysql.command`：
-
-```yaml
-command:
-  - --innodb-buffer-pool-size=384M
-  - --max-connections=200
-  - --innodb-log-buffer-size=16M
-  - --innodb-flush-log-at-trx-commit=2
-  - --character-set-server=utf8mb4
-  - --collation-server=utf8mb4_0900_ai_ci
-  - --default-time-zone=+08:00
-```
-
-### 5.2 Redis
-
-Redis 运行参数写在 `docker-compose.yml` 的 `redis.command`：
-
-```yaml
-command:
-  - redis-server
-  - --requirepass
-  - ${REDIS_PASSWORD}
-  - --maxmemory
-  - 256mb
-  - --maxmemory-policy
-  - allkeys-lru
-  - --save
-  - ""
-  - --appendonly
-  - "no"
-```
-
-`${REDIS_PASSWORD}` 由 Compose 变量插值注入 Redis 启动命令。后端 `REDIS_PASSWORD` 与健康检查 `redis-cli -a $REDIS_PASSWORD ping` 使用同一变量，三处保持一致。
-
-## 6. 一键启动流程
-
-```bash
-# 1. 准备环境变量
-cp .env.example .env
-# 按需修改 .env 中密码与 JWT_SECRET
-
-# 2. 拉起全栈
-docker compose up -d
-
-# 3. 等待健康检查通过（约 60~90 秒）
-docker compose ps
-
-# 4. 浏览器访问
-open http://localhost:3000
-
-# 5. 使用测试账号 summer / 123456 登录，或通过注册接口创建账号
-```
-
-### 6.1 停止与重置
-
-```bash
-docker compose down            # 停止容器，保留数据卷
-docker compose down -v         # 同时清空 MySQL / Redis 数据
-```
-
-`down -v` 后再次 `up -d` 会重新跑 `01_schema.sql` 与 `02_seed.sql`，得到干净环境。
-
-## 7. k6 压测：三档秒杀横向对比
-
-### 7.1 目标
-
-在 7.6 GiB WSL2 单机基础设施下，三档秒杀活动同走 `/api/seckills/{id}/grab` 入口，由 `SeckillService.grab(activityId)` 按 `activity.tier` 自动路由 `grabInclusive` / `grabFlash` / `grabSuper`。A/B/C 三场景采用固定 `100 VU / 30s` 的统一压力模型，量化成功请求链路的平均 RPS 与 p50/p95/p99，定位瓶颈位置（DB 行锁 / Redis CPU / Kafka producer ack）。正确性由 M4 验收覆盖，本章节保留压测后的超卖断言。
-
-场景 D 缓存层级对比与三档秒杀压测正交，独立执行（详见 §7.6 / §7.8 与 ROADMAP M6 缓存层级对比表）。
-
-### 7.2 场景
-
-三场景同接口同 setup，仅替换 `__ENV.ACTIVITY_ID`：
-
-| 场景 | 接口 | tier | 路由分支 | 链路 | 压力模型 | 预期瓶颈 |
-|---|---|---|---|---|---|---|
-| A 普惠 | `POST /api/seckills/1001/grab` | 1 | `grabInclusive` | MySQL 行锁 + 同步事务 | 100 VU / 30s | DB 单行 `id=1001` 行锁串行化 |
-| B 限时 | `POST /api/seckills/2001/grab` | 2 | `grabFlash` | Redis+Lua → 同步事务 | 100 VU / 30s | DB 行锁（Redis 减负后落库仍同步） |
-| C 超级 | `POST /api/seckills/3001/grab` | 3 | `grabSuper` | Redis+Lua → Kafka 同步 `send.get(3s)` → 异步消费 | 100 VU / 30s | Kafka producer send ack |
-
-每轮压测前由 `scripts/seed-users.sh` 确保 `u0001` ~ `u20000` 压测用户存在，由 `scripts/k6-bench-reset.sh`（详见 §7.9）把目标活动 `total_stock` 重置为 **20000**，清理 20000 压测用户在目标活动的旧订单与积分日志，并补足用户积分。20000 用户与 20000 库存覆盖 C 场景预估 `350 RPS × 30s ≈ 10500` 成功请求并保留余量，避免一人一单与库存售罄把正式样本切入业务失败快速路径。压测后由 `scripts/k6-bench-restore.sh` 恢复种子库存。
-
-统一 VU 峰值 100 取自 backend Tomcat 100 线程上限，三档共享同一压力刻度，RT 与 RPS 可 apples-to-apples 直接横向对比。固定 100 VU 是正式报告口径；容量探底使用独立脚本按更高 VU 运行，并归档到独立报告目录。
-
-### 7.3 通用 setup：压测用户与 token 池
-
-`scripts/seed-users.sh` 负责准备 `u0001` ~ `u20000` 压测用户、生成 JWT token 文件，并把 token hash 批量写入 Redis session 白名单。k6 运行期只从 `load/.runtime/bench-tokens.txt` 读取 token，不调用 `/api/users/login`，避免登录 IP 限流与 BCrypt 成本污染秒杀链路指标。
-
-`load/lib/auth.js` 依据 `exec.scenario.iterationInTest` 从 token 池轮转取 token；一轮压测中的前 20000 次迭代天然分配到不同压测用户，超出后进入一人一单的业务失败路径并由 `seckill_duplicate_total` 独立计数。
-
-### 7.4 场景脚本与固定 100 VU
-
-| 脚本 | 默认活动 | 成功语义 |
+| 变量 | 默认值 | 作用 |
 |---|---|---|
-| `load/scenario-a-inclusive.js` | `1001` | `code=0` 且 `data.status=PAID` |
-| `load/scenario-b-redis-sync.js` | `2001` | `code=0` 且 `data.status=PAID` |
-| `load/scenario-c-redis-kafka.js` | `3001` | `code=0` 且 `data.status=PAID/PENDING` |
-| `load/scenario-d-cache-comparison.js` | `3001` / `1` | GET 活动详情或商品详情返回 `code=0` |
+| `MYSQL_PORT` | `3306` | MySQL 宿主机端口 |
+| `REDIS_PORT` | `6379` | Redis 宿主机端口 |
+| `KAFKA_PORT` | `9092` | Kafka 宿主机 listener 端口 |
+| `BACKEND_PORT` | `8081` | Java 监听端口、网关 API 上游、SSR API 上游 |
+| `FRONTEND_PORT` | `3000` | Next.js 监听端口与网关页面上游 |
+| `GATEWAY_PORT` | `8089` | 浏览器访问入口 |
 
-A/B/C 三场景均使用：
+`scripts/lib/dev-common.sh` 统一加载环境变量，并固定 Compose 文件和项目名，使启动脚本可从任意目录调用。
 
-```js
-export const options = {
-  scenarios: {
-    fixed_100vu: {
-      executor: 'constant-vus',
-      vus: 100,
-      duration: '30s',
-      gracefulStop: '5s',
-    },
-  },
-};
-```
+后端脚本先加载 SDKMAN 初始化脚本，在仓库根目录执行 `sdk env`，应用 `.sdkmanrc` 指定的 `17.0.18-tem`，并校验 `JAVA_HOME` 与实际 `java` 命令均指向该 SDK。初始化失败或版本不符时直接退出。环境确认后才运行 Maven 打包，通过 `exec java -jar` 启动；设置 `dev` profile、东八区时区与回环监听地址，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。默认 JVM 参数为 `-Xms256m -Xmx1g`，可通过 `JAVA_OPTS` 调整。进程 PID 写入忽略目录 `.local/run/backend.pid`，供压测采样使用。
 
-C 场景把 `PENDING` 计入 `order_success_total` 与 `success_req_duration`，因为超级档接口成功语义是完成 Redis 预扣与 Kafka 发送确认，DB 落库由消费端异步完成。
+前端脚本通过 `pnpm dev` 启动，注入：
 
-A/B/C 三场景均以固定 `100 VU / 30s` 的 `success_req_duration` 为正式延迟口径。`http_req_duration` 保留为 HTTP 全量观测指标，`BACKEND.md` 中成功链路 p99 的填表来源为 `success_req_duration`。
+- `PUBLIC_API_BASE_URL=/api`：浏览器使用当前站点的 API。
+- `NEXT_PUBLIC_API_BASE_URL=/api`：浏览器配置回退值。
+- `INTERNAL_API_BASE_URL=http://127.0.0.1:${BACKEND_PORT}/api`：SSR 使用绝对地址直接调用 Java。
 
-### 7.5 自定义指标
+进程环境优先于 Next.js 的 `.env.local`。前端依赖安装使用 `cd frontend && pnpm install --frozen-lockfile`。
 
-| 指标名 | 类型 | 含义 |
+## 4. 网关与热更新
+
+`deploy/nginx.conf.template` 由 Nginx 官方镜像在启动时按环境变量生成配置。模板替换仅处理三个端口变量，保留 `$http_host` 等 Nginx 变量。
+
+- `/api/` 转发到宿主机 Java，保留 `/api` 路径。
+- `/` 转发到宿主机 Next.js，支持 WebSocket Upgrade，并关闭代理缓冲。
+- `/gateway-health` 由 Nginx 直接返回 200，用于独立判断网关是否运行。
+
+浏览器使用 `http://127.0.0.1:8089`。Next.js 同时提供 `/api` rewrite，直接访问 3000 端口时也能调用 API；开发来源限定为 `127.0.0.1` 和 `localhost`。SSR 使用内部绝对地址，不经过浏览器的相对 URL。
+
+网关可以先于前后端启动，此时页面和 API 上游尚未就绪；“检查开发环境”会分别检查容器、后端依赖以及经网关访问的前端页面。
+
+## 5. 中间件
+
+### MySQL
+
+首次初始化空数据卷时，自动执行 `mysql/init/01_schema.sql` 和 `02_seed.sql`。已有卷保留现有数据，启动不会重新导入 SQL。测试用户为 `summer / 123456`，提供普通商品和三档秒杀活动。SQL 使用 `SET NAMES utf8mb4`，数据库运行时采用东八区时区。
+
+资源上限为 1.5 CPU / 1 GiB，buffer pool 为 384 MiB。启动健康检查通过后，Java 健康接口使用实际 SQL 连接检查数据库。
+
+### Redis
+
+Redis 启用密码、AOF 与 `appendfsync everysec`，使用 `redis-data` 持久卷，内存上限为 256 MiB，淘汰策略为 `noeviction`。Redis 同时保存库存和已购标记，达到内存上限时返回写入错误，业务 Key 依照各自 TTL 过期。容器内存上限为 384 MiB。
+
+### Kafka
+
+单个 `apache/kafka:3.7.2` 容器同时承担 broker 和 KRaft controller，无需 ZooKeeper。Java 直接生产和消费 JSON 消息，无需 Schema Registry、Kafka Connect 或独立死信服务。
+
+| Listener | 地址 | 调用方 |
 |---|---|---|
-| `success_req_duration` | Trend | `code == 0` 的成功请求耗时；C 场景包含 `PENDING` 成功响应 |
-| `order_success_total` | Counter | `code == 0` 的成功请求数；C 场景包含 `PENDING` 成功响应 |
-| `order_fail_total` | Counter | 业务失败请求数（库存不足、一人一单冲突等） |
-| `seckill_duplicate_total` | Counter | `code == 40900` 计数（一人一单冲突） |
-| `seckill_sold_out_total` | Counter | `code == 41000` 计数（库存售罄） |
+| INTERNAL | `kafka:9092` | Compose 网络客户端、容器健康检查 |
+| EXTERNAL | 容器 9094，发布为 `127.0.0.1:${KAFKA_PORT}` | 宿主机 Java |
+| CONTROLLER | `kafka:9093` | KRaft 内部通信，不发布 |
 
-`http_error_rate` 统计 HTTP 4xx/5xx/超时，业务错误码（40900/41000）由 `seckill_duplicate_total` / `seckill_sold_out_total` 独立计数。正式横向对比使用 `success_req_duration` 与 `order_success_total`，业务失败指标用于确认压测数据未被重复购买或售罄路径污染。
+宿主机 listener 的 advertised 地址为 `127.0.0.1:${KAFKA_PORT}`。固定 cluster ID、node ID 和数据卷，JVM 堆为 256–512 MiB，容器上限为 768 MiB。
 
-### 7.6 输出与报告
+Spring `KafkaConfig` 在后端启动时声明 `shanpu.seckill.order`（3 分区）和 `shanpu.seckill.order.dlq`（1 分区），副本数均为 1。消费者并发度为 3。Producer 使用幂等发送和 `acks=all`；单节点用于开发联调，不提供节点级容错。
 
-`scripts/k6-run.sh` 串跑三档秒杀场景 + 场景 D 缓存对比。k6 的 `handleSummary` 向 stdout 输出单行摘要，runner 解析后在控制台打印两张对齐 Markdown 表格，作为正式压测产物。
+## 6. VS Code tasks 与命令行
+
+通过“终端 → 运行任务”选择：
+
+| 任务 | 行为 |
+|---|---|
+| 启动中间件 | 启动 MySQL、Redis、Kafka，等待健康检查 |
+| 启动网关 | 独立启动 Nginx，等待网关健康检查 |
+| 启动后端 | 先完成“启动中间件”，再打包启动 Java 17 |
+| 启动前端 | 启动 Next.js 开发服务 |
+| 启动开发环境 | 组合启动网关、后端和前端，完成后执行健康检查并显示入口 |
+| 检查开发环境 | 显示容器状态，检查后端依赖、网关和前端 |
+| 停止中间件与网关 | 停止四个容器，保留数据 |
+
+前后端运行在独立终端，后台任务通过 Spring 的 `Started ShanpuApplication` 与 Next.js 的 `Ready in` 日志判断启动完成，每个启动任务最多运行一个实例。停止前后端使用“终止任务”。
+
+等价命令如下，前后端各占一个终端：
 
 ```bash
-bash scripts/k6-run.sh
+bash scripts/dev-up.sh
+bash scripts/dev-gateway.sh
+bash scripts/start-local-backend.sh
+bash scripts/start-local-frontend.sh
+bash scripts/dev-status.sh
+bash scripts/dev-stop.sh
 ```
 
-输出格式：
+## 7. k6 压测
 
-- A/B/C 压测对比表：成功 RPS、成功 p50/p95/p99、HTTP 错误率、业务错误率、SQL 成功订单数、超卖判定、瓶颈观察。
-- D 缓存层级对比表：活动详情与商品详情在 L1 开启/关闭时的 RPS、p50/p95/p99、Redis GET ops/s、活动 L1 hitRate。
-- 表后输出活动接口 p99 收益、活动 Redis GET 降幅、商品接口 p99 偏差与 backend/mysql/kafka 的 OOMKilled 状态。
+先通过任务启动后端，再运行 `bash scripts/k6-run.sh`。脚本确保中间件就绪，并检查 `/api/health` 响应体中 `status/mysql/redis/kafka` 均为 `UP`，之后才初始化压测数据。压测不依赖前端或 Nginx。
 
-### 7.7 超卖检测
+k6 通过 `loadtest` profile 按需启动，使用 host 网络直接访问 `http://127.0.0.1:${BACKEND_PORT}/api`，运行结束后移除临时容器。测试 token 通过只读的 `load/.runtime` 挂载提供。
 
-每场景结束后通过 MySQL 客户端验证：
+| 场景 | 活动 | 链路 | 正式压力 |
+|---|---|---|---|
+| A 普惠 | 1001 | MySQL 同步事务 | 100 VU / 30s |
+| B 限时 | 2001 | Redis + Lua → MySQL 同步事务 | 100 VU / 30s |
+| C 超级 | 3001 | Redis + Lua → Kafka → 异步落库 | 100 VU / 30s |
+| D 缓存 | 活动 3001 / 商品 1 | 活动 L1 开关对比与商品 Redis 对照 | 脚本中的固定压力 |
 
-```sql
--- 场景 A 普惠档（source=2 对应 tier=1）
-SELECT COUNT(*) FROM t_order WHERE source = 2 AND activity_id = 1001;
--- 场景 B 限时档（source=3 对应 tier=2）
-SELECT COUNT(*) FROM t_order WHERE source = 3 AND activity_id = 2001;
--- 场景 C 超级档（source=4 对应 tier=3）
-SELECT COUNT(*) FROM t_order WHERE source = 4 AND activity_id = 3001;
-```
+编排脚本使用 `k6-bench-reset.sh` / `k6-bench-restore.sh` 保存与恢复活动数据，调用 `seed-users.sh` 准备压测用户。A/B/C 报告包括成功 RPS、成功请求 p50/p95/p99、HTTP 与业务错误率、订单数和超卖校验；C 场景额外等待订单与积分流水一致。D 场景记录 L1 hitRate、Redis GET/s 和请求延迟。
 
-三条结果均应 `≤ 20000`（即 `bench-reset` 注入的压测库存上限），绝不超出；若超出，判定为超卖事故，需排查 Lua 脚本或 DB 唯一索引。C 场景压测结束后等待 Kafka 消费完成，再验证超级档订单数与积分流水数一致。
+`load/reports/<时间戳>-<PID>/resources-*.tsv` 保存 MySQL、Redis、Kafka 容器内存与宿主机 Java 的 PID、RSS（KiB）和进程平均 CPU 使用率；采样 Java 时核对命令行，避免使用失效 PID。报告结尾显示中间件容器的 OOMKilled 状态。两类资源统计分别解释，Java 不使用容器 OOM 指标。
 
-注：20000 为正式 A/B/C 横向压测用户池与临时库存上限，与种子库存（5000/500/200）解耦，避免污染 M4 业务验收语义。压测前 `bench-reset` 注入、压测后 `bench-restore` 恢复。
+## 8. 重置数据
 
-### 7.8 对比报告
-
-`docs/ROADMAP.md` M6 章节附压测对比表，字段与 `scripts/k6-run.sh` 控制台输出一致。瓶颈观察由压测高峰期 `docker stats` 快照、Redis `INFO commandstats` 差分、C 场景订单与积分流水一致性校验共同支撑。
-
-### 7.9 压测前置脚本
-
-| 脚本 | 职责 |
-|---|---|
-| `scripts/dev-up.sh` | 准备 `.env`，启动 mysql/redis/kafka/backend/frontend，等待健康检查；不启动 `k6` profile |
-| `scripts/seed-users.sh` | 插入或刷新 `u0001` ~ `u20000` 压测用户，生成 `load/.runtime/bench-tokens.txt`，批量写入 Redis session |
-| `scripts/k6-bench-reset.sh` | 按活动重置库存、活动时间、压测用户积分、订单、积分流水、Redis 库存/已购集合/活动缓存与 L1 统计 |
-| `scripts/k6-bench-restore.sh` | 恢复种子活动库存并清理压测订单、积分流水、Redis 活动污染 |
-| `scripts/k6-run.sh` | 编排 A/B/C/D，采集 SQL 校验、Redis GET 差分、L1 hitRate、docker stats 快照并输出 Markdown 表格 |
-
-### 7.10 关键设计取舍
-
-- **固定 100 VU / 30s**：取 backend Tomcat 100 线程上限作为三档共同压力刻度，30 秒窗口覆盖 C 场景预估 10500 次成功请求并控制本地压测成本。正式报告只使用固定压力下的成功请求指标，保证三档横向对比口径一致。
-- **20000 用户与 20000 临时库存**：一人一单约束下，压测用户数决定成功请求上限。20000 用户与库存为 A/B/C 成功链路留出约 2 倍余量，避免压测主体被 `40900` 重复购买或 `41000` 售罄快速路径主导。临时库存仅在压测窗口生效，压测后恢复种子库存。
-- **业务错误码独立计数**：`http_req_failed` 仅统计 HTTP 5xx/超时，业务码经 `seckill_duplicate_total` / `seckill_sold_out_total` 独立计数。A/B/C 正式吞吐与延迟取 `order_success_total` 与 `success_req_duration`。
-- **Kafka 单节点 + RF=1**：单机宿主部署下跨节点容错无法落地，多节点配置仅徒增内存与启动 quorum 等待。消息不丢由 Producer 幂等 + 同步 `send().get(3s)` + 回滚 Lua + Consumer 幂等门 + DLQ + `StockReconcileJob` 六层兜底，无需依赖跨 broker 副本。代价：单节点 Kafka 宕机时所有超级档抢购返回 `INTERNAL_ERROR`（前台失败 + Redis 回滚），由运维介入重启容器；该形态与"宿主死亡"风险等价，是单机部署可接受的上限。
-
-## 8. 运行环境要求
-
-| 项 | 要求 |
-|---|---|
-| 操作系统 | Linux / macOS / Windows + WSL2 |
-| Docker | 24+ |
-| Docker Compose | v2.20+ |
-| 内存 | ≥ 8 GB 可用（全栈容器合计 ≈ 3.3 GB，按 §2.4 限制） |
-| 磁盘 | ≥ 5 GB 可用 |
-| 端口 | 3000（frontend）、8080（backend）、3306（mysql）、6379（redis） |
-
-本地开发若希望直接 IDE 启动后端，可仅启 `mysql / redis` 两个依赖：
-
-```bash
-docker compose up -d mysql redis
-# 然后在 IDE 中以 spring.profiles.active=local 启动 backend
-# frontend 在 frontend/ 目录下 pnpm dev
-```
+日常操作使用 `stop` 保留数据。需要明确清空全部本地数据时，可执行 `docker compose down -v`，这会删除 MySQL、Redis 和 Kafka 的数据卷；再次启动 MySQL 会重新导入初始化 SQL。

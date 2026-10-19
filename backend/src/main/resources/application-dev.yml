@@ -1,9 +1,13 @@
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${BACKEND_PORT:8081}
+
 spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:shanpu}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: ${MYSQL_USERNAME:root}
-    password: ${MYSQL_PASSWORD:123456}
+    password: ${MYSQL_PASSWORD:${MYSQL_ROOT_PASSWORD:123456}}
     druid:
       initial-size: 5
       min-idle: 5

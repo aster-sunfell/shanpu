@@ -13,3 +13,4 @@ load/.runtime/
 load/reports/
 
 .idea/
+.local/
