@@ -37,9 +37,18 @@ public class ProductController {
         return Result.ok(productService.getDetail(id));
     }
 
+    /**
+     * 创建普通商品订单。
+     *
+     * <p>普通下单按用户维度做秒级滑动窗口限流，先拦截连续点击和脚本高频提交。</p>
+     *
+     * @param id 商品 ID
+     * @return 创建成功的订单信息
+     */
     @RateLimit(window = 1, max = 10, dim = RateLimit.Dimension.USER)
     @PostMapping("/{id}/order")
     public Result<OrderVO> order(@PathVariable Long id) {
+        // 用户维度限流通过后，服务层在事务内完成库存、积分和订单写入。
         return Result.ok(orderService.createNormalOrder(UserContext.requireUserId(), id, 1));
     }
 }
