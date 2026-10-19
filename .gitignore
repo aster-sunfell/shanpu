@@ -11,3 +11,5 @@ backend/target/
 
 load/.runtime/
 load/reports/
+
+.idea/
