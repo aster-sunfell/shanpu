@@ -8,12 +8,19 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 load_env
 
 PRESSURE_STOCK=${PRESSURE_STOCK:-20000}
-API_BASE_IN_COMPOSE=${API_BASE_IN_COMPOSE:-http://backend:8080/api}
+API_BASE_IN_COMPOSE=${API_BASE_IN_COMPOSE:-$(backend_api_base)}
 TMP_DIR=$(mktemp -d /tmp/shanpu-k6.XXXXXX)
+REPORT_DIR="$ROOT_DIR/load/reports/$(date +%Y%m%d-%H%M%S)-$$"
+mkdir -p "$REPORT_DIR"
 RESTORE_DONE=0
+RESET_STARTED=0
+SAMPLER_PID=
 
 cleanup() {
-  if [ "$RESTORE_DONE" -eq 0 ]; then
+  if [ -n "$SAMPLER_PID" ]; then
+    stop_stats_sampler "$SAMPLER_PID"
+  fi
+  if [ "$RESET_STARTED" -eq 1 ] && [ "$RESTORE_DONE" -eq 0 ]; then
     bash "$SCRIPT_DIR/k6-bench-restore.sh" >/dev/null 2>&1 || true
   fi
   rm -rf "$TMP_DIR"
@@ -73,16 +80,25 @@ mysql_count_point_logs_for_orders() {
 
 start_stats_sampler() {
   local name=$1
-  local file="$TMP_DIR/docker-stats-$name.tsv"
+  local file="$REPORT_DIR/resources-$name.tsv"
   (
     while true; do
       date +%s >> "$file"
       docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}' \
-        shanpu-backend shanpu-mysql shanpu-kafka >> "$file" 2>/dev/null || true
+        shanpu-mysql shanpu-redis shanpu-kafka >> "$file" 2>/dev/null || true
+      if [ -f "$DEV_RUNTIME_DIR/backend.pid" ]; then
+        local backend_pid
+        backend_pid=$(cat "$DEV_RUNTIME_DIR/backend.pid")
+        if [[ "$backend_pid" =~ ^[0-9]+$ ]] \
+            && [ -r "/proc/$backend_pid/cmdline" ] \
+            && tr '\0' ' ' < "/proc/$backend_pid/cmdline" | grep -q 'target/shanpu-backend-1.0.0.jar'; then
+          ps -p "$backend_pid" -o pid=,rss=,%cpu= | awk '{print "backend_host\tpid=" $1 "\trss_kib=" $2 "\tcpu_percent=" $3}' >> "$file"
+        fi
+      fi
       sleep 2
     done
-  ) &
-  echo "$!"
+  ) </dev/null >/dev/null 2>&1 &
+  SAMPLER_PID=$!
 }
 
 stop_stats_sampler() {
@@ -91,6 +107,7 @@ stop_stats_sampler() {
     kill "$pid" >/dev/null 2>&1 || true
     wait "$pid" >/dev/null 2>&1 || true
   fi
+  SAMPLER_PID=
 }
 
 run_k6() {
@@ -127,13 +144,12 @@ run_abc_scenario() {
   local outfile="$TMP_DIR/k6-$key.out"
 
   bash "$SCRIPT_DIR/k6-bench-reset.sh" "$activity_id"
-  local sampler
-  sampler=$(start_stats_sampler "$key")
+  start_stats_sampler "$key"
   run_k6 "$outfile" \
     -e "ACTIVITY_ID=$activity_id" \
     -e "API_BASE=$API_BASE_IN_COMPOSE" \
     k6 run "/load/$script"
-  stop_stats_sampler "$sampler"
+  stop_stats_sampler "$SAMPLER_PID"
 
   local summary
   summary=$(grep '^K6_SUMMARY ' "$outfile" | tail -n 1)
@@ -285,8 +301,10 @@ print_d_table() {
 
 echo "[k6-run] start core services"
 bash "$SCRIPT_DIR/dev-up.sh" >/dev/null
+require_backend
 
 echo "[k6-run] seed bench users and JWT sessions"
+RESET_STARTED=1
 bash "$SCRIPT_DIR/seed-users.sh"
 
 : > "$TMP_DIR/abc.tsv"
@@ -308,7 +326,8 @@ print_abc_table
 print_d_table
 
 echo
-docker inspect -f '{{.Name}} OOMKilled={{.State.OOMKilled}}' shanpu-backend shanpu-mysql shanpu-kafka 2>/dev/null || true
+docker inspect -f '{{.Name}} OOMKilled={{.State.OOMKilled}}' shanpu-mysql shanpu-redis shanpu-kafka
+echo "资源采样报告：$REPORT_DIR"
 
 bash "$SCRIPT_DIR/k6-bench-restore.sh" >/dev/null
 RESTORE_DONE=1

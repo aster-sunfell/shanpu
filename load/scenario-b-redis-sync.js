@@ -23,7 +23,7 @@ const httpErrorRate = new Rate('http_error_rate');
 const businessErrorRate = new Rate('business_error_rate');
 
 export default function () {
-  const baseUrl = __ENV.API_BASE || 'http://backend:8080/api';
+  const baseUrl = __ENV.API_BASE || 'http://127.0.0.1:8081/api';
   const activityId = __ENV.ACTIVITY_ID || '2001';
   const res = http.post(`${baseUrl}/seckills/${activityId}/grab`, '{}', {
     headers: authHeaders(),

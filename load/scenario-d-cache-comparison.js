@@ -21,7 +21,7 @@ const duration = new Trend('cache_req_duration');
 const httpErrorRate = new Rate('http_error_rate');
 
 export default function () {
-  const baseUrl = __ENV.API_BASE || 'http://backend:8080/api';
+  const baseUrl = __ENV.API_BASE || 'http://127.0.0.1:8081/api';
   const path = target === 'product'
     ? `/products/${__ENV.PRODUCT_ID || '1'}`
     : `/seckills/${__ENV.ACTIVITY_ID || '3001'}`;

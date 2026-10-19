@@ -1,33 +1,12 @@
 #!/usr/bin/env bash
 
-ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=dev-common.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dev-common.sh"
 RUNTIME_DIR="$ROOT_DIR/load/.runtime"
 TOKEN_FILE="$RUNTIME_DIR/bench-tokens.txt"
 BENCH_USER_FILE="$RUNTIME_DIR/bench-users.tsv"
 
-ensure_env() {
-  if [ ! -f "$ROOT_DIR/.env" ]; then
-    cp "$ROOT_DIR/.env.example" "$ROOT_DIR/.env"
-  fi
-}
-
-load_env() {
-  ensure_env
-  set -a
-  # shellcheck disable=SC1091
-  . "$ROOT_DIR/.env"
-  set +a
-  MYSQL_DATABASE=${MYSQL_DATABASE:-shanpu}
-  MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-123456}
-  REDIS_PASSWORD=${REDIS_PASSWORD:-123456}
-  BACKEND_PORT=${BACKEND_PORT:-8080}
-  JWT_SECRET=${JWT_SECRET:-replace-me-with-a-32-byte-random-secret-for-development}
-  mkdir -p "$RUNTIME_DIR"
-}
-
-compose() {
-  (cd "$ROOT_DIR" && docker compose "$@")
-}
+mkdir -p "$RUNTIME_DIR"
 
 mysql_exec() {
   compose exec -T mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" "$@"
@@ -39,10 +18,6 @@ mysql_scalar() {
 
 redis_cli() {
   compose exec -T redis redis-cli -a "$REDIS_PASSWORD" "$@" | tr -d '\r'
-}
-
-backend_api_base() {
-  printf 'http://localhost:%s/api' "$BACKEND_PORT"
 }
 
 first_bench_token() {
