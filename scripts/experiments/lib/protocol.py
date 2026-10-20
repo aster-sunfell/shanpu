@@ -37,7 +37,7 @@ def parse_args(argv=None):
     parser.add_argument('--baseline-report', type=Path, help='capacity.json from a completed B/C capacity run')
     parser.add_argument('--seconds', type=positive, default=60)
     parser.add_argument('--repeats', type=positive, default=3)
-    parser.add_argument('--vus', type=positive, default=20)
+    parser.add_argument('--vus', type=positive, default=100)
     parser.add_argument('--refine-steps', type=int, default=4)
     parser.add_argument('--burst-multipliers', default='2,5')
     parser.add_argument('--burst-seconds', type=positive, default=10)

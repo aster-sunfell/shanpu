@@ -9,7 +9,7 @@
 - [快速启动](./docs/QUICKSTART.md)
 - [部署](./docs/DEPLOYMENT.md)
 - [数据库与迁移](./docs/DATABASE.md)
-- [性能实验与报告](./docs/experiments/README.md) · GitHub Actions 自动执行，HTML 报告支持 Pages 发布
+- [性能实验与报告](./docs/experiments/README.md) · GitHub Actions 手动启动压测，完成后自动发布 HTML 报告
 - [后端](./docs/BACKEND.md)
 - [前端](./docs/FRONTEND.md)
 

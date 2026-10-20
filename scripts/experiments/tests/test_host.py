@@ -148,7 +148,7 @@ class HostTest(unittest.TestCase):
             load=Load()
             args=parse_args(['kafka-buffering'])
             config=dict(activityId=12,path='C',workload='steady',seconds=1,baseSeconds=0,baseRate=1,
-                        scheduled=1,rate=1,points=1000,plan='kafka-buffering',repeat=1,requestTimeout=1)
+                        scheduled=1,rate=1,points=1000,plan='kafka-buffering',repeat=1,requestTimeout=1,vus=100)
             with patch('runner.require_idle',return_value=before),patch('runner.mysql_counters',return_value={}), \
                  patch('runner.api',side_effect=lambda *a:{**before,'timeMs':int(time.time()*1000),'events':1}), \
                  patch('runner.lag',return_value={'0':0}),patch('runner.sql',return_value='0'), \

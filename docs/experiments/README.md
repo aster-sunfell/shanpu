@@ -6,7 +6,11 @@
 
 ## 触发实验
 
-唯一触发条件为 `push` 到 `main`。任何 main 新提交（包括文档修改）都会自动执行完整正式实验并在结束后发布 HTML。PR、迁移分支、标签和 `report-history` 分支的变更不触发本工作流；不提供手动 Run workflow 入口。报告归档提交不会递归触发压测。
+压测仅通过 `workflow_dispatch` 手动启动，平时向 main 或其他分支推送、提交 PR、创建标签和归档报告都不会自动发压。
+
+需要压测时，打开 [Actions → Performance experiments](https://github.com/aster-sunfell/shanpu/actions/workflows/performance.yml)，点击 **Run workflow**，选择 **main**，再点击 **Run workflow**。每次点击启动一次完整正式实验，结束后自动发布 HTML。仅允许 main 执行；选择其他分支时所有 job 跳过。
+
+验证最新修正时请新建一次 Run workflow，不要在旧失败运行中点击 Re-run jobs；旧运行的重试沿用旧提交及其工作流配置。
 
 运行进度见 [Actions → Performance experiments](https://github.com/aster-sunfell/shanpu/actions/workflows/performance.yml)。构建和测量串行进行，同一 main 分支的运行使用并发组排队，不取消正在进行的实验。
 
@@ -16,11 +20,13 @@
 | rates | 25,50,100,200 | 初始输入 RPS 阶梯；全部通过时需要提高档位重测 |
 | seconds | 60 | 正式容量点最低注入秒数，低速档按样本目标延长，单点最多 600 秒 |
 | repeats | 3 | 正式测量至少三轮 |
-| vus | 20 | 每个到达率场景固定 VU 数，最多 100 |
+| vus | 100 | 每个到达率场景预分配并固定 100 个 VU；不在测量中动态扩容 |
 | refine_steps | 4 | 有效通过/失败区间的细化轮数，0 至 6 |
 | publish | 自动 | 完成后发布已有 HTML，包括明确标记的中断或失败报告 |
 
-修改实验配置时编辑 `.github/workflows/performance.yml` 并提交到 main。正式样本、SLO、环境和基线判据继续由执行器核验，不允许为通过工作流而降低门槛。
+修改实验配置时编辑 `.github/workflows/performance.yml` 并提交到 main，之后按需手动启动。仅修改或推送配置不会执行压测。正式样本、SLO、环境和基线判据继续由执行器核验，不允许为通过工作流而降低门槛。
+
+预分配 100 个 VU 为启动阶段及慢响应保留并发余量，发压端仍限制为 1 vCPU / 512 MiB。若 k6 报告 `Insufficient VUs`、计划请求缺失或注入越界，该点仍判为发压无效并停止，不作为服务容量失败上界。
 
 B/C 的突发只引用本 job 刚完成的容量报告。B 基线必须样本充分、有通过和有效失败上界、区间宽度不超过 10%（最低 1 RPS）。无法形成合格基线时停止，不手填 Q，不使用其他运行的旧基线。
 
@@ -60,7 +66,7 @@ artifact 下载可能需要登录 GitHub。HTML 显示实验范围、commit、�
 1. 仓库 Settings → Actions → General：允许本工作流使用的 GitHub 官方 actions。权限按 job 显式声明，不要求把所有 workflow 的默认权限改成全仓库读写。
 2. Settings → Pages → Build and deployment → Source 选择 **GitHub Actions**。
 3. 仓库 Code 页右侧 About 的设置中，Website 填写 `https://aster-sunfell.github.io/shanpu/`。
-4. 向 main 推送提交，自动启动正式实验。确认 `publish` job 成功并打开 Website。
+4. 在 Actions → Performance experiments → Run workflow 中选择 main，手动启动正式实验。确认 `publish` job 成功并打开 Website。
 
 发布 job 使用 `contents: write` 保存纯静态报告的 `report-history` 分支，使用 `pages: write` 和 `id-token: write` 部署 Pages；压测 job 仅有 `contents: read`。无需提供个人访问令牌。首次配置仍需仓库管理员在 GitHub 完成。
 

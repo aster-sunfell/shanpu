@@ -432,7 +432,7 @@ def main():
     parser.add_argument('--rates', default='25,50,100,200')
     parser.add_argument('--seconds', type=int, default=60)
     parser.add_argument('--repeats', type=int, default=3)
-    parser.add_argument('--vus', type=int, default=20)
+    parser.add_argument('--vus', type=int, default=100)
     parser.add_argument('--refine-steps', type=int, default=4)
     parser.add_argument('--minutes', type=int, default=150)
     args = parser.parse_args()

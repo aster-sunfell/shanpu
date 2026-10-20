@@ -72,7 +72,7 @@ class ResourceTest(unittest.TestCase):
 
     def test_safe_default_vus_and_duration_remain_bounded(self):
         points = budgeted_matrix(parse_args(['redis-filtering']))
-        self.assertTrue(all(p['vus'] == 20 for p in points))
+        self.assertTrue(all(p['vus'] == 100 for p in points))
         self.assertTrue(all(60 <= p['seconds'] <= 600 for p in points))
 
 

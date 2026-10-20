@@ -1,11 +1,10 @@
 name: Performance experiments
 run-name: Performance · full · ${{ github.ref_name }}
 
-# The experiment and Pages publication run only after main receives a commit.
-# No manual, PR, tag, report-history or feature-branch trigger.
+# Start explicitly from the Actions page; commits never launch a pressure test.
+# Only manual runs against main may execute the experiment and publish reports.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,6 +15,7 @@ concurrency:
 
 jobs:
   checks:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -57,7 +57,7 @@ jobs:
         run: |
           python3 scripts/experiments/lib/actions.py run \
             --mode full --rates "$BENCH_RATES" \
-            --seconds 60 --repeats 3 --vus 20 --refine-steps 4 --minutes 145
+            --seconds 60 --repeats 3 --vus 100 --refine-steps 4 --minutes 145
       - name: Preserve diagnostics before deleting ephemeral services
         if: always()
         timeout-minutes: 3
@@ -92,7 +92,7 @@ jobs:
 
   publish:
     needs: performance
-    if: always() && github.ref == 'refs/heads/main' && needs.performance.outputs.html == 'true'
+    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.performance.outputs.html == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:

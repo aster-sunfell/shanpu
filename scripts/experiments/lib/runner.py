@@ -167,6 +167,20 @@ class JournalReader:
         check_disk(self.directory, check_host=False)
 
 
+def verify_k6_load(result, log_path, return_code):
+    # With aggregation disabled, the warning is independent evidence of dropped
+    # arrivals. An extra duration-boundary iteration can otherwise mask the loss
+    # when only the planned and recorded request totals are compared.
+    with Path(log_path).open() as log:
+        result['vuExhausted'] = any('Insufficient VUs, reached ' in line for line in log)
+    if result['vuExhausted']:
+        result['loadErrors'].append('k6 exhausted its fixed VU pool (Insufficient VUs); arrivals were dropped')
+    if return_code:
+        result['loadErrors'].append(f'k6 exit {return_code}')
+    result['valid'] &= not result['loadErrors']
+    result['sloPassed'] &= result['valid']
+
+
 def measure(config, private, directory, token, args):
     check_host_health()
     before_metrics = require_idle(token)
@@ -243,11 +257,14 @@ def measure(config, private, directory, token, args):
             write_json(directory / 'kafka-final.json', final_lag)
         drift = time.time()*1000-clock_wall-(time.monotonic()-started)*1000
         result = evidence.analyze(config, {}, cutoff, policy(args))
+        verify_k6_load(result, directory / 'k6.out', process.returncode)
         result['clockShiftMs'] = round(drift,3)
         result['ambiguousResponseCount'] = ambiguous
         if interruption:
             result['correctnessErrors'].append('Host safety interrupted this point: ' + interruption)
-        write_json(directory / 'load.json', {'planned':config['scheduled'], 'started':result['started'], 'missing':max(0,config['scheduled']-result['started']), 'metricsAggregation':'disabled; disk evidence is authoritative'})
+        write_json(directory / 'load.json', {'planned':config['scheduled'], 'started':result['started'],
+                   'missing':max(0,config['scheduled']-result['started']), 'vus':config['vus'],
+                   'vuExhausted':result['vuExhausted'], 'metricsAggregation':'disabled; disk evidence and k6 warnings are authoritative'})
         result.update(repeat=config['repeat'], seconds=config['seconds'], baseRate=config['baseRate'], baseSeconds=config['baseSeconds'], k6ExitCode=process.returncode,
                       wallSeconds=round(time.monotonic()-started, 3), backendDelta=delta(before_metrics, after_metrics))
         if abs(drift)>50 or abs(after_metrics['runnerClock']['offsetEstimateMs'])>50+after_metrics['runnerClock']['uncertaintyMs']:
@@ -255,8 +272,6 @@ def measure(config, private, directory, token, args):
         unproven = evidence.scalar("SELECT COUNT(*) FROM joined WHERE outcome IN ('timeout','network_error','internal_error') AND ct IS NULL")
         if unproven and config['path']=='C':
             result['correctnessErrors'].append(f'Uncertain asynchronous submission outcome: {unproven}; preserve this point')
-        if process.returncode:
-            result['loadErrors'].append(f'k6 exit {process.returncode}')
         if (result['backendDelta'].get('writeErrors', 0) or after_metrics['events'] < before_metrics['events']
                 or before_metrics.get('processStartedAtMs') != after_metrics.get('processStartedAtMs')):
             result['correctnessErrors'].append('Backend journal failed or backend restarted')
@@ -369,7 +384,12 @@ def main(argv=None):
                     if value['correctnessErrors'] or value['unresolvedCount']:
                         raise RuntimeError('Data/evidence invalid or accepted orders unresolved; preserve this run')
                     if value['loadErrors']:
-                        raise RuntimeError('Load generation invalid; fix the runner before continuing the capacity sweep')
+                        raise RuntimeError(
+                            f"Load generation invalid: {'; '.join(value['loadErrors'])} "
+                            f"(planned={value['scheduled']}, started={value['started']}, "
+                            f"missing={value['missingRequests']}, VUs={point['vus']}, "
+                            f"lagP99Ms={value['generatorLagMs']['p99']}). "
+                            'See point/result.json and k6.out; this is not a service capacity failure')
                     # Keep DB rows and all evidence; retire only this closed point's hot Redis data.
                     release_redis(private / point_name, point)
                     meta['points'][-1]['redisReleased'] = True
