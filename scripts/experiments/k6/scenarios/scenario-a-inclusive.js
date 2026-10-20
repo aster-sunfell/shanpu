@@ -1,9 +1,10 @@
 import http from 'k6/http';
 import { Rate, Counter, Trend } from 'k6/metrics';
-import { authHeaders } from './lib/auth.js';
-import { seckillSummary } from './lib/summary.js';
+import { authHeaders } from '../lib/auth.js';
+import { seckillSummary } from '../lib/summary.js';
 
 export const options = {
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(50)', 'p(95)', 'p(99)'],
   scenarios: {
     fixed_100vu: {
       executor: 'constant-vus',
@@ -24,15 +25,15 @@ const businessErrorRate = new Rate('business_error_rate');
 
 export default function () {
   const baseUrl = __ENV.API_BASE || 'http://127.0.0.1:8081/api';
-  const activityId = __ENV.ACTIVITY_ID || '2001';
+  const activityId = __ENV.ACTIVITY_ID || '1001';
   const res = http.post(`${baseUrl}/seckills/${activityId}/grab`, '{}', {
     headers: authHeaders(),
   });
-  recordResult(res);
+  recordResult(res, false);
 }
 
-function recordResult(res) {
-  httpErrorRate.add(res.status >= 400);
+function recordResult(res, allowPending) {
+  httpErrorRate.add(res.status === 0 || res.status >= 400);
   let body = null;
   try {
     body = res.json();
@@ -43,7 +44,8 @@ function recordResult(res) {
   }
 
   const status = body && body.data ? body.data.status : '';
-  if (res.status === 200 && body.code === 0 && status === 'PAID') {
+  const ok = res.status === 200 && body.code === 0 && (status === 'PAID' || (allowPending && status === 'PENDING'));
+  if (ok) {
     orderSuccess.add(1);
     successDuration.add(res.timings.duration);
     businessErrorRate.add(false);
@@ -61,5 +63,5 @@ function recordResult(res) {
 }
 
 export function handleSummary(data) {
-  return seckillSummary(data, 'B');
+  return seckillSummary(data, 'A');
 }

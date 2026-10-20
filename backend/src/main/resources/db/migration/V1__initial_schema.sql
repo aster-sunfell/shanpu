@@ -1,6 +1,4 @@
 SET NAMES utf8mb4;
-CREATE DATABASE IF NOT EXISTS shanpu DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-USE shanpu;
 
 -- 用户
 CREATE TABLE t_user (

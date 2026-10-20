@@ -10,11 +10,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.jdbc.Sql;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
-import org.testcontainers.utility.MountableFile;
 
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
@@ -27,30 +27,24 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 并发防超卖集成测试：取库存 10 的商品（种子 id=5），50 线程持续并发下单，
+ * 并发防超卖集成测试：使用独立测试商品，50 线程持续并发下单，
  * 断言最终 PAID 订单数 = 库存、库存归零、扣分流水数 = 成功订单数、无超卖。
- * 经真实 MySQL 容器执行 {@code mysql/init/*.sql}，验证行锁事务在真实引擎下的正确性。
+ * 经真实 MySQL 容器运行 Flyway 迁移，验证行锁事务在真实引擎下的正确性。
  */
 @Testcontainers
 @ActiveProfiles("test")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@Sql("/fixtures/order-concurrency.sql")
 class OrderConcurrencyTest {
 
     private static final long PRODUCT_ID = 5L;
     private static final int STOCK = 10;
     private static final int THREADS = 50;
-    // 对齐 ROADMAP §M2「50 并发持续 30 秒」防超卖验收；10 秒窗口 + 50 线程已制造充分争用，可上调至 30 秒完全对齐
     private static final Duration RUN = Duration.ofSeconds(10);
 
     @Container
     static final MySQLContainer<?> MYSQL = new MySQLContainer<>(DockerImageName.parse("mysql:8.0"))
-            .withDatabaseName("shanpu")
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath("../mysql/init/01_schema.sql"),
-                    "/docker-entrypoint-initdb.d/01_schema.sql")
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath("../mysql/init/02_seed.sql"),
-                    "/docker-entrypoint-initdb.d/02_seed.sql");
+            .withDatabaseName("order_concurrency_test");
 
     @DynamicPropertySource
     static void datasourceProps(DynamicPropertyRegistry registry) {

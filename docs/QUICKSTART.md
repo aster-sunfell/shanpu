@@ -8,20 +8,22 @@ cd frontend
 pnpm install --frozen-lockfile
 ```
 
-在 VS Code 中打开仓库根目录，执行“终端 → 运行任务 → 启动开发环境”。任务会启动 Docker 中的 MySQL、Redis、Kafka、Nginx，以及本机 Java 和 Next.js。浏览器访问 [http://127.0.0.1:8089](http://127.0.0.1:8089)，测试账号为 `summer / 123456`。
+在 VS Code 中打开仓库根目录，执行“终端 → 运行任务 → 启动开发环境”。任务会启动 Docker 中的 MySQL、Redis、Kafka、Nginx，以及本机 Java 和 Next.js。首次启动时，后端通过 Flyway 自动建表。待后端就绪后，在仓库根目录执行 `bash scripts/db/seed-demo.sh` 导入演示数据，再访问 [http://127.0.0.1:8089](http://127.0.0.1:8089)，测试账号为 `summer / 123456`。已有数据库接入前先按[数据库管理](./DATABASE.md)核对结构并建立 baseline。
 
 命令行启动时，在仓库根目录依次执行以下命令；前后端各使用一个终端：
 
 ```bash
-bash scripts/dev-up.sh
-bash scripts/dev-gateway.sh
-bash scripts/start-local-backend.sh
-bash scripts/start-local-frontend.sh
+bash scripts/dev/up.sh
+bash scripts/dev/gateway.sh
+bash scripts/dev/backend.sh
+bash scripts/dev/frontend.sh
+# 待后端启动完成后，在另一个终端执行（首次初始化演示数据）
+bash scripts/db/seed-demo.sh
 ```
 
-通过 `bash scripts/dev-status.sh` 或“检查开发环境”任务验证启动结果。端口可在根目录 `.env` 中配置，默认后端 8081、前端 3000、网关 8089。
+通过 `bash scripts/dev/status.sh` 或“检查开发环境”任务验证启动结果。端口可在根目录 `.env` 中配置，默认后端 8081、前端 3000、网关 8089。
 
-前后端通过 VS Code“终止任务”或 Ctrl+C 停止。容器通过“停止中间件与网关”任务或 `bash scripts/dev-stop.sh` 停止，数据卷保留。所有容器设置 `restart: "no"`，需要手动再次启动。关闭 VS Code 不会停止后台容器。
+前后端通过 VS Code“终止任务”或 Ctrl+C 停止。容器通过“停止中间件与网关”任务或 `bash scripts/dev/stop.sh` 停止，数据卷保留。所有容器设置 `restart: "no"`，需要手动再次启动。关闭 VS Code 不会停止后台容器。
 
 Kafka 单节点使用 KRaft，broker 和 controller 位于同一个容器。详细网络配置、持久化与压测说明见 [本地开发与压测](./DEPLOYMENT.md)。
 
@@ -39,7 +41,7 @@ API="http://127.0.0.1:${BACKEND_PORT:-8081}/api"
 ### 1. 启动与健康检查
 
 ```bash
-bash scripts/dev-status.sh
+bash scripts/dev/status.sh
 curl -s "$API/health" | jq
 ```
 

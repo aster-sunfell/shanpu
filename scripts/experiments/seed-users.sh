@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/lib/bench-common.sh"
+. "$SCRIPT_DIR/lib/common.sh"
 
 load_env
 
@@ -37,8 +37,7 @@ SELECT
 FROM bench_seq
 ON DUPLICATE KEY UPDATE
   password = VALUES(password),
-  nickname = VALUES(nickname),
-  points = VALUES(points);
+  nickname = VALUES(nickname);
 
 INSERT INTO t_point_log (user_id, delta, balance_after, biz_type, biz_ref)
 SELECT u.id, $BENCH_POINTS, $BENCH_POINTS, 1, ''

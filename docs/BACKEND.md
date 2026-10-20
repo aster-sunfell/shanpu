@@ -32,34 +32,18 @@
 
 面向高并发秒杀场景的积分商城，核心解决秒杀链路的防超卖、流量削峰、热点缓存与最终一致问题。
 
-- **Redis + Lua 原子库存扣减**：将秒杀的库存校验、一人一单判断与预扣减压缩至单次 Lua 调用，绕开 MySQL 单行锁串行化瓶颈，**大幅降低尾延迟**。压测对比（100 VU 横向）：**平均吞吐 200 → 300 RPS（1.5×）**，**p99 500ms → 150ms（-70%）**。
-- **Kafka 异步削峰下单**：秒杀链路从同步事务落库升级为 Kafka 异步消费，接口 RT 不含 DB 写入开销，**显著降低成功请求的尾延迟**。压测对比（100 VU 横向）：**平均吞吐 300 → 350 RPS（1.17×）**，**p99 150ms → 80ms（-47%）**。
-- **Caffeine（L1）+ Redis（L2）二级缓存**：为热点活动详情 Key 增设 Caffeine 本地缓存抗读，微秒级命中，减轻 Redis 单 Key 高 QPS 压力。压测对比：**活动接口 p99 15ms → 5ms（-67%）**，**L1 命中率 ≥ 95%**。
+- **Redis + Lua 原子库存扣减**：将库存校验、一人一单判断与预扣减放到 Redis，过滤重复和售罄请求。成功订单仍需执行数据库库存事务，实际收益由对照实验验证。
+- **Kafka 异步削峰下单**：接口等待 Kafka ack 后返回 PENDING，消费者异步创建已支付订单。受理延迟与最终完成延迟分别测量。
+- **Caffeine（L1）+ Redis（L2）缓存**：热点活动详情通过本地缓存减少 Redis 访问，收益需结合负载、命中率和实际报告评估。
 - **缓存防穿透 + 防击穿拆分**：商品和活动不存在态使用独立空值 Key 拦截恶意 ID 扫描；热点详情使用"逻辑过期 + 后台异步重建"防击穿；订单详情使用互斥锁压住轮询回源并避免异步落库窗口写空值。
 - **滑动窗口限流（ZSet + Lua + AOP）**：基于 Redis ZSet 实现原子滑动窗口，自定义 `@RateLimit` 注解支持 USER / IP / API 三维度，挂到登录、抢购等敏感接口，业务代码零侵入。
 - **DLQ + 幂等定时任务保证最终一致**：消息消费失败重试 3 次后入 DLQ，定时回投主 Topic 并累加失败计数，超 5 次写 ERROR 日志告警；周期对账修复 Redis 库存与 MySQL 真实订单数偏差，覆盖消息丢失与 Redis 数据丢失场景。
 
-#### 1.3.1 压测数据口径
+#### 1.3.1 实验与数据口径
 
-A/B/C 三档秒杀横向对比采用固定 `100 VU / 30s`，配套 20000 压测用户与 20000 临时库存，报告口径取成功请求的 `order_success_total` 与 `success_req_duration`。`scripts/k6-run.sh` 串跑四个场景并在控制台输出 Markdown 表格，作为正式压测产物。
+Redis 前置过滤和 Kafka 异步受理分别按 [实验计划](./experiments/PLAN.md)设计对照实验。当前 `scripts/experiments/run.sh` 保留旧 A/B/C/D 场景，尚未实现新方案；C 的 PENDING 响应只表示受理，不能与同步完成吞吐直接比较。
 
-**硬件假设**：宿主机 7.6 GiB WSL2 / 4 vCPU，Docker 资源限额遵循 [DEPLOYMENT.md §2.4](./DEPLOYMENT.md)；Redis 单实例本地部署，网络往返 ~0.5ms；Kafka 单节点 KRaft 同机部署，acks=1 写入磁盘 ~2-10ms。
-
-**场景 A vs B（亮点 1）**：
-
-- 场景 A 普惠：单事务包含 `UPDATE total_stock` + `UPDATE points` + `INSERT order` + `INSERT point_log` 四步，InnoDB 本地无 fsync 优化下事务平均 ~5ms；活动单行锁串行化将吞吐压在 ~200 RPS，100 VU 排队深度（≈ 2×Tomcat 线程上限）下 ⇒ p99 ≈ 500ms。
-- 场景 B 限时：Lua 扣减 ~0.5ms，库存校验与一人一单判断前置到 Redis 原子脚本，DB 事务只承担最终库存扣减、扣积分、写订单与写积分流水；100 VU 下平均 RPS ~300，成功请求 p99 仍由 DB 写入延迟主导，但排队深度低于 A ⇒ ~150ms。
-
-**场景 B vs C（亮点 2）**：
-
-- 场景 C 超级：Lua 扣减后调 `kafkaTemplate.send().get(3s)`，本地单节点 KRaft `acks=all` 下 ack 延迟 ~2-10ms；接口 RT 不含 DB 落库（消费端异步），100 VU 下平均 RPS ~350（成功路径 Kafka send ~5ms 短于 B 的 DB txn ~10ms，带来 ~17% 边际）；p99 由 Kafka producer ack 上限决定 ⇒ ~80ms。
-
-**场景 D（亮点 3）**：
-
-- L1 命中率：Caffeine `expireAfterWrite=1s`，100 VU 持续访问同一活动 Key，每秒数千次访问中仅有重建窗口的 1 次 miss，理论命中率 ≈ (n-1)/n。考虑 Caffeine evict、压测启停冷启动等损耗，保守取 **0.95**。
-- 接口 p99：L1 关时所有请求走 Redis GET（~0.5-1ms 网络 + 反序列化），p99 受 Tomcat 100 线程上限制约 ~**15ms**；L1 开时 JVM 内存指针访问 ~微秒级，p99 主要由 HTTP 框架开销决定 ~**5ms**（对齐验收门槛 -60%）。
-
-压测执行与报告口径见 [本地开发与压测 §7](./DEPLOYMENT.md#7-k6-压测)，实测结果由 `scripts/k6-run.sh` 输出。
+正式运行的报告、参数、指标及资源采样保存在 `docs/experiments/<实验名>/<运行编号>/`。执行方式和现有场景限制见 [实验说明](./experiments/README.md)。本文不再列出缺少实测报告支持的性能数字。
 
 ## 2. 目录结构
 
@@ -734,6 +718,8 @@ public class DlqStatsVO {
 ```
 
 ## 10. MySQL DDL
+
+表结构以 `backend/src/main/resources/db/migration` 中的 Flyway 迁移为准，以下仅为说明。初始化、旧库 baseline 与升级规则见 [数据库管理](./DATABASE.md)。
 
 字符集统一 `utf8mb4_0900_ai_ci`，引擎 InnoDB，所有表带 `created_at / updated_at`。
 

@@ -240,7 +240,7 @@ export const userApi = {
 
 ### 7.3 运行时配置注入
 
-`scripts/start-local-frontend.sh` 读取根目录 `.env`，启动宿主机 Next.js，并向进程注入浏览器和 SSR 使用的 API 地址。
+`scripts/dev/frontend.sh` 读取根目录 `.env`，启动宿主机 Next.js，并向进程注入浏览器和 SSR 使用的 API 地址。
 
 1. `app/layout.tsx` 读取 `PUBLIC_API_BASE_URL`，以 JSON 嵌入 `__shanpu_config__` 脚本节点，默认值为 `/api`。
 2. 浏览器侧 `readPublicConfig()` 读取节点并缓存结果，回退到 `NEXT_PUBLIC_API_BASE_URL` 或 `/api`。浏览器 API 请求使用当前站点的相对路径。

@@ -1,9 +1,10 @@
 import http from 'k6/http';
 import { Rate, Counter, Trend } from 'k6/metrics';
-import { authHeaders } from './lib/auth.js';
-import { seckillSummary } from './lib/summary.js';
+import { authHeaders } from '../lib/auth.js';
+import { seckillSummary } from '../lib/summary.js';
 
 export const options = {
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(50)', 'p(95)', 'p(99)'],
   scenarios: {
     fixed_100vu: {
       executor: 'constant-vus',
@@ -32,7 +33,7 @@ export default function () {
 }
 
 function recordResult(res) {
-  httpErrorRate.add(res.status >= 400);
+  httpErrorRate.add(res.status === 0 || res.status >= 400);
   let body = null;
   try {
     body = res.json();

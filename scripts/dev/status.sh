@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-. "$(dirname "${BASH_SOURCE[0]}")/lib/dev-common.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/dev-common.sh"
 load_env
 
 compose ps --all mysql redis kafka nginx

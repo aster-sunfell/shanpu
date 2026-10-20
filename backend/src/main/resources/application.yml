@@ -3,6 +3,17 @@ spring:
     active: dev
   application:
     name: shanpu-backend
+  flyway:
+    enabled: true
+    # Use a direct migration connection: MySQL capability probes may fail with
+    # restricted users and would cause Druid to discard the pooled connection.
+    url: ${spring.datasource.url}
+    user: ${spring.datasource.username}
+    password: ${spring.datasource.password}
+    locations: classpath:db/migration
+    validate-on-migrate: true
+    baseline-on-migrate: false
+    clean-disabled: true
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:

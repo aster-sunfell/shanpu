@@ -1,4 +1,4 @@
-function metricValue(data, name, field, fallback = 0) {
+function metricValue(data, name, field, fallback = Number.NaN) {
   const metric = data.metrics[name];
   if (!metric || !metric.values || metric.values[field] === undefined) {
     return fallback;
@@ -8,20 +8,20 @@ function metricValue(data, name, field, fallback = 0) {
 
 function fixed(value, digits = 3) {
   if (value === undefined || value === null || Number.isNaN(Number(value))) {
-    return '0';
+    return 'NA';
   }
   return Number(value).toFixed(digits);
 }
 
 export function seckillSummary(data, scenario) {
-  const success = metricValue(data, 'order_success_total', 'count');
-  const iterations = metricValue(data, 'iterations', 'count');
+  const success = metricValue(data, 'order_success_total', 'count', 0);
+  const iterations = metricValue(data, 'iterations', 'count', 0);
   const line = [
     'K6_SUMMARY',
     `scenario=${scenario}`,
     `success=${fixed(success, 0)}`,
     `iterations=${fixed(iterations, 0)}`,
-    `success_rps=${fixed(success / 30, 3)}`,
+    `success_rps=${fixed(metricValue(data, 'order_success_total', 'rate', 0), 3)}`,
     `p50=${fixed(metricValue(data, 'success_req_duration', 'p(50)'), 3)}`,
     `p95=${fixed(metricValue(data, 'success_req_duration', 'p(95)'), 3)}`,
     `p99=${fixed(metricValue(data, 'success_req_duration', 'p(99)'), 3)}`,
@@ -32,15 +32,15 @@ export function seckillSummary(data, scenario) {
 }
 
 export function cacheSummary(data, target, mode) {
-  const success = metricValue(data, 'cache_success_total', 'count');
-  const iterations = metricValue(data, 'iterations', 'count');
+  const success = metricValue(data, 'cache_success_total', 'count', 0);
+  const iterations = metricValue(data, 'iterations', 'count', 0);
   const line = [
     'K6_D_SUMMARY',
     `target=${target}`,
     `mode=${mode}`,
     `success=${fixed(success, 0)}`,
     `iterations=${fixed(iterations, 0)}`,
-    `rps=${fixed(success / 30, 3)}`,
+    `rps=${fixed(metricValue(data, 'cache_success_total', 'rate', 0), 3)}`,
     `p50=${fixed(metricValue(data, 'cache_req_duration', 'p(50)'), 3)}`,
     `p95=${fixed(metricValue(data, 'cache_req_duration', 'p(95)'), 3)}`,
     `p99=${fixed(metricValue(data, 'cache_req_duration', 'p(99)'), 3)}`,

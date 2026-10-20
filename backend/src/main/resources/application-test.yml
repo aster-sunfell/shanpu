@@ -22,3 +22,15 @@ shanpu:
   kafka:
     consumer:
       enabled: false
+    dlq-rescue:
+      cron: "-"
+  order:
+    timeout:
+      cron: "-"
+    reconcile:
+      cron: "-"
+  seckill:
+    warmup:
+      cron: "-"
+    stock-reconcile:
+      cron: "-"

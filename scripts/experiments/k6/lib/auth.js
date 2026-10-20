@@ -1,6 +1,6 @@
 import exec from 'k6/execution';
 
-const tokenFile = __ENV.TOKEN_FILE || '/load/.runtime/bench-tokens.txt';
+const tokenFile = __ENV.TOKEN_FILE || '/runtime/bench-tokens.txt';
 const tokens = open(tokenFile)
   .split(/\r?\n/)
   .map((line) => line.trim())

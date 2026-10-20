@@ -19,7 +19,6 @@ services:
       - --collation-server=utf8mb4_0900_ai_ci
       - --default-time-zone=+08:00
     volumes:
-      - ./mysql/init:/docker-entrypoint-initdb.d:ro
       - mysql-data:/var/lib/mysql
     deploy:
       resources:
@@ -131,17 +130,18 @@ services:
   k6:
     image: grafana/k6:0.50.0
     profiles:
-      - loadtest
+      - experiments
     restart: "no"
     network_mode: host
-    working_dir: /load
+    working_dir: /experiments
     entrypoint:
       - k6
     environment:
       API_BASE: http://127.0.0.1:${BACKEND_PORT:-8081}/api
-      TOKEN_FILE: /load/.runtime/bench-tokens.txt
+      TOKEN_FILE: /runtime/bench-tokens.txt
     volumes:
-      - ./load:/load:ro
+      - ./scripts/experiments/k6:/experiments:ro
+      - ./.local/experiments:/runtime:ro
     deploy:
       resources:
         limits:

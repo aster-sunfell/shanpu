@@ -1,11 +1,12 @@
 import http from 'k6/http';
 import { Rate, Counter, Trend } from 'k6/metrics';
-import { cacheSummary } from './lib/summary.js';
+import { cacheSummary } from '../lib/summary.js';
 
 const target = __ENV.CACHE_TARGET || 'activity';
 const mode = __ENV.CACHE_MODE || 'on';
 
 export const options = {
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(50)', 'p(95)', 'p(99)'],
   scenarios: {
     fixed_100vu: {
       executor: 'constant-vus',
@@ -26,7 +27,7 @@ export default function () {
     ? `/products/${__ENV.PRODUCT_ID || '1'}`
     : `/seckills/${__ENV.ACTIVITY_ID || '3001'}`;
   const res = http.get(`${baseUrl}${path}`);
-  httpErrorRate.add(res.status >= 400);
+  httpErrorRate.add(res.status === 0 || res.status >= 400);
 
   let body = null;
   try {
