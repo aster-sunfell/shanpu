@@ -14,6 +14,8 @@
 
 首次迁移提交 `09a1c2f` 的 [Actions 运行 39435245137](https://github.com/aster-sunfell/shanpu/actions/runs/39435245137) 已通过 checks 和完整 smoke 流程，包含真实镜像构建、资源准入、服务启动、A/B 容量、B/C 容量与同 job 基线突发、逐笔核对、HTML 生成、证据上传和环境销毁。publish 按分支规则跳过。
 
-该运行生成 `performance-html` 和 `performance-evidence` 两个 artifacts。smoke 使用 validation 标识，不作为正式容量或收益证据。报告复核后进一步限制 validation HTML 不输出容量区间或增幅；最终提交的云端验证结果另行补充。
+该运行生成 `performance-html` 和 `performance-evidence` 两个 artifacts。smoke 使用 validation 标识，不作为正式容量或收益证据。
+
+报告复核后限制 validation HTML 不输出容量区间或增幅。修正提交 `a775546` 的 [Actions 运行 39436086442](https://github.com/aster-sunfell/shanpu/actions/runs/39436086442) 再次通过 checks 和 performance：52 个 Python 回归、4 个 Node 调度验证以及真实 smoke 全流程均通过，HTML 与完整证据上传成功，专属容器和数据卷销毁成功。publish 因迁移分支规则跳过，尚未对 Pages 作线上验收。
 
 Pages 需要管理员完成一次性设置。未发布到线上前，不将 Website 地址标记为可用；完整正式实验与 Pages 验收尚待执行。
