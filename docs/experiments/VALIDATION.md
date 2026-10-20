@@ -4,7 +4,7 @@
 
 ## 已完成的离线验证
 
-- 62 个 Python 回归通过，覆盖证据关联、SLO、容量细化、基线来源、Actions 环境限制、CPU/内存配额、异常排空、截止时间、HTML 归档、k6 VU 耗尽判定、造数事务回滚及失败终态记录。
+- 65 个 Python 回归通过，覆盖证据关联、SLO、容量细化、基线来源、Actions 环境限制、CPU/内存配额、异常排空、截止时间、HTML 归档、k6 VU 耗尽判定、造数事务回滚、失败终态及 MySQL 实际配置校验和基线绑定。
 - 4 个 Node 调度验证通过，覆盖突发边界、用户隔离、固定混合流量及计划到达时刻。
 - actionlint 1.7.12 检查通过；两个 Compose 文件解析并通过原有资源预算验证，未在开发环境启动压测服务。
 - HTML 验证覆盖中断状态、验证标记、文本转义、凭证脱敏、历史保留，以及最近完整正式报告不被失败运行替换。
@@ -35,3 +35,13 @@ main 合并提交 `962c1ee` 的 [运行 39438351113](https://github.com/aster-su
 本次仅修正工具的数据准备和诊断：移除重复用户订单/流水准备中的 INSERT SELECT、历史订单关联和用户名正则筛选，改为按已验证用户 ID 参数化直接写入；每个造数事务覆盖最多 100 个用户，核对四步写入的影响行数，提交成功后才更新 Redis 已购集合。连接断开或提交结果不明时不重放，保留错误步骤、批次和耗时。容器终态在运行退出后、清理前采集，HTML 展示准备失败及退出状态。
 
 离线验证使用 SQLite 检查跨 ID 间隙和尾批的混合比例、库存/积分守恒、历史数据及预热用户隔离、流水失败和缺失用户时的整体回滚；模拟提交断连核验无自动重试。未启动本地被测服务或发压；这些检查不等于 MySQL 实机验证，也尚未验证本次断连在 Actions 上已消除。RPS、测量窗口、轮次、SLO、预热和 CPU/内存配额保持当前配置，工作流仍仅支持手动启动。
+
+## 2026-10-21 MySQL OOM 确认与配置修正
+
+手动 [运行 39456161225](https://github.com/aster-sunfell/shanpu/actions/runs/39456161225) 推进到第 23 点。该点在准备 A 路径的重复用户流水时，于批次 [7700,7800) 中断，事务失败耗时 0.062 秒。containers-final.json 明确记录 MySQL 已退出、OOMKilled=true、ExitCode=137、RestartCount=0，其他被测服务仍运行，确认本次 2013 断连由 MySQL OOM 引发。造数优化没有解决数据库总内存问题，也不能把此前运行的断连追认成已证实 OOM。
+
+宿主证据显示 MySQL 初次采样约 369.46 MiB，随后长期约 380 MiB，结束前约 383.93 MiB；原配置在 384 MiB 容器内缺少余量。没有数据库内部内存分类证据，不能确认具体哪一项分配触发 OOM。MySQL 官方说明 [Performance Schema 会随负载分配并保留内存](https://dev.mysql.com/doc/refman/8.0/en/performance-schema-memory-model.html)，而默认 [TempTable 全局内存限额为 1 GiB](https://dev.mysql.com/doc/refman/8.0/en/internal-temporary-tables.html)，不能将 128 MiB InnoDB 缓冲池视为数据库总内存。
+
+本次固定 MySQL 版本 8.0.46（与失败运行日志版本相同），关闭当前采集器未使用的 Performance Schema，设置线程缓存 4、TempTable 全局内存 16 MiB、单表及 MEMORY 表 4 MiB、TempTable mmap 0。保留容器 384 MiB、InnoDB 缓冲池 128 MiB、连接上限 32 和持久化策略。官方说明 [Performance Schema 关闭后仍支持 SHOW VARIABLES/STATUS](https://dev.mysql.com/doc/refman/8.0/en/performance-schema-system-variables.html)，因此现有 MySQL 全局计数采集继续保留。
+
+每阶段验证并记录实际生效版本及内存变量，纳入基线指纹并展示在 HTML 中；变量缺失、不匹配或版本错误时拒绝发压。这次确实改变了被测数据库的内部配置，所有比较必须在新配置下重测。输入负载、SLO、轮次、配额和手动触发入口均不变。尚未运行修改后的 Actions，不声称 OOM 已消除，也不输出正式容量结论。

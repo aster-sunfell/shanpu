@@ -23,11 +23,14 @@ class HtmlReportTest(unittest.TestCase):
                  'batchStart': 300, 'batchEnd': 400, 'error': '<database error>'}))
             (stage / 'containers-final.json').write_text(json.dumps({'containers': [
                 {'service': 'mysql', 'state': {'OOMKilled': True, 'ExitCode': 137}}]}))
+            (stage / 'mysql-settings.json').write_text(json.dumps({'version': '8.0.46', 'performance_schema': 'OFF'}))
             html = stage_report(stage)
             self.assertIn('数据准备未完成', html)
             self.assertIn('point-logs', html)
             self.assertIn('结束时容器状态', html)
             self.assertIn('OOMKilled', html)
+            self.assertIn('MySQL 实际配置与版本', html)
+            self.assertIn('8.0.46', html)
             self.assertIn('&lt;database error&gt;', html)
             self.assertNotIn('容量增幅', html)
 

@@ -162,6 +162,10 @@ def stage_report(directory):
     if terminal:
         body.append('<details><summary>结束时容器状态（清理前）</summary><pre>'
                     + text(json.dumps(terminal, ensure_ascii=False, indent=2)) + '</pre></details>')
+    database = read_json(directory / 'mysql-settings.json')
+    if database:
+        body.append('<details><summary>MySQL 实际配置与版本</summary><pre>'
+                    + text(json.dumps(database, ensure_ascii=False, indent=2)) + '</pre></details>')
     body.append(resources(directory / 'host-watch/samples.jsonl'))
     return ''.join(body) + '</section>'
 

@@ -3,12 +3,29 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-from runner import verify_k6_load
+from runner import MYSQL_MEMORY_SETTINGS, mysql_settings, verify_k6_load
 
 
 class LoadEvidenceTest(unittest.TestCase):
+    def test_database_profile_records_only_expected_server_variables(self):
+        values = {'version': '8.0.46', **MYSQL_MEMORY_SETTINGS}
+        with patch('runner.sql', return_value='\n'.join(f'{k}\t{v}' for k, v in values.items())):
+            self.assertEqual(values, mysql_settings())
+
+    def test_database_profile_rejects_missing_or_different_memory_limits_before_measurement(self):
+        values = {'version': '8.0.46', **MYSQL_MEMORY_SETTINGS}
+        for change in ({'performance_schema': 'ON'}, {'temptable_max_ram': '1073741824'},
+                       {'innodb_buffer_pool_size': '67108864'}, {'version': '8.0.45'},
+                       {'thread_cache_size': None}):
+            modified = {**values, **change}
+            with self.subTest(change=change), \
+                    patch('runner.sql', return_value='\n'.join(f'{k}\t{v}' for k, v in modified.items() if v is not None)), \
+                    self.assertRaises(RuntimeError):
+                mysql_settings()
+
     def verify(self, output, exit_code=0, **changes):
         result = {'scheduled': 3350, 'started': 3350, 'loadErrors': [],
                   'valid': True, 'sloPassed': True, **changes}

@@ -13,6 +13,15 @@ from fixtures import credential
 
 
 class ProtocolTest(unittest.TestCase):
+    def test_baseline_contract_changes_when_actual_database_profile_changes(self):
+        target = {'instanceId': 'sut', 'services': []}
+        settings = {'version': '8.0.46', 'performance_schema': 'OFF', 'temptable_max_ram': '16777216'}
+        contract = context_contract(target, {}, database_settings=settings)
+        self.assertNotEqual(contract, context_contract(target, {}))
+        for change in ({'performance_schema': 'ON'}, {'temptable_max_ram': '1073741824'}, {'version': '8.0.45'}):
+            with self.subTest(change=change):
+                self.assertNotEqual(contract, context_contract(target, {}, database_settings={**settings, **change}))
+
     def args(self, *extra): return parse_args(['redis-filtering', '--rates', '100,200', *extra])
 
     def row(self, path, rate, repeat, ok=True, valid=True, samples=1000, latency=100):

@@ -25,6 +25,13 @@ from host import check_host_health
 ROOT = Path(__file__).resolve().parents[3]
 RUNTIME = Path(os.environ.get('BENCH_RUNTIME', '/bench/runtime'))
 REPORTS = Path(os.environ.get('BENCH_REPORTS', '/bench/reports'))
+MYSQL_MEMORY_SETTINGS = {
+    'performance_schema': 'OFF', 'innodb_buffer_pool_size': str(128 * 1024 * 1024),
+    'max_connections': '32', 'thread_cache_size': '4', 'table_open_cache': '128',
+    'temptable_max_ram': str(16 * 1024 * 1024), 'temptable_max_mmap': '0',
+    'tmp_table_size': str(4 * 1024 * 1024), 'max_heap_table_size': str(4 * 1024 * 1024),
+    'innodb_log_buffer_size': str(8 * 1024 * 1024), 'innodb_flush_log_at_trx_commit': '2',
+}
 
 
 def sql(statement): return transport.sql(statement)
@@ -75,6 +82,18 @@ def require_idle(token):
 def mysql_counters():
     names = "'Com_commit','Com_rollback','Com_insert','Com_update','Com_select','Innodb_row_lock_waits','Innodb_row_lock_time','Threads_running'"
     return {k: int(v) for k, v in (row.split("\t") for row in sql(f"SHOW GLOBAL STATUS WHERE Variable_name IN ({names});").splitlines())}
+
+
+def mysql_settings():
+    names = ','.join(f"'{name}'" for name in ('version', *MYSQL_MEMORY_SETTINGS))
+    values = dict(row.split('\t', 1) for row in sql(f'SHOW GLOBAL VARIABLES WHERE Variable_name IN ({names});').splitlines())
+    if values.get('version', '').split('-', 1)[0] != '8.0.46':
+        raise RuntimeError(f"Expected pinned MySQL 8.0.46, got {values.get('version', 'missing')}")
+    mismatches = [f"{name}={values.get(name, 'missing')} (expected {expected})"
+                  for name, expected in MYSQL_MEMORY_SETTINGS.items() if values.get(name) != expected]
+    if mismatches:
+        raise RuntimeError('MySQL memory profile differs from the measured contract: ' + ', '.join(mismatches))
+    return values
 
 
 def runner_usage():
@@ -337,6 +356,9 @@ def main(argv=None):
         write_json(directory / 'manifest.json', meta)
         print(f'报告目录：{directory}', flush=True)
         try:
+            meta['mysqlSettings'] = mysql_settings()
+            write_json(directory / 'mysql-settings.json', meta['mysqlSettings'])
+            write_json(directory / 'manifest.json', meta)
             meta['adminPrefix'] = 'x' + secrets.token_hex(6)
             write_json(directory / 'manifest.json', meta)
             admin_pool = create_users(meta['adminPrefix'], 1, private)
@@ -344,7 +366,7 @@ def main(argv=None):
             admin = credential(admin_pool, 0)
             metrics = require_idle(admin['token'])
             meta['contract'] = context_contract(target, {**metrics['settings'], 'localCacheEnabled': metrics['localCacheEnabled']},
-                                                meta['source']['sourceSha256'], load_host, args)
+                                                meta['source']['sourceSha256'], load_host, args, meta['mysqlSettings'])
             write_json(directory / 'backend-settings.json', metrics)
             if args.baseline_report:
                 baseline = read_baseline(args.baseline_report)

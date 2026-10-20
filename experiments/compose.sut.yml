@@ -18,7 +18,7 @@ x-common: &common
 services:
   mysql:
     <<: *common
-    image: mysql:8.0
+    image: mysql:8.0.46
     cpus: 0.5
     mem_limit: 384m
     memswap_limit: 384m
@@ -27,9 +27,16 @@ services:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Actions initializes disposable credentials}
       MYSQL_DATABASE: shanpu_bench
     command:
+      # Fit the existing 384 MiB limit; SHOW GLOBAL STATUS remains available.
+      - --performance-schema=OFF
       - --innodb-buffer-pool-size=128M
       - --max-connections=32
+      - --thread-cache-size=4
       - --table-open-cache=128
+      - --temptable-max-ram=16M
+      - --temptable-max-mmap=0
+      - --tmp-table-size=4M
+      - --max-heap-table-size=4M
       - --innodb-log-buffer-size=8M
       - --innodb-flush-log-at-trx-commit=2
       - --default-time-zone=+08:00
