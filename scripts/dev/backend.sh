@@ -3,6 +3,7 @@ set -euo pipefail
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/dev-common.sh"
 load_env
+export MYSQL_DATABASE=${EXPERIMENT_DATABASE:-$MYSQL_DATABASE}
 
 cd "$ROOT_DIR"
 java_version=$(sed -n 's/^java=//p' .sdkmanrc)
@@ -29,7 +30,8 @@ printf '项目 SDK：%s\n' "$JAVA_HOME"
 java -version
 
 export TZ=Asia/Shanghai
-export SPRING_PROFILES_ACTIVE=dev
+export SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-dev}
+export SHANPU_EXPERIMENT_JOURNAL=${SHANPU_EXPERIMENT_JOURNAL:-$ROOT_DIR/.local/experiments/commits.jsonl}
 export SERVER_ADDRESS=127.0.0.1
 export SERVER_PORT="$BACKEND_PORT"
 export MYSQL_HOST=127.0.0.1 MYSQL_USERNAME=root MYSQL_PASSWORD="$MYSQL_ROOT_PASSWORD"

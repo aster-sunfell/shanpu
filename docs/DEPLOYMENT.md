@@ -37,7 +37,7 @@
 
 `scripts/lib/dev-common.sh` 统一加载环境变量，并固定 Compose 文件和项目名，使启动脚本可从任意目录调用。
 
-后端脚本先加载 SDKMAN 初始化脚本，在仓库根目录执行 `sdk env`，应用 `.sdkmanrc` 指定的 `17.0.18-tem`，并校验 `JAVA_HOME` 与实际 `java` 命令均指向该 SDK。初始化失败或版本不符时直接退出。环境确认后才运行 Maven 打包，通过 `exec java -jar` 启动；设置 `dev` profile、东八区时区与回环监听地址，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。默认 JVM 参数为 `-Xms256m -Xmx1g`，可通过 `JAVA_OPTS` 调整。进程 PID 写入忽略目录 `.local/run/backend.pid`，供压测采样使用。
+后端脚本先加载 SDKMAN 初始化脚本，在仓库根目录执行 `sdk env`，应用 `.sdkmanrc` 指定的 `17.0.18-tem`，并校验 `JAVA_HOME` 与实际 `java` 命令均指向该 SDK。初始化失败或版本不符时直接退出。环境确认后才运行 Maven 打包，通过 `exec java -jar` 启动；默认设置 `dev` profile（可用 `SPRING_PROFILES_ACTIVE` 覆盖）、东八区时区与回环监听地址，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。默认 JVM 参数为 `-Xms256m -Xmx1g`，可通过 `JAVA_OPTS` 调整。进程 PID 写入忽略目录 `.local/run/backend.pid`，供压测采样使用。
 
 前端脚本通过 `pnpm dev` 启动，注入：
 
@@ -116,11 +116,11 @@ bash scripts/dev/stop.sh
 
 ## 7. 性能实验
 
-运行入口为 `bash scripts/experiments/run.sh`，k6 使用 `experiments` profile 和 host 网络直连本机后端。当前保留旧 A/B/C/D 场景，新 A/B、B/C 设计与当前实现边界见 [实验说明](./experiments/README.md) 和 [实验计划](./experiments/PLAN.md)。
+使用 `SPRING_PROFILES_ACTIVE=dev,experiment bash scripts/dev/backend.sh` 启动实验后端，再分别执行 `bash scripts/experiments/run-redis-filtering.sh` 或 `bash scripts/experiments/run-kafka-buffering.sh --q <已测容量>`。k6 使用 `experiments` profile 和 host 网络直连后端。流量档位、容量校准、参数与指标口径见 [实验说明](./experiments/README.md) 和 [实验计划](./experiments/PLAN.md)。
 
-报告、参数及原始汇总保存在 `docs/experiments/legacy-seckill/<运行编号>/`，纳入版本管理。临时凭证和用户清单保存在忽略目录 `.local/experiments/`，通过独立只读挂载供 k6 使用。
+报告、参数及原始汇总保存在 `docs/experiments/redis-filtering/<运行编号>/` 或 `docs/experiments/kafka-buffering/<运行编号>/`，纳入版本管理。临时凭证和用户清单保存在忽略目录 `.local/experiments/`，通过独立只读挂载供 k6 使用。
 
-正常和异常退出均保留数据库现场。核对报告、在途消息及补偿任务后，可显式运行 `bash scripts/experiments/restore-demo.sh`，将三个实验活动重置为演示默认状态；该操作不是恢复执行前快照。
+正常和异常退出均保留数据库现场。核对完整报告后，可显式运行 `bash scripts/experiments/cleanup.sh <报告目录>`，只删除本轮独立实验数据。失败或未排空的运行拒绝自动清理。
 
 ## 8. 重置数据
 

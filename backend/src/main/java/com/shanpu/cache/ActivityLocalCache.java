@@ -96,7 +96,7 @@ public class ActivityLocalCache {
     /**
      * 清空本地条目并重置命中率统计。
      *
-     * <p>场景 D 每轮压测前调用该方法，避免上一轮缓存条目和统计计数污染本轮结果。</p>
+     * <p>管理操作可调用该方法，避免上一轮缓存条目和统计计数污染本轮结果。</p>
      */
     public void resetStatsAndEntries() {
         invalidateAll();

@@ -15,8 +15,8 @@ import org.springframework.web.bind.annotation.RestController;
  * 缓存管理接口。
  *
  * <p>当前管理面只暴露秒杀活动详情 L1 本地缓存的开关、重置和统计能力。
- * k6 场景 D 通过这些接口在同一后端进程内切换 Caffeine + Redis 与纯 Redis 路径，
- * 并读取命中率作为压测验收指标。</p>
+ * 管理操作通过这些接口在同一后端进程内切换 Caffeine + Redis 与纯 Redis 路径，
+ * 并读取命中率评估缓存状态。</p>
  */
 @RestController
 @RequestMapping("/api/admin/cache")

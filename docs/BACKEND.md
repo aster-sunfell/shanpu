@@ -41,7 +41,7 @@
 
 #### 1.3.1 实验与数据口径
 
-Redis 前置过滤和 Kafka 异步受理分别按 [实验计划](./experiments/PLAN.md)设计对照实验。当前 `scripts/experiments/run.sh` 保留旧 A/B/C/D 场景，尚未实现新方案；C 的 PENDING 响应只表示受理，不能与同步完成吞吐直接比较。
+Redis 前置过滤和 Kafka 异步受理分别按 [实验计划](./experiments/PLAN.md)设计对照实验。分别通过 `scripts/experiments/run-redis-filtering.sh` 和 `scripts/experiments/run-kafka-buffering.sh` 执行；使用独立活动、固定到达率和事务提交后的逐笔核对。C 的 PENDING 响应只表示受理，不能与同步完成吞吐直接比较。运行参数与报告口径见 [实验说明](./experiments/README.md)。
 
 正式运行的报告、参数、指标及资源采样保存在 `docs/experiments/<实验名>/<运行编号>/`。执行方式和现有场景限制见 [实验说明](./experiments/README.md)。本文不再列出缺少实测报告支持的性能数字。
 
@@ -381,7 +381,7 @@ public class RedisData {
 
 在 Redis 之上为 `shanpu:seckill:activity:{id}` 叠一层 Caffeine L1，形成「L1 Caffeine → L2 Redis → L3 MySQL」三层结构。同一场秒杀的全部抢购前置查询都会扫这一个 Key，L1 命中率显著高于其他 Key 类型。
 
-`shanpu:product:detail:{id}` 不进入 L1，作为压测对比的"单层 Redis 基线"，便于在 M6 同一轮压测中量化 L1 的提升（详见 [本地开发与压测 §7](./DEPLOYMENT.md#7-k6-压测) 的场景 D）。
+`shanpu:product:detail:{id}` 不进入 L1，商品详情使用单层 Redis 缓存。当前两组秒杀实验固定活动 L1 配置，不测试缓存层级切换。
 
 #### Caffeine 实例
 
@@ -403,7 +403,7 @@ shanpu:
         expire-ms: 1000
 ```
 
-`enabled: false` 时 `CacheClient` 回退到纯 L2 路径。管理接口提供运行时开关，供场景 D 在同一进程内切换 L1 与纯 Redis 访问路径。
+`enabled: false` 时 `CacheClient` 回退到纯 L2 路径。管理接口提供运行时开关，可在同一进程内切换 L1 与纯 Redis 访问路径。
 
 #### CacheClient 旁路逻辑
 
@@ -420,7 +420,7 @@ shanpu:
 
 | Key                                   | 角色            | 原因                                         |
 | ------------------------------------- | --------------- | -------------------------------------------- |
-| `shanpu:product:detail:{id}`          | 对照组基线      | 故意保留单层 Redis，作为压测对比的无 L1 路径 |
+| `shanpu:product:detail:{id}`          | 商品详情      | 使用单层 Redis 缓存 |
 | `shanpu:product:list:page:{page}:size:{size}` | 对照组基线 | 同上                                      |
 | `shanpu:seckill:stock:{activityId}`   | RW 强一致计数器 | Lua 原子扣减不允许应用层旁路                 |
 | `shanpu:seckill:bought:{activityId}`  | RW 集合         | 一人一单语义不允许 stale 读                  |
@@ -444,9 +444,9 @@ shanpu:
 }
 ```
 
-该接口作为 M6 场景 D 验收的主要指标来源。
+该接口用于查看活动详情本地缓存状态。
 
-场景 D 使用以下管理接口在压测轮次间切换与清理 L1；接口沿用 JWT 登录态鉴权。
+以下管理接口用于切换与清理 L1；接口沿用 JWT 登录态鉴权。
 
 | 方法 | 路径 | 用途 |
 | ---- | ---- | ---- |
@@ -1042,7 +1042,7 @@ public class SeckillOrderMsg {
 - 逻辑过期 + 后台线程异步重建：覆盖热点 Key 击穿心智模型。
 - Lua 一人一单 + 防超卖：演示 Redis 原子操作（限时与超级两档复用同一脚本）。
 - Kafka 单节点异步下单 + Producer 幂等 + Consumer 幂等门 + DLQ + 库存自动对账：覆盖"消息严格不丢 + 不重复消费 + 端到端最终一致"完整链路（仅超级档触发）。
-- DB / Redis 同步 / Redis+Kafka 三场景压测：每条链路瓶颈可量化对比。
+- 两组秒杀实验：A/B 验证 Redis 前置过滤，B/C 验证 Kafka 受理与最终完成的差异。
 - `CacheClient` 模板封装：避免每个 Service 重复书写双重检查与锁释放。
 
 ### 14.3 仅文档提及不做强约束
@@ -1058,8 +1058,8 @@ public class SeckillOrderMsg {
 | send 超时但消息后台重试最终送达 broker | Redis 已被回滚 Lua 还原；消息被消费时由消费端幂等门（INSERT IGNORE 受影响行数=0 跳过）丢弃；Redis 库存差异由 `StockReconcileJob` 自动修复                                                                     |
 | Redis 数据丢失导致一人一单失效         | `t_order.uk_user_activity` 在 DB 层兜底（三档统一适用）；消费者 `INSERT IGNORE` 在唯一冲突时静默丢弃；`StockReconcileJob` 自动修复 Redis 库存与已购集合                                                       |
 | 档位热切换中途丢请求                   | `UPDATE tier` 后立即 evict 详情缓存；升级需手动调 `SeckillWarmupJob.warmupOne(id)` 写入库存 Key；在途 Kafka 消息按 payload 内 `source` 字段落库，不受切换影响（详见 §7.6）                                    |
-| 三档活动数据互相污染                   | 各场景使用独立 seed 活动 ID（1xxx 普惠 / 2xxx 限时 / 3xxx 超级），k6 setup 阶段重置对应库存与已购集合                                                                                                         |
+| 三档活动数据互相污染                   | 各测量点创建独立活动和用户，按实际 tier 准备 Redis 状态，不重置演示活动                                                                                                         |
 | 前端轮询订单造成接口风暴               | `/api/orders/{orderId}` 命中 30s 用户级缓存；超级档前端轮询 1s × 最多 10 次后改为手动刷新；普惠 / 限时档直接 PAID 无需轮询                                                                                    |
 | ThreadLocal 串号                       | `AuthInterceptor#afterCompletion` 强制 `UserContext.remove()`，覆盖异常分支                                                                                                                                   |
 | Redis 大 key                           | `t_product.description` 限长 `VARCHAR(4096)`；商品列表 VO 不携带 `description`；`shanpu:seckill:bought:{activityId}` 单场上限 20000，超过改 Bitmap                                                            |
-| 单 Key 高 QPS（热 Key）                | 活动详情 `shanpu:seckill:activity:{id}` 叠 Caffeine L1 抗读（详见 §6.5）；库存 / 已购集合 / 限流 ZSet 等强一致 RW Key 不进 L1；固定 100 VU 压测高峰按 C 场景预估约 350 RPS，距 Redis 单节点能力仍有充足余量 |
+| 单 Key 高 QPS（热 Key）                | 活动详情 `shanpu:seckill:activity:{id}` 叠 Caffeine L1 抗读（详见 §6.5）；库存 / 已购集合 / 限流 ZSet 等强一致 RW Key 不进 L1；Redis 容量需结合实测 CPU、请求量及 Lua 开销评估，不预设性能数字 |

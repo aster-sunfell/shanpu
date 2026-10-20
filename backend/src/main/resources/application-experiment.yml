@@ -1,0 +1,21 @@
+# Activate with dev,experiment. Scheduled compensation must not hide original results.
+shanpu:
+  experiment:
+    enabled: true
+    journal: ${SHANPU_EXPERIMENT_JOURNAL:.local/experiments/commits.jsonl}
+  kafka:
+    dlq-rescue:
+      cron: "-"
+  order:
+    timeout:
+      cron: "-"
+    reconcile:
+      cron: "-"
+  seckill:
+    warmup:
+      cron: "-"
+    stock-reconcile:
+      cron: "-"
+logging:
+  level:
+    com.shanpu: INFO

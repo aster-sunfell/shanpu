@@ -11,3 +11,4 @@ backend/target/
 
 .idea/
 .local/
+__pycache__/

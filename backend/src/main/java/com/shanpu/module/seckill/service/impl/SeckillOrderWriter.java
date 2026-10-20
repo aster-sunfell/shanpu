@@ -6,6 +6,7 @@ import com.shanpu.common.result.ResultCode;
 import com.shanpu.infra.redis.RedisKeys;
 import com.shanpu.module.order.domain.entity.Order;
 import com.shanpu.module.order.mapper.OrderMapper;
+import com.shanpu.module.seckill.domain.event.SeckillOrderPaidEvent;
 import com.shanpu.module.seckill.domain.msg.SeckillOrderMsg;
 import com.shanpu.module.seckill.mapper.SeckillActivityMapper;
 import com.shanpu.module.user.domain.entity.PointLog;
@@ -13,6 +14,7 @@ import com.shanpu.module.user.mapper.PointLogMapper;
 import com.shanpu.module.user.mapper.UserMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -36,6 +38,7 @@ public class SeckillOrderWriter {
     private final PointLogMapper pointLogMapper;
     private final TransactionTemplate transactionTemplate;
     private final CacheClient cacheClient;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 创建同步支付完成的秒杀订单。
@@ -63,6 +66,7 @@ public class SeckillOrderWriter {
             }
             insertOrder(userId, orderId, activityId, productId, price, source);
             insertPointLog(userId, orderId, price);
+            eventPublisher.publishEvent(new SeckillOrderPaidEvent(activityId, userId, orderId));
         });
         invalidateOrderCache(userId, orderId);
     }
@@ -100,6 +104,7 @@ public class SeckillOrderWriter {
                 throw new BusinessException(ResultCode.POINTS_NOT_ENOUGH);
             }
             insertPointLog(msg.getUserId(), msg.getOrderId(), msg.getPrice());
+            eventPublisher.publishEvent(new SeckillOrderPaidEvent(msg.getActivityId(), msg.getUserId(), msg.getOrderId()));
             return true;
         });
         boolean orderCreated = Boolean.TRUE.equals(created);
