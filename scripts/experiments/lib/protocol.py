@@ -1,0 +1,244 @@
+"""Performance protocol, baseline provenance and paired comparisons."""
+import argparse
+from collections import defaultdict
+import hashlib
+import json
+import math
+from pathlib import Path
+
+from analysis import percentiles, write_json
+
+VERSION = 2
+
+
+
+def spread(values):
+    values = list(values)
+    return {**percentiles(values), 'min': min(values, default=None), 'max': max(values, default=None)}
+
+def positive(value):
+    value = int(value)
+    if value <= 0: raise argparse.ArgumentTypeError('must be positive')
+    return value
+
+
+def policy(args):
+    return {'responseP99Ms': args.response_p99_ms, 'completionP99Ms': args.completion_p99_ms,
+            'maxErrorRate': args.max_error_rate, 'minSamples': args.min_samples,
+            'generatorLagP99Ms': 100, 'backlogGrowthSeconds': .25, 'backlogSlopeFraction': .005}
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description='Measure latency, stable capacity and burst business outcomes')
+    parser.add_argument('plan', choices=['redis-filtering', 'kafka-buffering'])
+    parser.add_argument('--stage', choices=['capacity', 'burst'], default='capacity')
+    parser.add_argument('--rates', default='10,25,50,100,200', help='Initial capacity ladder, offered requests/second')
+    parser.add_argument('--baseline-report', type=Path, help='capacity.json from a completed B/C capacity run')
+    parser.add_argument('--seconds', type=positive, default=60)
+    parser.add_argument('--repeats', type=positive, default=3)
+    parser.add_argument('--vus', type=positive, default=20)
+    parser.add_argument('--refine-steps', type=int, default=4)
+    parser.add_argument('--burst-multipliers', default='2,5')
+    parser.add_argument('--burst-seconds', type=positive, default=10)
+    parser.add_argument('--base-seconds', type=positive, default=10)
+    parser.add_argument('--request-timeout', type=positive, default=10)
+    parser.add_argument('--drain-seconds', type=positive, default=120)
+    parser.add_argument('--response-p99-ms', type=positive, default=500)
+    parser.add_argument('--completion-p99-ms', type=positive, default=5000)
+    parser.add_argument('--max-error-rate', type=float, default=.001)
+    parser.add_argument('--min-samples', type=positive, default=1000, help='Eligible samples per rate across repetitions')
+    parser.add_argument('--validation-only', action='store_true', help='Developer integration only; never emits performance claims')
+    parser.add_argument('--dry-run', action='store_true')
+    args = parser.parse_args(argv)
+    try:
+        args.rates = sorted(set(positive(v) for v in args.rates.split(',')))
+        args.burst_multipliers = sorted(set(positive(v) for v in args.burst_multipliers.split(',')))
+    except (ValueError, argparse.ArgumentTypeError) as error: parser.error(str(error))
+    if args.stage == 'burst' and args.plan != 'kafka-buffering': parser.error('Burst is only available in the B/C plan')
+    if args.stage == 'burst' and not args.baseline_report: parser.error('Burst requires --baseline-report; an unmeasured Q is not accepted')
+    if not 0 <= args.max_error_rate <= 1: parser.error('--max-error-rate must be in [0,1]')
+    if not 0 <= args.refine_steps <= 6: parser.error('--refine-steps must be in [0,6]')
+    if args.repeats > 10 or len(args.rates) > 10 or len(args.burst_multipliers) > 5: parser.error('Too many repeats or rate levels')
+    if args.vus > 100: parser.error('At most 100 VUs per scenario')
+    if max(args.seconds, args.base_seconds, args.burst_seconds, args.drain_seconds, args.request_timeout) > 600:
+        parser.error('Each duration is limited to 600 seconds')
+    if not args.validation_only and (args.repeats < 3 or args.stage == 'capacity' and args.seconds < 60):
+        parser.error('Performance runs require >=3 repeats and capacity windows >=60 seconds')
+    if not args.validation_only and args.min_samples < 1000: parser.error('Performance runs require >=1000 eligible samples per rate')
+    if not args.validation_only and args.stage == 'burst' and (args.base_seconds < 10 or args.burst_seconds < 5):
+        parser.error('Burst runs require baseline >=10 seconds and burst >=5 seconds')
+    args.q = None
+    if args.baseline_report:
+        baseline = read_baseline(args.baseline_report)
+        validate_baseline(baseline, args)
+        args.q = baseline['paths']['B']['passingRps']
+    return args
+
+
+
+def read_baseline(path):
+    path = Path(path)
+    if path.stat().st_size > 2 * 1024 * 1024:
+        raise RuntimeError('Baseline metadata exceeds 2 MiB; select capacity.json, not raw request evidence')
+    return json.loads(path.read_text())
+
+def validate_baseline(baseline, args, contract=None):
+    if (baseline.get('schemaVersion') != VERSION or baseline.get('plan') != 'kafka-buffering'
+            or baseline.get('stage') != 'capacity' or baseline.get('status') != 'completed'
+            or baseline.get('scope') != ('validation' if args.validation_only else 'performance')
+            or baseline.get('policy') != policy(args)):
+        raise RuntimeError('Baseline protocol, status, scope or SLO does not match this run')
+    b = baseline.get('paths', {}).get('B', {})
+    if not b.get('passingRps'): raise RuntimeError('Baseline has no qualified stable B rate')
+    if not args.validation_only and (not b.get('bounded') or b.get('failingRps', 0) - b['passingRps'] > max(1, b['passingRps'] * .1)):
+        raise RuntimeError('B capacity is not bracketed within 10%; refine the capacity ladder before claiming capacity-based burst multipliers')
+    if contract is not None and baseline.get('contract') != contract:
+        raise RuntimeError('Baseline SUT images, resource limits or runtime settings differ from this run')
+
+
+def matrix(args, rates=None):
+    paths = ['A', 'B'] if args.plan == 'redis-filtering' else ['B', 'C']
+    for rate in rates if rates is not None else (args.rates if args.stage == 'capacity' else [args.q * v for v in args.burst_multipliers]):
+        for repeat in range(1, args.repeats + 1):
+            for path in paths if repeat % 2 else paths[::-1]:
+                burst = args.stage == 'burst'
+                seconds, base_seconds = (args.burst_seconds, args.base_seconds) if burst else (args.seconds, 0)
+                if not burst and not args.validation_only:
+                    requests_per_sample = 10 if args.plan == 'redis-filtering' else 1
+                    required = math.ceil(args.min_samples / args.repeats) * requests_per_sample
+                    seconds = max(seconds, min(600, math.ceil(required / rate)))
+                base_rate = max(1, int((args.q or rate) * .5))
+                scheduled = rate * seconds + base_rate * base_seconds
+                if scheduled > 2_000_000_000: raise RuntimeError('Point exceeds database stock integer range')
+                yield {'plan': args.plan, 'repeat': repeat, 'workload': 'burst' if burst else 'mixed' if args.plan == 'redis-filtering' else 'steady',
+                       'path': path, 'rate': rate, 'seconds': seconds, 'baseRate': base_rate, 'baseSeconds': base_seconds,
+                       'vus': args.vus, 'requestTimeout': args.request_timeout, 'points': 10_000_000, 'scheduled': scheduled}
+
+
+def budgeted_matrix(args):
+    points = list(matrix(args))
+    if len(points) > 200: raise RuntimeError('At most 200 points per sweep; split ladders across runs')
+    return points
+
+
+def context_contract(target, settings, generator_hash=None):
+    fields = ('service', 'imageId', 'cpuLimit', 'memoryLimitMiB', 'memorySwapMiB')
+    context = {'instanceId': target['instanceId'], 'services': sorted([{k: s[k] for k in fields} for s in target['services']], key=lambda s: s['service']),
+               'settings': settings, 'protocol': VERSION, 'generatorSource': generator_hash}
+    return hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
+
+
+def capacities(args, results):
+    paths = ['A', 'B'] if args.plan == 'redis-filtering' else ['B', 'C']
+    answer = {}
+    for path in paths:
+        groups = defaultdict(list)
+        for _, point in results:
+            if point['path'] == path and point['workload'] != 'burst': groups[point['rate']].append(point)
+        observations, passed, failed = [], [], []
+        for rate, rows in sorted(groups.items()):
+            complete = len(rows) == args.repeats and {r['repeat'] for r in rows} == set(range(1,args.repeats+1)) and all(r['valid'] for r in rows)
+            samples = sum(r['classes'].get('eligible', {}).get('responseMs', {}).get('samples', 0) for r in rows)
+            sufficient = args.validation_only or samples >= args.min_samples
+            if not complete: state = 'invalid'
+            elif not sufficient: state = 'insufficient-samples'
+            elif all(r['sloPassed'] for r in rows): state = 'pass'; passed.append(rate)
+            else: state = 'fail'; failed.append(rate)
+            throughputs = [r['completionWindowRps'] for r in rows if r['valid']]
+            observations.append({'rate': rate, 'state': state, 'samples': samples,
+                                 'completionRps': spread(throughputs)})
+        best = max(passed, default=None)
+        upper = min((r for r in failed if best is not None and r > best), default=None)
+        non_monotonic = best is not None and any(r < best for r in failed)
+        answer[path] = {'passingRps': best, 'failingRps': upper, 'bounded': bool(upper and not non_monotonic),
+                        'nonMonotonic': non_monotonic, 'observations': observations,
+                        'meaning': 'interval' if upper and not non_monotonic else 'lower-bound' if best is not None and not non_monotonic else 'inconclusive'}
+    return answer
+
+
+def refinement_rates(args, results):
+    rates = set()
+    for item in capacities(args, results).values():
+        if item['bounded'] and item['failingRps'] - item['passingRps'] > max(1, item['passingRps'] * .1):
+            rates.add((item['passingRps'] + item['failingRps']) // 2)
+    measured = {r['rate'] for _, r in results}
+    return sorted(rates - measured)
+
+
+def comparisons(args, results):
+    if args.validation_only: return []
+    paths = ['A', 'B'] if args.plan == 'redis-filtering' else ['B', 'C']
+    indexed = {(r['rate'], r['path'], r['repeat']): r for _, r in results}
+    comparisons = []
+    for rate in sorted({r['rate'] for _, r in results}):
+        pairs = [(indexed.get((rate, paths[0], i)), indexed.get((rate, paths[1], i))) for i in range(1, args.repeats+1)]
+        valid = [(a, b) for a,b in pairs if a and b and a['valid'] and b['valid']]
+        item = {'rate': rate, 'validPairs': len(valid), 'expectedPairs': args.repeats,
+                'latencyReductionPct': None, 'latencyReductionMs': None, 'extraAcceptedOnTime': None, 'extraCompletedOnTime': None}
+        if len(valid) == args.repeats and args.stage == 'burst':
+            item['extraAcceptedOnTime'] = spread([b['acceptedWithinResponseDeadline'] - a['acceptedWithinResponseDeadline'] for a,b in valid])
+            item['extraCompletedOnTime'] = spread([b['completedWithinDeadline'] - a['completedWithinDeadline'] for a,b in valid])
+        elif len(valid) == args.repeats and all(a['sloPassed'] and b['sloPassed'] for a,b in valid):
+            enough = args.validation_only or all(sum(r['classes']['eligible']['responseMs']['samples'] for pair in valid for r in [pair[n]]) >= args.min_samples for n in (0,1))
+            if enough:
+                values = [(a['classes']['eligible']['responseMs']['p99'], b['classes']['eligible']['responseMs']['p99']) for a,b in valid]
+                item['latencyReductionMs'] = spread([a-b for a,b in values])
+                item['latencyReductionPct'] = spread([(1-b/a)*100 for a,b in values if a > 0])
+        comparisons.append(item)
+    return comparisons
+
+
+def report(directory, meta, results, args):
+    path_caps = capacities(args, results) if args.stage == 'capacity' else {}
+    paired = comparisons(args, results)
+    formal = meta['scope'] == 'performance'
+    gain = None
+    paths = ['A','B'] if args.plan == 'redis-filtering' else ['B','C']
+    if formal and path_caps and all(path_caps[p]['bounded'] for p in paths):
+        gain = (path_caps[paths[1]]['passingRps']/path_caps[paths[0]]['passingRps']-1)*100
+    gain_range = None
+    if gain is not None:
+        a, b = path_caps[paths[0]], path_caps[paths[1]]
+        gain_range = [(b['passingRps']/a['failingRps']-1)*100, (b['failingRps']/a['passingRps']-1)*100]
+    artifact = {'schemaVersion': VERSION, 'plan': args.plan, 'stage': args.stage, 'status': meta['status'],
+                'scope': meta['scope'], 'policy': policy(args), 'contract': meta.get('contract'),
+                'paths': path_caps, 'capacityGainPct': gain, 'capacityGainRangePct': gain_range, 'comparisons': paired,
+                'parameters': {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items()}}
+    write_json(directory / ('capacity.json' if args.stage == 'capacity' else 'burst.json'), artifact)
+    title = '性能测量' if formal else '开发期流程验证，禁止用于性能结论'
+    lines = [f'# {args.plan} / {args.stage} / {title}', '', f"状态：{meta['status']}。", '',
+             'A/B 固定 10% 有效、90% 已购重复。' if args.plan=='redis-filtering' else 'B/C 使用可实际下单的独立新用户。', '',
+             'A/B 成功下单响应均为 PAID。' if args.plan=='redis-filtering' else 'B 成功下单响应 PAID，C 成功受理响应 PENDING。响应和最终完成分别统计，超时后提交单独记录。', '',
+             '| 点 | 配置速率/实际均值 RPS | 有效样本 | 有效请求 p99 ms | 重复拒绝 p99 ms | 窗口完成/s | 按响应期限受理 | 按完成期限完成 | 完成 p99 ms | 待完成峰值/排空 ms | 有效/SLO |',
+             '|---|---|---|---|---|---|---|---|---|---|---|']
+    def fmt(x): return 'NA' if x is None else f'{x:.2f}'
+    for name,r in results:
+        eligible = r['classes'].get('eligible',{}).get('responseMs',{}).get('p99')
+        duplicate = r['classes'].get('duplicate',{}).get('responseMs',{}).get('p99')
+        configured_rate = f"{r.get('baseRate',0)}→{r['rate']}" if args.stage=='burst' else str(r['rate'])
+        sample_count = r['classes'].get('eligible',{}).get('responseMs',{}).get('samples',0)
+        lines.append(f"| [{name}]({name}/report.md) | {configured_rate}/{fmt(r['actualRequestRps'])} | {sample_count} | {fmt(eligible)} | {fmt(duplicate)} | {fmt(r['completionWindowRps'])} | {r['acceptedWithinResponseDeadline']} | {r['completedWithinDeadline']} | {fmt(r['completionMs']['p99'])} | {r['peakPendingAccepted']}/{fmt(r['drainMs'])} | {r['valid']}/{r['sloPassed']} |")
+    if formal:
+        lines += ['', '## 同压配对比较', '', '延迟差比较各轮有效请求 p99，报告配对差的中位数与范围；不混合各类请求，也不平均多个 p99 冒充合并分位数。']
+        for p in paired:
+            if args.stage == 'capacity' and p['latencyReductionPct'] is not None:
+                lines.append(f"- {p['rate']} RPS：p99 配对减少中位数 {fmt(p['latencyReductionMs']['p50'])} ms（{fmt(p['latencyReductionPct']['p50'])}%），比例范围 {fmt(p['latencyReductionPct']['min'])}%～{fmt(p['latencyReductionPct']['max'])}%。")
+            elif args.stage == 'burst' and p['extraCompletedOnTime'] is not None:
+                lines.append(f"- {p['rate']} RPS 突发：按响应期限多受理中位数 {fmt(p['extraAcceptedOnTime']['p50'])} 单，按完成期限多完成中位数 {fmt(p['extraCompletedOnTime']['p50'])} 单。")
+            else: lines.append(f"- {p['rate']} RPS：配对/SLO/样本不足，不生成提升比例。")
+        if path_caps:
+            lines += ['', '## 稳定容量区间', '']
+            for path,item in path_caps.items():
+                if item['nonMonotonic']: desc = '通过/失败不单调，需要重测，容量结论不确定'
+                elif item['bounded']: desc = f"已证实通过 {item['passingRps']} RPS，失败上界 {item['failingRps']} RPS"
+                elif item['passingRps']: desc = f"至少 {item['passingRps']} RPS，尚未找到有效失败上界"
+                else: desc = '尚未找到样本充分且所有轮次通过的点'
+                lines.append(f'- {path}：{desc}。')
+            if gain is not None: lines.append(f'- 已测通过档位容量增幅：{gain:.2f}%；由容量区间推导的增幅范围为 {gain_range[0]:.2f}%～{gain_range[1]:.2f}%，不能将已测档位增幅当成精确最大容量。')
+    else: lines += ['', '**此运行只验证执行、采集和核对流程，不输出延迟提升或容量结论，不能作为正式突发基线。**']
+    lines += ['', '## 证据与适用范围', '',
+              '- SLO、资源配额、源码、镜像与主机身份摘要见 manifest.json；两个部署仍须确认时钟同步和独占负载。',
+              '- capacity.json / burst.json 保存每档位状态、有效配对与比较分布；invalid 和 insufficient-samples 都不充当容量失败上界。',
+              '- 每点保留请求/提交/快照 JSONL、SQLite 关联证据、分类错误率、积压增长判定、资源采样和每秒 timeline.csv。',
+              '- 数据核对错误、未排空、观测异常阻止后续点；发压不足不推断服务容量。']
+    (directory / 'report.md').write_text('\n'.join(lines) + '\n')

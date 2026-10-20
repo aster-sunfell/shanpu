@@ -60,13 +60,10 @@ class ResourceTest(unittest.TestCase):
         container['Mounts'] = [{'Source': '/var/run/docker.sock'}]
         with self.assertRaises(RuntimeError): validate_runner_container(container)
 
-    def test_safe_default_and_large_fixture_rejected_even_in_preview(self):
+    def test_safe_default_vus_and_duration_remain_bounded(self):
         points = budgeted_matrix(parse_args(['redis-filtering']))
-        self.assertLessEqual(sum(p['scheduled'] for p in points), 100000)
-        with self.assertRaises(RuntimeError):
-            budgeted_matrix(parse_args(['redis-filtering', '--rates', '10000', '--dry-run']))
-        with self.assertRaises(RuntimeError):
-            budgeted_matrix(parse_args(['redis-filtering', '--rates', '100', '--repeats', '10']))
+        self.assertTrue(all(p['vus'] == 20 for p in points))
+        self.assertTrue(all(60 <= p['seconds'] <= 600 for p in points))
 
 
 if __name__ == '__main__':

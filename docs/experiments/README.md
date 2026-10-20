@@ -1,157 +1,119 @@
-# 秒杀性能实验
+# 秒杀性能测量
 
-设计依据见 [PLAN.md](PLAN.md)。当前实现只有两组独立计划：Redis 前置过滤（A/B）与 Kafka 异步缓冲（B/C）。不生成三档总对比表，也不运行旧缓存 D 场景。
+仅保留两个正式计划：A/B 测固定混合流量下的延迟与容量；B/C 测稳定完成容量及突发业务收益。设计、判据和结论边界见 [PLAN.md](PLAN.md)。旧演示场景和手填 Q 已移除。
 
-## 独立待测端与压测端
+## 部署与固定预算
 
-待测端使用 `experiments/compose.sut.yml`，项目名 `shanpu-sut`，仅含后端、MySQL、Redis、Kafka；拥有独立网络、数据库、数据卷和凭证。压测端使用 `experiments/compose.runner.yml`，项目名 `shanpu-load`，Python 编排、k6 和离线核对共享一个有上限的容器，不挂载 Docker socket，不启动额外的发压容器。日常开发的根 Compose 不再提供 k6 入口。
-
-待测机器固定预算为 **2 核 / 2 GiB**，以下数值直接写在 Compose 中，不能通过环境变量调大：
-
-| 服务 | CPU 上限 | 容器内存上限 | 内部预算 |
+| 服务 | CPU 硬上限 | 内存硬上限 | 内部预算 |
 |---|---:|---:|---|
-| 后端 | 0.8 核 | 512 MiB | JVM 堆 128～256 MiB，直接内存 48 MiB，Tomcat 32 线程，DB 连接池 8 |
-| MySQL | 0.5 核 | 384 MiB | InnoDB buffer pool 128 MiB，最多 32 连接 |
+| backend | 0.8 核 | 512 MiB | 堆 256 MiB，直接内存 48 MiB，Tomcat 32，DB 池 8 |
+| MySQL | 0.5 核 | 384 MiB | buffer pool 128 MiB，32 连接 |
 | Redis | 0.1 核 | 96 MiB | 数据 maxmemory 48 MiB，noeviction |
-| Kafka | 0.6 核 | 448 MiB | JVM 堆 128～192 MiB，网络/IO 线程各 2，日志清理去重缓存 16 MiB |
-| 容器合计 | **2 核** | **1440 MiB** | |
-| 系统及 Docker 预留 | | **608 MiB** | 与容器合计 2048 MiB |
+| Kafka | 0.6 核 | 448 MiB | 堆 192 MiB，清理去重缓存 16 MiB |
+| 容器合计 | 2 核 | 1440 MiB | 加系统及 Docker 预留 608 MiB，按 2 GiB 机器预算 |
 
-Compose 没有跨平台的“项目总内存上限”，这里以四个服务的固定上限控制总额，未写死父 cgroup 路径。608 MiB 是预算预留，不是 Docker 替系统保留的内存；其他程序仍可能消耗它。各服务 `memswap_limit` 等于 `mem_limit`，禁止通过 swap 扩张；限制进程数、日志大小，关闭自动重启。脚本先检查 Docker 引擎支持所需限制，再在创建后、启动前检查实际 CPU/内存/swap 配额，不支持限制的环境直接报错。
+两个 Compose 项目：`experiments/compose.sut.yml` 包含独立业务与中间件；`experiments/compose.runner.yml` 包含 Python/k6，另占 1 核 / 512 MiB。各服务 swap 上限与内存相同，不自动重启；启动前检查引擎能力与实际配额。预留内存是预算，不是 Docker 对系统的硬预留；各服务不能借用空闲 CPU quota。
 
-压测端另计 **1 核 / 512 MiB**。正式实验在另一台 Linux 主机运行压测端；在同一电脑分两个 Compose 运行仅用于联调，仍共享宿主机资源，不能当作独立 2 核机器的容量结论。各服务不能借用其他服务闲置的 CPU 配额，这种分配也不等价于专用物理双核。两台机器需同步系统时间；工具保存服务端与压测端的时钟偏差估计和请求往返不确定性，能确定偏差超过 50 ms 时拒绝运行。该检查不能替代系统时钟同步，最终完成延迟仍受残余偏差影响。
+需要 Linux、Docker Compose v2、Python 3、Git；每台机器使用自己的本地 Docker Engine，不能通过远程 Docker context 冒充本机。Java 构建容器限制 2 核 / 768 MiB，构建时停止待测端。
 
-### 单机低负载联调
-
-需要 Linux、Docker Engine / Compose v2、Python 3 和 Git。Java 编译放在单独的构建容器内，限制 2 核 / 768 MiB，Maven 堆 384 MiB、测试 JVM 堆 192 MiB；构建时待测端必须停止。镜像和依赖下载需要网络。构建运行 Java 单元与观测装配测试；需要 Docker socket 的两个 Testcontainers 集成测试不在这个无 socket 的构建容器内运行。
+待测主机：
 
 ```bash
-bash scripts/experiments/sut.sh config  # 生成私有凭证，仅输出公共预算
+# 分机运行时设置为私网地址；仅向压测机开放端口
+export SUT_BIND_ADDRESS=<待测机私网IP>
+export SUT_HOST=<待测机私网IP>
+bash scripts/experiments/sut.sh config
 bash scripts/experiments/sut.sh build
-bash scripts/experiments/sut.sh up      # 先校验硬配额，再启动并等待健康
+bash scripts/experiments/sut.sh up
 bash scripts/experiments/sut.sh verify
-
-# 先低负载验证两条链路；正式压力另行校准
-bash scripts/experiments/run-redis-filtering.sh --rates 2 --seconds 2 --repeats 1 --vus 2
-bash scripts/experiments/sut.sh status
-bash scripts/experiments/sut.sh stop    # 停服务，保留证据和卷
 ```
 
-凭证写入忽略目录 `.local/experiments/sut.env`（权限 600），不会加载或改写开发环境的 `.env`。默认仅发布回环地址：API `18081`、MySQL `13306`、Redis `16379`、Kafka `19092`。脚本会检查可用内存；运行时压测主机可用内存低于 128 MiB、连续三次无法获取后端指标或提交日志写入失败时中止发压，保留现场。
-
-### 分机正式运行
-
-1. 待测主机设置 `SUT_BIND_ADDRESS=<待测机私网IP>`、`SUT_HOST=<同一可达IP>` 后执行 build/up/verify，Kafka 对外地址必须是压测主机可达的地址。端口仅向压测主机开放。
-2. 压测主机使用相同源码，私下复制 `.local/experiments/sut.env` 和公共的 `target.json`；保持凭证文件权限 600，不提交凭证。设置 `SUT_HOST=<待测机私网IP>`，执行 `bash scripts/experiments/sut.sh build-runner`，无需在压测机启动待测服务。
-3. 待测机每次重建或改变配置后重新 verify，并更新压测机的 `target.json`。它记录实际镜像 ID、源码指纹和已核验的配额。运行前还核对业务侧实例 ID 和数据库名，拒绝误连开发服务。
-4. 在压测机运行下面的两个计划。两组对照都使用同一资源和持久化配置，测量期间无其他流量；记录时钟同步与宿主机负载。修改工具或业务源码后必须重建镜像，旧指纹会阻止运行。
-
-业务包不再包含实验实现。`experiments/observer` 只依赖业务事件并在 `AFTER_COMMIT` 写入证据，通过 AOP 保留事务尝试统计；`experiments/application` 装配观察器与业务库，专用于待测部署。普通业务可用 `mvn -f backend/pom.xml clean package` 单独构建，首次迁移需 clean 移除旧编译目录里的观察器；其可执行包为 `backend/target/shanpu-backend-1.0.0-exec.jar`。观察器关闭自动对账、超时关单、预热与 DLQ 回投调度，保留 Kafka 消费和消费失败重试。
-
-提交证据保存在待测端 evidence 卷，经带鉴权的分页游标接口远程采集，不需要共享文件系统。每页最多 1000 条，增量读取，避免每次扫描和加载整个历史日志。
-
-## A/B：Redis 前置过滤
+私有凭证 `.local/experiments/sut.env` 权限 600，不加载开发 `.env`。私下复制到压测主机，并复制公共的 `target.json`。工具改动只需重建 runner；业务/待测配置改动需停止后重新 build/up/verify，再复制新的 target.json。基线还绑定发压工具源码指纹，改工具后需重测基线。两边使用相同源码；压测主机设置 `SUT_HOST`，执行：
 
 ```bash
-# 先预览，不访问数据库、不创建数据
-bash scripts/experiments/run-redis-filtering.sh --dry-run
-
-# 每个流量档位分别比较 A/B；每点 60 秒，重复 3 轮并交错顺序
-bash scripts/experiments/run-redis-filtering.sh --rates 10,25,50 --seconds 60 --repeats 3
+export SUT_HOST=<待测机私网IP>
+bash scripts/experiments/sut.sh build-runner
 ```
 
-默认档位为 `valid,duplicate,soldout`，可用 `--workloads` 选择子集。全部有效时每人只请求一次；重复档位提前创建合法已购订单及流水，以固定的九次重复、一次有效交错请求；售罄档位在测量前库存已为零。用户池不会取模复用。相同压力点的两条链路使用等价的业务数据及流量构成。
+默认端口：API 18081、MySQL 13306、Redis 16379、Kafka 19092。默认绑定回环地址用于联调。正式测量要求主机身份摘要不同，并人工确认时钟同步、独占机器及网络条件。工具保存时钟偏差估计，能确定偏差超过 50 ms 时拒绝运行；仍存在回调和残余时钟误差。
 
-重点查看有效订单延迟、重复/售罄延迟、DB 事务尝试数及 mapper 调用减少量。全部有效时仍保留 DB 热点库存行锁，允许出现 Redis 收益不明显或额外开销。
+业务模块不依赖实验模块；观察器在 `experiments/observer`，实验应用在 `experiments/application`，复用业务启动类。普通业务包为 `backend/target/shanpu-backend-1.0.0-exec.jar`，使用 `mvn -f backend/pom.xml clean package` 单独构建。实验关闭定时补偿，保留消费与失败重试。提交证据经鉴权分页接口读取，不挂载 Docker socket。
 
-## B/C：Kafka 异步缓冲
-
-先在本计划中校准同步 B 的完成容量。校准只跑 B 的稳定有效请求，并按所有重复轮次的 SLO 结果提出 Q 候选；需检查持续运行和资源曲线后采用。
+## A/B：同压延迟与容量
 
 ```bash
-bash scripts/experiments/run-kafka-buffering.sh --calibrate --rates 25,50,100,200 --seconds 60
-
-# Q 为示例，必须替换为校准后确认的容量
-bash scripts/experiments/run-kafka-buffering.sh --q 100 --workloads steady
-bash scripts/experiments/run-kafka-buffering.sh --q 100 --workloads burst
+bash scripts/experiments/run-redis-filtering.sh --rates 25,50,100,200 --dry-run
+bash scripts/experiments/run-redis-filtering.sh --rates 25,50,100,200 --seconds 60 --repeats 3
 ```
 
-默认平稳压力为 `0.5Q,0.8Q,1.2Q`；突发为 `0.5Q` 运行 10 秒后，切换到 `2Q` 或 `5Q` 持续 10 秒，再停止注入并等待排空。每个组合均以相同过程分别运行 B/C，每点使用独立活动和独立用户。只使用库存、积分充足的新用户请求。
+固定 10% 有效、90% 已购重复；同一到达率、窗口、顺序构成和独立等价数据。各类响应延迟与错误率单独统计。最高通过档位不足 1000 个有效响应样本时，增加时长/重复轮数重跑；不能把该档位作为容量失败。
 
-可通过 `--rates` 覆盖平稳压力；`--workloads steady` 或 `--workloads burst` 单独观察某个过程。响应超时默认 10 秒，停止注入后的排空观察上限默认 120 秒，可分别用 `--request-timeout`、`--drain-seconds` 修改。
+低速档会按重复次数与有效样本比例自动延长窗口，最高 600 秒。某条链路取得有效失败上界后停止继续升压。初始阶梯后默认最多四轮中点细化（`--refine-steps 0..6`）。所有档位都通过时仅报告容量下界，需要提高输入阶梯继续测量；没有有效失败上界不报告精确容量提升。
 
-接口受理和最终完成分开记录。B 返回 PAID，C 返回 PENDING；最终完成时间取事务事件 `AFTER_COMMIT` 监听器写入日志时的观察时间。请求发起时间来自压测主机的 k6 容器，分机运行时必须确认两侧时钟同步。该值包含提交返回及事件回调调度的观察误差，不是数据库内部的精确提交时间，也不是前端缓存可见时间。
-
-不会在发压迭代内轮询订单。请求日志、提交日志与最终 DB 快照在测量后离线关联，包括响应超时但实际落库的请求、缺失提交证据和截止时未完成的订单。完成分位数必须结合样本覆盖率和未完成数解释。
-
-## 压力与 SLO 参数
-
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `--seconds` | 60 | 平稳压力的注入时长 |
-| `--repeats` | 3 | 每个点重复次数 |
-| `--vus` | 20 | 每个到达率场景的固定 VU 配额，不自动扩张 |
-| `--response-p99-ms` | 500 | 响应延迟 SLO，实验假设值，可修改 |
-| `--completion-p99-ms` | 5000 | B/C 请求发起至提交观察时间的 SLO，可修改 |
-| `--max-error-rate` | 0.001 | 系统异常、网络故障、限流等占比上限 |
-| `--base-seconds` | 10 | 突发前的低负载时长 |
-| `--burst-seconds` | 10 | 突发注入时长 |
-| `--burst-multipliers` | 2,5 | 相对 Q 的突发倍数 |
-
-每点最多 20000 个计划请求、每轮最多 100000 个、最多 100 个测量点，每个场景最多 100 VU，单段时长最多 600 秒；超预算在创建用户和发压前拒绝，dry-run 也检查预算。A/B 默认输入 10/25/50 RPS。长时间或较大 Q 的实验应拆分为独立运行；先用 dry-run 检查规模。
-
-默认值不代表系统已达到该性能。固定输入未达到时记录 dropped iterations，标记该点无效；不能把实际发送不足解释为服务承接了目标流量。高压时需先确认 k6 与宿主机未受限，再解释服务端瓶颈。
-
-## 数据隔离和现场保留
-
-每轮新建专属商品，每个测量点新建活动和一组带随机前缀的实验用户，不修改演示活动 1001/2001/3001。用户初始积分相同；重复档位的准备购买先扣积分并写入流水。预热使用独立的备用用户，其订单保存在测量前快照，排除正式新增量。
-
-每轮开始前检查应用连接池、Kafka 三个分区与 DLQ。测量点共享同一执行锁；失败或未排空时保留现场并阻止后续可能受污染的测量。Kafka lag 归零不能替代订单核对；即使 DLQ 已标记回投，实验也要求先明确处理。
-
-正常完成和失败退出均不自动清理。确认完整报告后，可显式删除本轮独立数据：
+## B/C：稳定容量与突发收益
 
 ```bash
-bash scripts/experiments/cleanup.sh docs/experiments/redis-filtering/<运行编号>
+bash scripts/experiments/run-kafka-buffering.sh --stage capacity --rates 25,50,100,200 --seconds 60 --repeats 3
+
+# 指向上一轮完成且基线区间足够窄的正式报告
+bash scripts/experiments/run-kafka-buffering.sh --stage burst \
+  --baseline-report docs/experiments/kafka-buffering/<运行编号>/capacity.json
 ```
 
-清理只接受已完成且逐点核对通过的运行，重新检查空闲状态和数据归属，一次事务删除对应订单、积分流水、活动、商品及用户，并清理其 Redis 数据和临时会话。报告保留。失败或未解决的运行必须先调查和人工核对，清理工具不会丢弃其证据。
+容量阶段 B/C 都使用可实际落单的新用户。突发从已测 B 基线读取 Q_B；禁止手填 `--q`。基线必须是完成的正式 v2 B/C 容量报告、有通过和失败上界、区间宽度 ≤10%（最小 1 RPS），且 SLO、实例、镜像、资源及运行配置一致。修改环境后重测基线。
 
-## 产物及统计口径
+默认 0.5Q_B 运行 10 秒，再以 2Q_B/5Q_B 分别突发 10 秒，停止注入后观察最多 120 秒。每个组合重复三轮、交错 B/C。分别比较响应期限内受理量和每个请求的完成期限内 PAID 数量，报告最终完成、完成延迟、积压、未完成及排空代价。
 
-| 位置 | 内容 |
-|---|---|
-| `scripts/experiments/` | 两个入口、共用 k6、采集、离线核对及测试 |
-| `docs/experiments/redis-filtering/<运行编号>/` | A/B 报告及各点证据 |
-| `docs/experiments/kafka-buffering/<运行编号>/` | B/C 或 B 容量校准报告及证据 |
-| `.local/experiments/<运行编号>/` | 忽略的临时 Token 和用户清单 |
-| `shanpu-sut_evidence` Docker 卷 | 后端提交观察日志，按游标远程采集归档 |
-| `.local/experiments/target.json` / `source.json` / `sut-source.json` | 公共资源核验和源码指纹，不含凭证 |
+## 参数和结论门槛
 
-每次运行保留 `report.md`、`manifest.json`、资源配额和镜像版本。每个点保留：
+| 参数 | 默认 | 含义 |
+|---|---:|---|
+| `--seconds` | 60 | 容量最短注入窗口，正式运行至少 60 秒，最多 600 秒 |
+| `--repeats` | 3 | 每档重复轮数，正式运行至少 3，最多 10 |
+| `--vus` | 20 | 每个到达率场景固定 VU，最多 100，不自动增长 |
+| `--refine-steps` | 4 | 有效容量区间的自动细化轮数 |
+| `--min-samples` | 1000 | 每档每链路跨轮累计有效响应样本最低数 |
+| `--response-p99-ms` | 500 | 各流量类别响应 p99 要求，也用作及时受理期限 |
+| `--completion-p99-ms` | 5000 | 有效请求最终完成 p99 要求，也用作每请求按时完成期限 |
+| `--max-error-rate` | 0.001 | 每类请求错误率上限，预期重复拒绝不算错误 |
+| `--request-timeout` | 10 | HTTP 超时秒数 |
+| `--drain-seconds` | 120 | 注入结束后的观察上限 |
+| `--base-seconds` / `--burst-seconds` | 10 / 10 | 突发前基线/突发时长 |
+| `--burst-multipliers` | 2,5 | 相对实测 Q_B 的突发倍数 |
 
-- `point.json`：流量、活动和参数，不含 Token。
-- `requests.jsonl`：请求开始和结果，包含用户索引、时间、状态和订单号，不含凭证。
-- `commits.json`：对应活动的事务提交观察记录。
-- `before.json`、`after.json`：库存、订单、积分及流水证据，识别准备数据和新增订单。
-- `result.json`：分类结果、响应及完成分位数、覆盖率、未完成数、正确性核对。
-- `timeline.csv`：每秒请求、受理、完成及待完成量；峰值待完成数另按原始事件顺序计算。
-- `k6.out`、`k6-summary.json`：原始执行输出、实际压力、丢弃迭代等指标。
-- `backend-before/after.json`、`mysql-before/after.json`、`samples.jsonl`、`kafka-final.json`：mapper 调用、事务尝试、连接池等待、GC、DB 行锁、JVM CPU/堆、压测端进程内存、压测宿主机 CPU/磁盘和消费 lag。
+默认 SLO 是实验假设，不是已达性能。稳态还要求有效请求最终全部完成，outstanding 首末窗口增长与后半窗口斜率满足 PLAN 中的阈值。排空不替代稳态判定。
 
-请求和受理 RPS 按配置的实际注入窗口计算，不把排空时间混入分母；窗口完成 RPS 只统计该窗口内提交的订单，窗口后的提交计入排空和完成延迟。缺失延迟样本为 null/NA，不填零。重复、售罄为预期业务拒绝，网络、超时、鉴权、限流和内部异常分别统计。
+每档状态区分 `pass`、`fail`、`invalid`、`insufficient-samples`。只有输入与数据均有效、样本足够的 SLO 失败点才能构成容量失败上界。全部通过写“至少 X”，非单调结果要求重测。提升值报告配对中位数和范围，不把多个 p99 合并成一个分位数。
 
-各点采样不依赖 Docker socket，因此不提供实时目标容器 RSS；目标配额与镜像来自启动核验，目标宿主机的 CPU/内存/磁盘曲线需另行采集（如 `docker stats`）。
+## 内存、数据与清理
 
-Mapper 指标是调用次数，包含失败尝试；MySQL 全局计数包含采样查询，不能视为单条业务的精确 SQL 数。容器、宿主机、日志与逐笔观察会产生共同开销；同机测试和单副本 Kafka 的结果不能外推为独立部署或高可用配置的能力。资源采样失败记录为错误，不静默填零。
+不再将 20000 次/点、100000 次/轮作为请求上限。用户与 Redis 会话以 500 条分批准备，凭证使用紧凑 ID 段，k6 按需计算 JWT；MySQL 流式游标、Redis SSCAN、JSONL 与缓存 8 MiB 的 SQLite 负责证据与精确核对。分位数排序落盘，结果不常驻完整用户/请求数组。k6 0.50 使用 `--no-summary --no-thresholds` 关闭内存内聚合（[对应版本实现](https://github.com/grafana/k6/blob/v0.50.0/cmd/run.go#L158-L172)），由 `load.json` 和原始请求记录核对注入数量与调度时刻，所有分位数在 SQLite 计算。
 
-报告默认纳入版本管理。原始数据较大时可归档并记录校验值；不得提交 `.local` 中的 Token。工作区未提交时，报告记录的源码指纹需与源代码一起保留，才能复现。
+目标 Redis 数据内存仍为 48 MiB；单点用户/会话过大时可能在准备阶段失败，这是数据规模限制，不能记作服务容量上界。每点结束并排空、核对、保存证据后，释放该点临时会话和 Redis 缓存；DB 行和磁盘证据保留，失败点保留原现场。数据库数据规模会累积，正式报告需结合本次准备规模解读。
 
-## 检查工具
+发压主机可用内存低于 128 MiB、剩余磁盘不足 512 MiB、连续三次后端观测失败或提交日志异常时中止。时钟回跳/两机时钟分离、OOM/重启、数据错误、未排空时停止后续点，不自动删除现场。出现超时、网络或内部错误时，完整观察到排空截止；C 的异步去向仍不确定时保留现场并停止。只在关闭的完整运行上执行：
+
+```bash
+bash scripts/experiments/cleanup.sh docs/experiments/<计划>/<运行编号>
+```
+
+清理先核验整轮资源、用户、订单和商品归属，再每批最多 500 用户删除专属 DB 行；不删除报告。中断可能留下已核对运行的部分清理现场，保留剩余数据供人工核对，不清理失败运行。
+
+## 报告与原始证据
+
+正式报告：`docs/experiments/<计划>/<运行编号>/`。包含 `report.md`、`manifest.json`、`capacity.json` 或 `burst.json`。每点保留分类指标、请求/提交 JSONL、before/after 快照 JSONL、SQLite 关联证据、timeline.csv、k6 原始输出、JVM/DB/Kafka/发压主机采样。目标容器 RSS 与目标主机 CPU/磁盘应在目标主机另行采集，如 docker stats，工具不向压测容器开放 Docker socket。
+
+Token、凭证、私有用户 ID 段和临时数据在 `.local/experiments/`。报告中的逐笔记录没有 Token。提交日志逐单 flush、AOP/mapper 计数和采样会产生观测开销；MySQL 全局计数包含采样查询，性能数字限定为这套受观测配置。原始数据较大时归档并记录校验值，不把样本删除后继续引用性能结论。
+
+## 开发期验证
+
+同机、短时或单轮只允许显式 `--validation-only`。这不是正式性能实验：产物进入 `.local/experiments/validation/performance-v2/`，标题标明禁止用于性能结论，比较字段不输出提升比例，正式突发拒绝引用此基线。
 
 ```bash
 python3 -m unittest discover -s scripts/experiments/tests -v
 node scripts/experiments/tests/schedule.test.mjs
-bash scripts/experiments/run-redis-filtering.sh --rates 5 --seconds 2 --repeats 1 --vus 5 --dry-run
+bash scripts/experiments/run-redis-filtering.sh --rates 5 --seconds 2 --repeats 1 \
+  --refine-steps 0 --validation-only
 ```
 
-本次重构的自动化检查和低负载联调记录见 [VALIDATION.md](VALIDATION.md)。
+本轮实现验证记录见 [VALIDATION.md](VALIDATION.md)。停止环境使用 `bash scripts/experiments/sut.sh stop`，保留卷和证据。

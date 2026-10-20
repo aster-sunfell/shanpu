@@ -94,6 +94,10 @@ def validate_container(name, container):
             "memoryLimitMiB": mib, "memorySwapMiB": mib, "oomKilled": False}
 
 
+def machine_id():
+    return hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest()
+
+
 def verify():
     config = json.loads(command(compose("sut", "config", "--format", "json")))
     result = validate_config(config)
@@ -104,22 +108,32 @@ def verify():
             raise RuntimeError(f"Missing target container: {name}")
         container = json.loads(command(["docker", "inspect", identifier]))[0]
         services.append(validate_container(name, container))
-    result.update(instanceId=initialize()["SUT_INSTANCE_ID"], services=services,
+    result.update(instanceId=initialize()["SUT_INSTANCE_ID"], services=services, machineId=machine_id(),
                   source=json.loads((RUNTIME / "sut-source.json").read_text()),
                   verifiedAtMs=int(time.time() * 1000), sameHostLoadIsNotAnIndependentBenchmark=True)
     (RUNTIME / "target.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
 
-def source_metadata():
+def source_metadata(scope="runner"):
     digest = hashlib.sha256()
-    paths = [ROOT / "pom.xml"]
-    for directory in ("backend", "experiments", "scripts/experiments"):
-        paths.extend(p for p in (ROOT / directory).rglob("*") if p.is_file()
-                     and not {"target", "__pycache__"}.intersection(p.parts))
+    if scope == "sut":
+        names = ("pom.xml", "backend", "experiments/observer", "experiments/application",
+                 "experiments/docker/Sut.Dockerfile", "experiments/compose.sut.yml")
+    else:
+        names = ("scripts/experiments", "experiments/docker/Runner.Dockerfile",
+                 "experiments/requirements.txt", "experiments/compose.runner.yml")
+    paths = []
+    for name in names:
+        root = ROOT / name
+        paths.extend([root] if root.is_file() else (p for p in root.rglob("*") if p.is_file()
+                     and not {"target", "__pycache__"}.intersection(p.parts)))
     for path in sorted(paths):
-        digest.update(str(path.relative_to(ROOT)).encode() + b"\0" + path.read_bytes())
-    return {"gitCommit": command(["git", "rev-parse", "HEAD"]).strip(),
+        digest.update(str(path.relative_to(ROOT)).encode() + b"\0")
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(65536), b""):
+                digest.update(chunk)
+    return {"scope": scope, "gitCommit": command(["git", "rev-parse", "HEAD"]).strip(),
             "gitStatus": command(["git", "status", "--short"]), "sourceSha256": digest.hexdigest()}
 
 
@@ -131,6 +145,7 @@ def build():
     output = RUNTIME / "build"
     output.mkdir(parents=True, exist_ok=True)
     source = source_metadata()
+    sut_source = source_metadata("sut")
     build_script = ("mkdir -p /build && cd /source && "
                     "tar --exclude=target -cf - pom.xml backend experiments | tar -xf - -C /build && "
                     "cd /build && mvn -B -ntp '-Dtest=!DatabaseMigrationTest,!OrderConcurrencyTest' "
@@ -144,10 +159,10 @@ def build():
              "sh", "-c", build_script], capture=False)
     command(compose("sut", "build", "backend"), capture=False)
     command(compose("runner", "build"), capture=False)
-    if source["sourceSha256"] != source_metadata()["sourceSha256"]:
+    if source["sourceSha256"] != source_metadata()["sourceSha256"] or sut_source["sourceSha256"] != source_metadata("sut")["sourceSha256"]:
         raise RuntimeError("Sources changed during build; build again to capture a consistent image")
     (RUNTIME / "source.json").write_text(json.dumps(source, indent=2) + "\n")
-    (RUNTIME / "sut-source.json").write_text(json.dumps(source, indent=2) + "\n")
+    (RUNTIME / "sut-source.json").write_text(json.dumps(sut_source, indent=2) + "\n")
 
 
 def validate_runner_config(service):
@@ -178,6 +193,9 @@ def main():
     if args.action == "run" and "--dry-run" in args.arguments:
         from runner import main as preview
         return preview(args.arguments)
+    if args.action == "run":
+        from protocol import parse_args
+        parse_args(args.arguments)
     initialize()
     if args.action in {"run", "cleanup", "build", "build-runner"}:
         # Prevent a second invocation from recreating an actively running load container.
@@ -200,7 +218,7 @@ def main():
         (RUNTIME / "source.json").write_text(json.dumps(source_metadata(), indent=2) + "\n")
     elif args.action == "up":
         source = json.loads((RUNTIME / "sut-source.json").read_text())
-        if source["sourceSha256"] != source_metadata()["sourceSha256"]:
+        if source["sourceSha256"] != source_metadata("sut")["sourceSha256"]:
             raise RuntimeError("Sources changed since build; rebuild before starting the target")
         require_memory(1536)
         command(compose("sut", "create"), capture=False)
@@ -227,7 +245,16 @@ def main():
         if source["sourceSha256"] != source_metadata()["sourceSha256"]:
             raise RuntimeError("Source changed since the images were built; stop and rebuild first")
         # Use a Compose override so the engine can be inspected BEFORE k6/Python starts.
-        overrides = {"command": args.arguments, "user": f"{os.getuid()}:{os.getgid()}"}
+        (RUNTIME / "load-host.json").write_text(json.dumps({"machineId": machine_id(), "cpus": 1, "memoryMiB": 512}) + "\n")
+        arguments = list(args.arguments)
+        for index, argument in enumerate(arguments):
+            if argument == "--baseline-report":
+                relative = Path(arguments[index+1]).resolve().relative_to(ROOT)
+                arguments[index+1] = str(Path("/workspace") / relative)
+            elif argument.startswith("--baseline-report="):
+                relative = Path(argument.split("=",1)[1]).resolve().relative_to(ROOT)
+                arguments[index] = "--baseline-report=" + str(Path("/workspace") / relative)
+        overrides = {"command": arguments, "user": f"{os.getuid()}:{os.getgid()}"}
         if args.action == "cleanup":
             if len(args.arguments) != 1:
                 raise RuntimeError("cleanup requires exactly one report directory")

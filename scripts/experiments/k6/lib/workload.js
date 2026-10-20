@@ -1,13 +1,18 @@
 import http from 'k6/http';
 import exec from 'k6/execution';
-import { SharedArray } from 'k6/data';
-import { Counter, Trend } from 'k6/metrics';
-import { userIndex } from './schedule.mjs';
+import crypto from 'k6/crypto';
+import encoding from 'k6/encoding';
+import { userIndex, userId, trafficClass, scheduledAt } from './schedule.mjs';
 
 const config = JSON.parse(open(__ENV.POINT_CONFIG));
-const users = new SharedArray('isolated-users', () => JSON.parse(open(__ENV.USER_FILE)));
-const outcomes = new Counter('request_outcomes');
-const latency = new Trend('response_duration', true);
+const pool = JSON.parse(open(__ENV.USER_FILE));
+const rawurl = (value) => value.replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+function tokenFor(uid, index) {
+  const header = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9';
+  const body = rawurl(encoding.b64encode(JSON.stringify({ uid, uname: `${pool.prefix}_${index}`, iat: pool.issuedAt, exp: pool.issuedAt + 86400 })));
+  const payload = `${header}.${body}`;
+  return `${payload}.${rawurl(crypto.hmac('sha256', __ENV.JWT_SECRET, payload, 'base64'))}`;
+}
 
 export function optionsFor(plan) {
   if (config.plan !== plan) throw new Error(`Expected ${plan}, got ${config.plan}`);
@@ -21,23 +26,23 @@ export function optionsFor(plan) {
     burst: scenario(config.rate, config.seconds, `${config.baseSeconds}s`),
   } : { steady: scenario(config.rate, config.seconds) };
   return {
-    scenarios, summaryTrendStats: ['min', 'med', 'p(95)', 'p(99)', 'max'],
-    thresholds: { dropped_iterations: ['count==0'] },
+    scenarios,
   };
 }
 
 export function request() {
   const index = userIndex(config, exec.scenario.name, exec.scenario.iterationInTest);
   if (index === null) return;
-  if (index >= users.length - 1) throw new Error('User pool exhausted; token reuse is forbidden');
-  const user = users[index];
+  if (index >= pool.count - 1) throw new Error('User pool exhausted; warmup user must remain isolated');
+  const uid = userId(pool, index);
+  const token = tokenFor(uid, index);
   const requestId = `${exec.scenario.name}:${exec.scenario.iterationInTest}`;
   const startedAtMs = Date.now();
   const injectionEndMs = exec.scenario.startTime + 1000 * (exec.scenario.name === 'baseline'
     ? config.baseSeconds + config.seconds : config.seconds);
-  console.log(JSON.stringify({ type: 'start', requestId, index, startedAtMs, injectionEndMs }));
+  console.log(JSON.stringify({ type: 'start', requestId, index, userId: uid, trafficClass: trafficClass(config, index), scheduledAtMs: scheduledAt(config, exec.scenario.name, exec.scenario.iterationInTest, exec.scenario.startTime), startedAtMs, injectionEndMs }));
   const response = http.post(`${__ENV.API_BASE}/seckills/${config.activityId}/grab`, '{}', {
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${user.token}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     timeout: `${config.requestTimeout}s`, tags: { name: 'seckill-grab' },
   });
   const finishedAtMs = Date.now();
@@ -52,16 +57,10 @@ export function request() {
       && state === (config.path === 'C' ? 'PENDING' : 'PAID') && body.data.orderId) outcome = 'accepted';
   else if (response.status === 200 && body && body.code === 40900) outcome = 'duplicate';
   else if (response.status === 200 && body && body.code === 41000) outcome = 'sold_out';
-  outcomes.add(1, { outcome });
-  latency.add(response.timings.duration, { outcome });
   console.log(JSON.stringify({
     type: 'finish', requestId, index, startedAtMs, finishedAtMs, outcome,
     responseMs: response.timings.duration, httpStatus: response.status,
     code: body ? body.code : null, state: state || null,
     orderId: body && body.data && body.data.orderId ? String(body.data.orderId) : null,
   }));
-}
-
-export function summary(data) {
-  return { [`${__ENV.RESULT_DIR}/k6-summary.json`]: JSON.stringify(data, null, 2) };
 }

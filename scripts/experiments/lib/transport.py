@@ -30,6 +30,31 @@ def sql(statement):
     return "\n".join(rows)
 
 
+
+def sql_rows(statement):
+    """Unbuffered query, with one server row in Python at a time."""
+    import pymysql
+    connection = pymysql.connect(host=host(), port=13306, user="root", password=os.environ["MYSQL_ROOT_PASSWORD"],
+                                 database=os.environ["MYSQL_DATABASE"], charset="utf8mb4", autocommit=True,
+                                 connect_timeout=5, read_timeout=30, write_timeout=30,
+                                 cursorclass=pymysql.cursors.SSCursor)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(statement)
+            yield from cursor
+    finally:
+        connection.close()
+
+
+def redis_members(key):
+    import redis
+    client = redis.Redis(host=host(), port=16379, password=os.environ["REDIS_PASSWORD"], decode_responses=True,
+                         socket_connect_timeout=5, socket_timeout=10)
+    try:
+        yield from client.sscan_iter(key, count=500)
+    finally:
+        client.close()
+
 def redis_command(*args):
     import redis
     client = redis.Redis(host=host(), port=16379, password=os.environ["REDIS_PASSWORD"], decode_responses=True,

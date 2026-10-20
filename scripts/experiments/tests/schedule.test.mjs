@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { userIndex } from '../k6/lib/schedule.mjs';
+import { userIndex, userId, trafficClass, scheduledAt } from '../k6/lib/schedule.mjs';
 
 test('burst phase boundary cannot reuse a baseline user or the warmup user', () => {
   const config = { baseRate: 2, baseSeconds: 2, rate: 10, seconds: 2 };
@@ -24,4 +24,21 @@ test('steady traffic stays bounded even if the executor schedules extra iteratio
   assert.equal(userIndex(config, 'steady', 9), 9);
   assert.equal(userIndex(config, 'steady', 10), null);
   assert.equal(userIndex(config, 'steady', -1), null);
+});
+
+
+test('compact ID ranges do not reuse users across gaps; mix classes stay deterministic', () => {
+  const pool = {count: 4, segments: [{index: 0, userId: 7, count: 2}, {index: 2, userId: 40, count: 2}]};
+  assert.deepEqual([0,1,2,3].map(i => userId(pool,i)), [7,8,40,41]);
+  assert.throws(() => userId(pool,4));
+  assert.equal(trafficClass({workload:'mixed'}, 0), 'duplicate');
+  assert.equal(trafficClass({workload:'mixed'}, 9), 'eligible');
+  assert.equal(trafficClass({workload:'steady'}, 0), 'eligible');
+});
+
+
+test('planned timestamps use the rate and origin of each phase', () => {
+  const config = {baseRate: 2, rate: 10};
+  assert.equal(scheduledAt(config,'baseline',3,1000),2500);
+  assert.equal(scheduledAt(config,'burst',3,3000),3300);
 });

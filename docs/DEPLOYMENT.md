@@ -116,11 +116,15 @@ bash scripts/dev/stop.sh
 
 ## 7. 性能实验
 
-性能实验使用独立的 `experiments/compose.sut.yml`（2 核 / 2 GiB 机器预算）和 `experiments/compose.runner.yml`（单独压测主机），不复用开发服务。先执行 `bash scripts/experiments/sut.sh build` 和 `bash scripts/experiments/sut.sh up`，再运行两组实验入口。分机部署、资源分配、参数与采集口径见 [实验说明](./experiments/README.md) 和 [实验计划](./experiments/PLAN.md)。
+使用独立 `experiments/compose.sut.yml`（2 核 / 2 GiB 机器预算）与另一主机的 `experiments/compose.runner.yml`。先执行 `bash scripts/experiments/sut.sh build` 和 `up`，再运行两组正式性能计划：
 
-报告在 `docs/experiments/{redis-filtering,kafka-buffering}/<运行编号>/`，纳入版本管理。临时凭证保存在忽略目录 `.local/experiments/`；压测容器包含 Python 和 k6，不挂载 Docker socket。普通业务包不再包含实验观察器；开发后端仍由原脚本启动。
+- `bash scripts/experiments/run-redis-filtering.sh --rates 25,50,100,200`：A/B 固定混合流量下的延迟与稳定容量。
+- `bash scripts/experiments/run-kafka-buffering.sh --stage capacity --rates 25,50,100,200`：B/C 稳定容量。
+- `bash scripts/experiments/run-kafka-buffering.sh --stage burst --baseline-report <正式 capacity.json>`：引用实测 B 基线的突发业务收益。
 
-正常和异常退出均保留数据库现场。核对完整报告后，可显式运行 `bash scripts/experiments/cleanup.sh <报告目录>`，只删除本轮独立实验数据。失败或未排空的运行拒绝自动清理。
+旧演示场景、手填 Q 和校准冒烟入口已删除。正式测量至少三轮、容量窗口至少 60 秒、每档每链路至少 1000 个有效响应样本。短跑只能使用 `--validation-only`，产物进入忽略目录，不输出性能提升结论。分机部署、SLO 与容量区间解释见 [实验说明](./experiments/README.md) 和 [计划](./experiments/PLAN.md)。
+
+每点完成核对并保存证据后释放临时 Redis 会话和缓存；DB 现场保留。整轮完成后可显式执行 `bash scripts/experiments/cleanup.sh <报告目录>` 分批清理专属 DB 数据；失败或未排空的运行不自动清理。
 
 ## 8. 重置数据
 
