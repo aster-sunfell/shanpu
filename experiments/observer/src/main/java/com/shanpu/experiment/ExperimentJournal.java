@@ -8,10 +8,12 @@ import org.springframework.stereotype.Component;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Map;
+import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Optional local experiment evidence. Failures must never roll back a committed order. */
@@ -64,9 +66,40 @@ public class ExperimentJournal {
         }
     }
 
-    public Map<String, Object> snapshot() {
-        return Map.of("enabled", enabled, "journal", path.toString(), "events", events.get(),
+    public synchronized Map<String, Object> snapshot() {
+        return Map.of("enabled", enabled, "journal", path.toString(), "journalOffset", path.toFile().length(), "events", events.get(),
                 "writeErrors", errors.get(), "syncAttempts", syncAttempts.get(), "asyncAttempts", asyncAttempts.get());
+    }
+
+    /** Bounded cursor reads let a remote runner collect evidence without a shared volume. */
+    public synchronized Map<String, Object> readPage(long offset, long activityId) throws IOException {
+        if (offset < 0 || offset > path.toFile().length()) {
+            throw new IllegalArgumentException("Invalid journal cursor");
+        }
+        var entries = new ArrayList<Object>();
+        if (!Files.exists(path)) {
+            return Map.of("nextOffset", 0L, "events", entries, "hasMore", false);
+        }
+        try (var file = new RandomAccessFile(path.toFile(), "r")) {
+            file.seek(offset);
+            long next = offset;
+            while (entries.size() < 1000 && file.getFilePointer() - offset < 1024 * 1024) {
+                long start = file.getFilePointer();
+                String line = file.readLine();
+                if (line == null) break;
+                long end = file.getFilePointer();
+                file.seek(end - 1);
+                if (file.readByte() != '\n') {
+                    file.seek(start);
+                    break;
+                }
+                file.seek(end);
+                next = end;
+                var event = mapper.readTree(line);
+                if (event.path("activityId").asLong() == activityId) entries.add(event);
+            }
+            return Map.of("nextOffset", next, "events", entries, "hasMore", next < file.length());
+        }
     }
 
     @PreDestroy

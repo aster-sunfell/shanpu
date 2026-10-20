@@ -12,12 +12,13 @@ def write_json(path, value):
 
 def records(path):
     result = []
-    for line in Path(path).read_text().splitlines():
-        # k6 --log-format raw writes console messages without logfmt quoting.
-        if not line.strip():
-            continue
-        value = json.loads(line)
-        result.append(value)
+    with Path(path).open() as file:
+        for line in file:
+            # k6 --log-format raw writes console messages without logfmt quoting.
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            result.append(value)
     return result
 
 

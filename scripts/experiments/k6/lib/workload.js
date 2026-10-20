@@ -63,5 +63,5 @@ export function request() {
 }
 
 export function summary(data) {
-  return { '/results/k6-summary.json': JSON.stringify(data, null, 2) };
+  return { [`${__ENV.RESULT_DIR}/k6-summary.json`]: JSON.stringify(data, null, 2) };
 }

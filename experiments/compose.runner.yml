@@ -1,0 +1,29 @@
+name: shanpu-load
+services:
+  load-runner:
+    image: shanpu-experiment-runner:local
+    build:
+      context: ..
+      dockerfile: experiments/docker/Runner.Dockerfile
+    # The load host is separate from the 2-core/2-GiB target host.
+    # Linux host networking supports both localhost smoke tests and a remote SUT_HOST.
+    network_mode: host
+    cpus: 1
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 128
+    init: true
+    restart: "no"
+    environment:
+      SUT_HOST: ${SUT_HOST:-127.0.0.1}
+      MYSQL_DATABASE: shanpu_bench
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?copy the private sut.env from the target host}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?copy the private sut.env from the target host}
+      JWT_SECRET: ${JWT_SECRET:?copy the private sut.env from the target host}
+      SUT_INSTANCE_ID: ${SUT_INSTANCE_ID:?copy the private sut.env from the target host}
+    volumes:
+      - ../.local/experiments:/workspace/.local/experiments
+      - ../docs/experiments:/workspace/docs/experiments
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}

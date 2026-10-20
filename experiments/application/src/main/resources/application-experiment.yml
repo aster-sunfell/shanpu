@@ -1,4 +1,4 @@
-# Activate with dev,experiment. Scheduled compensation must not hide original results.
+# Experiment application only: activate with prod,experiment,sut. Scheduled compensation must not hide original results.
 shanpu:
   experiment:
     enabled: true

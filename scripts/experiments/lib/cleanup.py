@@ -22,6 +22,8 @@ def main():
         raise RuntimeError("Not an experiment report directory")
     meta = json.loads((directory / "manifest.json").read_text())
     recorded_database = meta.get("database") or json.loads((directory / "backend-settings.json").read_text())["settings"]["database"]
+    if meta.get("target", {}).get("instanceId") != os.environ["SUT_INSTANCE_ID"]:
+        raise RuntimeError("Report belongs to another SUT instance")
     if recorded_database != os.environ["MYSQL_DATABASE"]:
         raise RuntimeError("Report belongs to another database")
     if meta.get("dataState") == "cleaned":

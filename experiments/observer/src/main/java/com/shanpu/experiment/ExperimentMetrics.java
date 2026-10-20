@@ -17,6 +17,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestParam;
 
 import javax.sql.DataSource;
 import java.lang.management.ManagementFactory;
@@ -58,6 +59,12 @@ public class ExperimentMetrics implements Interceptor {
         private final ActivityLocalCache cache;
         private final Environment environment;
 
+        @GetMapping("/api/admin/experiments/commits")
+        public Result<Map<String, Object>> commits(@RequestParam long activityId,
+                                                  @RequestParam(defaultValue = "0") long after) throws java.io.IOException {
+            return Result.ok(journal.readPage(after, activityId));
+        }
+
         @GetMapping("/api/admin/experiments/metrics")
         public Result<Map<String, Object>> metrics() {
             Map<String, Object> result = new LinkedHashMap<>(journal.snapshot());
@@ -74,6 +81,7 @@ public class ExperimentMetrics implements Interceptor {
                 settings.put(key, environment.getProperty(key, "unset"));
             }
             settings.put("profiles", environment.getActiveProfiles());
+            settings.put("sutId", environment.getProperty("shanpu.experiment.sut-id", ""));
             settings.put("database", environment.getProperty("spring.datasource.url", "")
                     .replaceFirst("^jdbc:mysql://[^/]+/([^?]+).*$", "$1"));
             settings.put("consumerConcurrency", 3);

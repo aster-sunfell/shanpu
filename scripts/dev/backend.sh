@@ -39,9 +39,9 @@ export REDIS_HOST=127.0.0.1
 export KAFKA_BOOTSTRAP_SERVERS="127.0.0.1:$KAFKA_PORT"
 
 cd "$ROOT_DIR/backend"
-mvn -B -ntp -DskipTests package
+mvn -B -ntp -DskipTests clean package
 
 mkdir -p "$DEV_RUNTIME_DIR"
 printf '%s\n' "$$" > "$DEV_RUNTIME_DIR/backend.pid"
 read -r -a java_opts <<< "${JAVA_OPTS:--Xms256m -Xmx1g}"
-exec java "${java_opts[@]}" -Duser.timezone=Asia/Shanghai -jar target/shanpu-backend-1.0.0.jar
+exec java "${java_opts[@]}" -Duser.timezone=Asia/Shanghai -jar target/shanpu-backend-1.0.0-exec.jar

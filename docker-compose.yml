@@ -127,26 +127,6 @@ services:
       timeout: 3s
       retries: 10
 
-  k6:
-    image: grafana/k6:0.50.0
-    profiles:
-      - experiments
-    restart: "no"
-    network_mode: host
-    working_dir: /experiments
-    entrypoint:
-      - k6
-    environment:
-      API_BASE: http://127.0.0.1:${BACKEND_PORT:-8081}/api
-      TOKEN_FILE: /runtime/bench-tokens.txt
-    volumes:
-      - ./scripts/experiments/k6:/experiments:ro
-      - ./.local/experiments:/runtime:ro
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 512m
 
 volumes:
   mysql-data:

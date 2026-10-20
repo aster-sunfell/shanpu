@@ -9,7 +9,7 @@ RUN mvn -B -DskipTests package
 # ===== runtime =====
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
-COPY --from=build /workspace/target/*.jar app.jar
+COPY --from=build /workspace/target/shanpu-backend-1.0.0-exec.jar app.jar
 EXPOSE 8080
 ENV JAVA_OPTS="-XX:+UseG1GC"
 ENV JAVA_TOOL_OPTIONS="-Xmx1g -Xms512m -XX:MaxMetaspaceSize=128m"

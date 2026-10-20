@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two isolated local experiments. Requires only Python's standard library and k6/Docker."""
+"""Two experiments executed inside the independent, resource-capped load runner."""
 import argparse
 import base64
 from collections import defaultdict
@@ -17,6 +17,9 @@ import sys
 import threading
 import time
 import urllib.request
+import resource
+
+import transport
 
 from analysis import analyze, percentiles, records, save_result, write_json
 
@@ -26,34 +29,19 @@ POINTS = 10_000_000
 PRICE = 100
 
 
-def command(args, *, data=None, timeout=45, env=None):
-    result = subprocess.run(args, input=data, text=True, capture_output=True, timeout=timeout, env=env, cwd=ROOT)
-    if result.returncode:
-        raise RuntimeError(f"{args[0]} failed ({result.returncode}): {result.stderr.strip()}")
-    return result.stdout
-
-
-def compose(*args):
-    return ["docker", "compose", "--project-name", "shanpu", "--env-file", str(ROOT / ".env"),
-            "--file", str(ROOT / "docker-compose.yml"), *args]
-
-
 def sql(statement):
-    return command(compose("exec", "-T", "-e", "MYSQL_PWD", "mysql", "mysql", "-uroot", "-N", "-B",
-                           "--default-character-set=utf8mb4", os.environ["MYSQL_DATABASE"]),
-                   data=statement, env={**os.environ, "MYSQL_PWD": os.environ["MYSQL_ROOT_PASSWORD"]})
+    return transport.sql(statement)
 
 
-def redis(*args, data=None):
-    return command(compose("exec", "-T", "-e", "REDISCLI_AUTH", "redis", "redis-cli", "--raw", *map(str, args)),
-                   data=data, env={**os.environ, "REDISCLI_AUTH": os.environ["REDIS_PASSWORD"]}).strip()
+def redis(*args):
+    return transport.redis_command(*args)
 
 
 def api(path, token=None, body=None):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(f"http://127.0.0.1:{os.environ['BACKEND_PORT']}/api{path}",
+    request = urllib.request.Request(f"http://{transport.host()}:18081/api{path}",
                                      headers=headers, data=json.dumps(body).encode() if body is not None else None)
     with urllib.request.urlopen(request, timeout=10) as response:
         value = json.load(response)
@@ -75,15 +63,6 @@ def token_for(uid, username):
     return f"{payload}.{signature}"
 
 
-def session_commands(users):
-    output = []
-    for user in users:
-        digest = hashlib.sha256(user["token"].encode()).hexdigest()[:32]
-        args = ["SETEX", f"shanpu:user:session:{digest}", "86400", str(user["userId"])]
-        output.append(f"*{len(args)}\r\n" + "".join(f"${len(a.encode())}\r\n{a}\r\n" for a in args))
-    return "".join(output)
-
-
 def create_users(prefix, count):
     for start in range(0, count, 1000):
         # Prefix is generated from hex digits. No external strings enter fixture SQL.
@@ -98,27 +77,26 @@ def create_users(prefix, count):
     users.sort(key=lambda u: u["index"])
     if len(users) != count:
         raise RuntimeError("User pool creation incomplete")
-    redis("--pipe", data=session_commands(users))
+    transport.sessions(users)
     return users
 
 
 def lag():
-    output = command(compose("exec", "-T", "kafka", "/opt/kafka/bin/kafka-consumer-groups.sh",
-                             "--bootstrap-server", "kafka:9092", "--describe", "--group", "shanpu-seckill-consumer"))
-    rows = [line.split() for line in output.splitlines() if "shanpu.seckill.order" in line]
-    partitions = [row for row in rows if len(row) >= 6 and row[1] == "shanpu.seckill.order"]
-    for row in partitions:
-        if row[3] == "-" and row[4] == "0" and row[5] == "-":
-            row[5] = "0"  # A genuinely empty partition may have no committed offset yet.
-    if len(partitions) != 3 or any(not row[5].isdigit() for row in partitions):
-        raise RuntimeError("Cannot confirm Kafka offsets for all three partitions")
-    return {row[2]: int(row[5]) for row in partitions}
+    return transport.lag()
 
 
 def require_idle(token):
+    started = time.time() * 1000
     metrics = api("/admin/experiments/metrics", token)
+    finished = time.time() * 1000
+    offset, uncertainty = metrics["timeMs"] - (started + finished) / 2, (finished - started) / 2
+    metrics["runnerClock"] = {"offsetEstimateMs": round(offset, 3), "uncertaintyMs": round(uncertainty, 3)}
+    if abs(offset) > 50 + uncertainty:
+        raise RuntimeError("SUT/load host clocks differ by more than 50 ms; synchronize clocks before measuring")
     if not metrics["enabled"] or metrics.get("writeErrors"):
-        raise RuntimeError("Experiment journal disabled or unhealthy; start backend with dev,experiment")
+        raise RuntimeError("Experiment journal disabled or unhealthy; start the dedicated SUT stack")
+    if metrics.get("settings", {}).get("sutId") != os.environ["SUT_INSTANCE_ID"]:
+        raise RuntimeError("Wrong SUT instance: refusing to touch another environment")
     if metrics.get("settings", {}).get("database") != os.environ["MYSQL_DATABASE"]:
         raise RuntimeError("Backend and runner target different databases")
     if any(value != "-" for key, value in metrics.get("settings", {}).items() if key.endswith(".cron")):
@@ -205,15 +183,18 @@ def mysql_counters():
     return {k: int(v) for k, v in (row.split("\t") for row in sql(f"SHOW GLOBAL STATUS WHERE Variable_name IN ({names});").splitlines())}
 
 
-def container_stats():
-    output = command(["docker", "stats", "--no-stream", "--format", "{{json .}}"])
-    return [row for line in output.splitlines() for row in [json.loads(line)] if row["Name"].startswith("shanpu-")]
+def runner_usage():
+    status = Path("/proc/self/status").read_text().splitlines()
+    return {"rssKiB": next(int(line.split()[1]) for line in status if line.startswith("VmRSS:")),
+            "childPeakRssKiB": resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss}
 
 
 class Sampler:
     def __init__(self, directory, token):
         self.directory, self.token = directory, token
         self.stop = threading.Event()
+        self.failure = None
+        self.backend_failures = 0
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def run(self):
@@ -224,7 +205,7 @@ class Sampler:
                 for name, fn in (
                     ("backend", lambda: api("/admin/experiments/metrics", self.token)),
                     ("mysql", mysql_counters),
-                    ("containers", container_stats),
+                    ("runner", runner_usage),
                     ("host", lambda: {"loadavg": Path("/proc/loadavg").read_text().strip(),
                                       "cpu": Path("/proc/stat").read_text().splitlines()[0],
                                       "diskstats": Path("/proc/diskstats").read_text()}),
@@ -238,6 +219,15 @@ class Sampler:
                         sample["kafkaLag"] = lag()
                     except Exception as error:
                         sample["kafkaLagError"] = str(error)
+                self.backend_failures = self.backend_failures + 1 if "backendError" in sample else 0
+                available = next(int(line.split()[1]) for line in Path("/proc/meminfo").read_text().splitlines()
+                                 if line.startswith("MemAvailable:"))
+                if available < 128 * 1024:
+                    self.failure = "Load host available memory fell below 128 MiB"
+                if self.backend_failures >= 3:
+                    self.failure = "Backend observation failed three times consecutively"
+                if sample.get("backend", {}).get("writeErrors"):
+                    self.failure = "Backend commit journal failed"
                 file.write(json.dumps(sample, ensure_ascii=False) + "\n")
                 file.flush()
                 sample_number += 1
@@ -265,33 +255,32 @@ def delta(before, after):
 
 def measure(config, private, directory, token, args):
     before_metrics = require_idle(token)
-    journal_path = Path(before_metrics["journal"])
-    journal_offset = journal_path.stat().st_size if journal_path.exists() else 0
+    journal = JournalReader(before_metrics["journalOffset"], config["activityId"], token)
     write_json(directory / "backend-before.json", before_metrics)
     write_json(directory / "mysql-before.json", mysql_counters())
-    relative = private.relative_to(RUNTIME)
-    container_name = "shanpu-experiment-" + config["userPrefix"]
-    invocation = compose("--profile", "experiments", "run", "--rm", "--name", container_name, "--user", f"{os.getuid()}:{os.getgid()}",
-                         "-v", f"{directory}:/results:rw", "-e", f"POINT_CONFIG=/runtime/{relative}/point.json",
-                         "-e", f"USER_FILE=/runtime/{relative}/users.json", "k6", "run", "--log-format", "raw",
-                         "--console-output", "/results/requests.jsonl", f"/experiments/{config['plan']}.js")
+    invocation = ["k6", "run", "--log-format", "raw", "--console-output", str(directory / "requests.jsonl"),
+                  str(ROOT / "scripts/experiments/k6" / f"{config['plan']}.js")]
+    child_env = {**os.environ, "POINT_CONFIG": str(private / "point.json"), "USER_FILE": str(private / "users.json"),
+                 "RESULT_DIR": str(directory), "API_BASE": f"http://{transport.host()}:18081/api"}
     started = time.monotonic()
-    with Sampler(directory, token), (directory / "k6.out").open("w") as output:
-        process = subprocess.Popen(invocation, stdout=output, stderr=subprocess.STDOUT, cwd=ROOT)
+    with Sampler(directory, token) as sampler, (directory / "k6.out").open("w") as output:
+        process = subprocess.Popen(invocation, stdout=output, stderr=subprocess.STDOUT, cwd=ROOT, env=child_env)
         try:
-            process.wait(timeout=config["seconds"] + config["baseSeconds"] + config["requestTimeout"] + 120)
+            deadline = time.monotonic() + config["seconds"] + config["baseSeconds"] + config["requestTimeout"] + 120
+            while process.poll() is None:
+                if sampler.failure:
+                    raise RuntimeError(sampler.failure)
+                if time.monotonic() > deadline:
+                    raise RuntimeError("Load generation exceeded its time budget")
+                time.sleep(.5)
         finally:
             if process.poll() is None:
                 process.terminate()
                 try:
-                    command(["docker", "stop", "--time", str(config["requestTimeout"] + 2), container_name],
-                            timeout=config["requestTimeout"] + 30)
-                finally:
-                    try:
-                        process.wait(timeout=20)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=5)
+                    process.wait(timeout=config["requestTimeout"] + 5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
         requests = records(directory / "requests.jsonl")
         scheduled_end = min((r["injectionEndMs"] for r in requests if r["type"] == "start"), default=int(time.time()*1000))
         # The drain deadline is relative to the end of injection, not to slow HTTP responses.
@@ -299,14 +288,16 @@ def measure(config, private, directory, token, args):
         finishes = [r for r in requests if r["type"] == "finish" and r["outcome"] == "accepted"]
         accepted = {r["orderId"] for r in finishes}
         while int(time.time()*1000) < deadline_ms:
-            events = read_journal(journal_path, journal_offset, config["activityId"])
+            if sampler.failure:
+                raise RuntimeError(sampler.failure)
+            events = journal.poll()
             backend = api("/admin/experiments/metrics", token)
             if accepted <= {e["orderId"] for e in events} and not any(lag().values()) and not backend.get("poolActive", 0):
                 break
             time.sleep(1)
         cutoff_ms = min(int(time.time()*1000), deadline_ms)
         after = snapshot(config)
-        events = read_journal(journal_path, journal_offset, config["activityId"])
+        events = journal.poll()
         write_json(directory / "after.json", after)
         write_json(directory / "commits.json", events)
         after_metrics = api("/admin/experiments/metrics", token)
@@ -340,15 +331,23 @@ def measure(config, private, directory, token, args):
     return result
 
 
-def read_journal(path, offset, activity):
-    if not path.exists():
-        return []
-    with path.open() as file:
-        file.seek(offset)
-        # A concurrent append may leave a partial final record; the next read will retry it.
-        lines = file.read().splitlines(keepends=True)
-    return [event for line in lines if line.endswith("\n")
-            for event in [json.loads(line)] if event["activityId"] == activity]
+class JournalReader:
+    def __init__(self, offset, activity, token):
+        self.offset, self.activity, self.token = offset, activity, token
+        self.events = []
+
+    def poll(self):
+        for _ in range(64):
+            page = api(f"/admin/experiments/commits?activityId={self.activity}&after={self.offset}", self.token)
+            if page["hasMore"] and page["nextOffset"] <= self.offset:
+                raise RuntimeError("Commit journal is truncated or its cursor did not advance")
+            self.offset = page["nextOffset"]
+            self.events.extend(page["events"])
+            if len(self.events) > 20001:
+                raise RuntimeError("Commit evidence exceeds the fixed per-point record budget")
+            if not page["hasMore"]:
+                return self.events
+        raise RuntimeError("Commit evidence scan exceeds the per-poll budget")
 
 
 def positive(value):
@@ -367,7 +366,7 @@ def parse_args(argv=None):
     parser.add_argument("--workloads", help="redis: valid,duplicate,soldout; kafka: steady,burst")
     parser.add_argument("--seconds", type=positive, default=60)
     parser.add_argument("--repeats", type=positive, default=3)
-    parser.add_argument("--vus", type=positive, default=100)
+    parser.add_argument("--vus", type=positive, default=20)
     parser.add_argument("--burst-multipliers", default="2,5")
     parser.add_argument("--burst-seconds", type=positive, default=10)
     parser.add_argument("--base-seconds", type=positive, default=10)
@@ -387,7 +386,7 @@ def parse_args(argv=None):
     try:
         args.rates = [positive(v) for v in args.rates.split(",")] if args.rates else (
             [25, 50, 100, 200] if args.calibrate else
-            sorted({max(1, int(args.q * f)) for f in (.5, .8, 1.2)}) if args.q else [50, 100, 200])
+            sorted({max(1, int(args.q * f)) for f in (.5, .8, 1.2)}) if args.q else [10, 25, 50])
         args.burst_multipliers = [positive(v) for v in args.burst_multipliers.split(",")]
     except (ValueError, argparse.ArgumentTypeError) as error:
         parser.error(str(error))
@@ -397,7 +396,23 @@ def parse_args(argv=None):
         parser.error(f"--workloads must select from {','.join(allowed)}")
     if args.calibrate and args.workloads != ["steady"]:
         parser.error("Calibration uses only steady valid requests")
+    if args.repeats > 10 or len(args.rates) > 10 or len(args.burst_multipliers) > 5:
+        parser.error("At most 10 repeats, 10 steady rates and 5 burst multipliers")
+    if max(args.seconds, args.base_seconds, args.burst_seconds, args.drain_seconds, args.request_timeout) > 600:
+        parser.error("Each duration must be at most 600 seconds")
+    if args.vus > 100:
+        parser.error("At most 100 VUs per scenario")
     return args
+
+
+def budgeted_matrix(args):
+    points, total = [], 0
+    for point in matrix(args):
+        total += point["scheduled"]
+        if point["scheduled"] > 20000 or total > 100000 or len(points) >= 100:
+            raise RuntimeError("Budget exceeded: 20000 requests/point, 100000 requests/run, 100 points/run")
+        points.append(point)
+    return points
 
 
 def matrix(args):
@@ -417,18 +432,17 @@ def matrix(args):
 
 
 def manifest(args):
-    tracked = command(["git", "ls-files", "-co", "--exclude-standard"]).splitlines()
-    sources = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in tracked
-               if (ROOT / name).is_file() and (name.startswith(("backend/", "scripts/", "deploy/")) or name == "docker-compose.yml")}
+    source = json.loads((RUNTIME / "source.json").read_text())
     return {"plan": args.plan, "calibration": args.calibrate, "status": "running", "startedAtMs": int(time.time()*1000),
             "database": os.environ["MYSQL_DATABASE"],
-            "gitCommit": command(["git", "rev-parse", "HEAD"]).strip(),
-            "gitStatus": command(["git", "status", "--porcelain"]), "sourceSha256": sources,
+            "gitCommit": source["gitCommit"],
+            "gitStatus": source["gitStatus"], "sourceSha256": source["sourceSha256"],
             "parameters": vars(args), "platform": platform.platform(), "cpuCount": os.cpu_count(),
+            "target": json.loads((RUNTIME / "target.json").read_text()), "loadRunner": {"cpus": 1, "memoryMiB": 512},
             "memory": Path("/proc/meminfo").read_text().splitlines()[0], "points": [],
             "limitations": ["Local single broker/replica; no durability or high-availability claim",
                              "Completion time observed immediately after DB commit; includes instrumentation delay",
-                             "k6, backend, DB and brokers share this host; sampler overhead is present",
+                             "Generator and SUT are separate deployments; physical separation must be confirmed by operator",
                              "Global MySQL counters include observer queries; mapper counters are separate",
                              "Business completion and request logging add the same observation steps to both paths"]}
 
@@ -472,10 +486,15 @@ def report(directory, meta, results):
 
 def main(argv=None):
     args = parse_args(argv)
-    points = list(matrix(args))
+    points = budgeted_matrix(args)
     if args.dry_run:
         print(json.dumps({"parameters": vars(args), "measurements": points}, ensure_ascii=False, indent=2))
         return 0
+    if os.environ.get("BENCH_CONTAINER") != "1":
+        raise RuntimeError("Run via the capped load-runner container, not host Python")
+    target = json.loads((RUNTIME / "target.json").read_text())
+    if target["instanceId"] != os.environ["SUT_INSTANCE_ID"] or target["machineMemoryMiB"] != 2048 or target["cpuLimit"] != 2:
+        raise RuntimeError("Target resource verification is missing or belongs to another SUT")
     RUNTIME.mkdir(parents=True, exist_ok=True)
     with (RUNTIME / "experiment.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -497,11 +516,7 @@ def main(argv=None):
             write_json(private / "admin.json", [admin])
             metrics = require_idle(admin["token"])
             write_json(directory / "backend-settings.json", metrics)
-            config = json.loads(command(compose("--profile", "experiments", "config", "--format", "json")))
-            write_json(directory / "resources.json", {key: {k: service[k] for k in ("image", "deploy", "ports", "network_mode") if k in service}
-                                                      for key, service in config["services"].items()})
-            (directory / "images.txt").write_text(command(["docker", "inspect", "--format", "{{.Name}} {{.Config.Image}} {{.Image}}",
-                                                          "shanpu-mysql", "shanpu-redis", "shanpu-kafka"]))
+            write_json(directory / "resources.json", target)
             product_id = int(sql(f"INSERT INTO t_product(title,price,stock,status) VALUES ('experiment-{name}',{PRICE},0,1); SELECT LAST_INSERT_ID();").strip())
             meta["productId"] = product_id
             for index, point in enumerate(points):

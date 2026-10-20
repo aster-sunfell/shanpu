@@ -12,7 +12,7 @@
 | Nginx 1.28 | Docker，host 网络 | `127.0.0.1:8089` | 浏览器统一入口 |
 | Spring Boot | 宿主机 Java 17 | `127.0.0.1:8081` | 后端 API |
 | Next.js | 宿主机 Node.js 22 / pnpm 10 | `127.0.0.1:3000` | SSR、前端开发与热更新 |
-| k6 | Docker，`experiments` profile，host 网络 | 访问本机后端 | 按需压测 |
+| 压测端 | 独立 `experiments/compose.runner.yml` | 访问独立待测端 | 1 核 / 512 MiB |
 
 `docker-compose.yml` 固定项目名为 `shanpu`，使用 `shanpu_mysql-data`、`shanpu_redis-data`、`shanpu_kafka-data` 三个数据卷。Nginx 和 k6 使用 Linux host 网络，直接访问宿主机回环地址；Nginx 不配置 `ports`。
 
@@ -37,7 +37,7 @@
 
 `scripts/lib/dev-common.sh` 统一加载环境变量，并固定 Compose 文件和项目名，使启动脚本可从任意目录调用。
 
-后端脚本先加载 SDKMAN 初始化脚本，在仓库根目录执行 `sdk env`，应用 `.sdkmanrc` 指定的 `17.0.18-tem`，并校验 `JAVA_HOME` 与实际 `java` 命令均指向该 SDK。初始化失败或版本不符时直接退出。环境确认后才运行 Maven 打包，通过 `exec java -jar` 启动；默认设置 `dev` profile（可用 `SPRING_PROFILES_ACTIVE` 覆盖）、东八区时区与回环监听地址，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。默认 JVM 参数为 `-Xms256m -Xmx1g`，可通过 `JAVA_OPTS` 调整。进程 PID 写入忽略目录 `.local/run/backend.pid`，供压测采样使用。
+后端脚本先加载 SDKMAN 初始化脚本，在仓库根目录执行 `sdk env`，应用 `.sdkmanrc` 指定的 `17.0.18-tem`，并校验 `JAVA_HOME` 与实际 `java` 命令均指向该 SDK。初始化失败或版本不符时直接退出。环境确认后才运行 Maven clean 打包，通过 `exec java -jar` 启动；默认设置 `dev` profile（可用 `SPRING_PROFILES_ACTIVE` 覆盖）、东八区时区与回环监听地址，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。默认 JVM 参数为 `-Xms256m -Xmx1g`，可通过 `JAVA_OPTS` 调整。进程 PID 写入忽略目录 `.local/run/backend.pid`。
 
 前端脚本通过 `pnpm dev` 启动，注入：
 
@@ -116,9 +116,9 @@ bash scripts/dev/stop.sh
 
 ## 7. 性能实验
 
-使用 `SPRING_PROFILES_ACTIVE=dev,experiment bash scripts/dev/backend.sh` 启动实验后端，再分别执行 `bash scripts/experiments/run-redis-filtering.sh` 或 `bash scripts/experiments/run-kafka-buffering.sh --q <已测容量>`。k6 使用 `experiments` profile 和 host 网络直连后端。流量档位、容量校准、参数与指标口径见 [实验说明](./experiments/README.md) 和 [实验计划](./experiments/PLAN.md)。
+性能实验使用独立的 `experiments/compose.sut.yml`（2 核 / 2 GiB 机器预算）和 `experiments/compose.runner.yml`（单独压测主机），不复用开发服务。先执行 `bash scripts/experiments/sut.sh build` 和 `bash scripts/experiments/sut.sh up`，再运行两组实验入口。分机部署、资源分配、参数与采集口径见 [实验说明](./experiments/README.md) 和 [实验计划](./experiments/PLAN.md)。
 
-报告、参数及原始汇总保存在 `docs/experiments/redis-filtering/<运行编号>/` 或 `docs/experiments/kafka-buffering/<运行编号>/`，纳入版本管理。临时凭证和用户清单保存在忽略目录 `.local/experiments/`，通过独立只读挂载供 k6 使用。
+报告在 `docs/experiments/{redis-filtering,kafka-buffering}/<运行编号>/`，纳入版本管理。临时凭证保存在忽略目录 `.local/experiments/`；压测容器包含 Python 和 k6，不挂载 Docker socket。普通业务包不再包含实验观察器；开发后端仍由原脚本启动。
 
 正常和异常退出均保留数据库现场。核对完整报告后，可显式运行 `bash scripts/experiments/cleanup.sh <报告目录>`，只删除本轮独立实验数据。失败或未排空的运行拒绝自动清理。
 

@@ -46,4 +46,40 @@ class ExperimentJournalTest {
         assertEquals(0L, journal.snapshot().get("syncAttempts"));
         assertEquals(0L, journal.snapshot().get("writeErrors"));
     }
+    @Test
+    void cursorPagesAreBoundedFilteredAndNeverReread() throws Exception {
+        Path file = directory.resolve("paged.jsonl");
+        try (var journal = new JournalFixture(file)) {
+            for (int i = 0; i < 1005; i++) journal.value.recordCommittedOrder(12L, 34L, "o" + i);
+            journal.value.recordCommittedOrder(99L, 34L, "other");
+            var first = journal.value.readPage(0, 12);
+            assertEquals(1000, ((java.util.List<?>) first.get("events")).size());
+            assertEquals(true, first.get("hasMore"));
+            var second = journal.value.readPage((Long) first.get("nextOffset"), 12);
+            assertEquals(5, ((java.util.List<?>) second.get("events")).size());
+            assertEquals(false, second.get("hasMore"));
+            assertEquals(Files.size(file), second.get("nextOffset"));
+            assertTrue(((java.util.List<?>) journal.value.readPage((Long) second.get("nextOffset"), 12).get("events")).isEmpty());
+            assertThrows(IllegalArgumentException.class, () -> journal.value.readPage(-1, 12));
+            assertThrows(IllegalArgumentException.class, () -> journal.value.readPage(Files.size(file) + 1, 12));
+        }
+    }
+
+    @Test
+    void incompleteTrailingRecordDoesNotAdvanceTheCursor() throws Exception {
+        Path file = directory.resolve("partial.jsonl");
+        Files.writeString(file, "{\"activityId\":12");
+        var journal = new ExperimentJournal(true, file.toString(), new ObjectMapper());
+        var page = journal.readPage(0, 12);
+        assertEquals(0L, page.get("nextOffset"));
+        assertEquals(true, page.get("hasMore"));
+        assertTrue(((java.util.List<?>) page.get("events")).isEmpty());
+    }
+
+    private static class JournalFixture implements AutoCloseable {
+        final ExperimentJournal value;
+        JournalFixture(Path path) { value = new ExperimentJournal(true, path.toString(), new ObjectMapper()); }
+        @Override public void close() throws Exception { value.close(); }
+    }
+
 }

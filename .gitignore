@@ -8,6 +8,7 @@
 .trellis/
 
 backend/target/
+experiments/**/target/
 
 .idea/
 .local/

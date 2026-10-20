@@ -1,0 +1,10 @@
+**
+!experiments/
+!experiments/docker/
+!experiments/docker/Runner.Dockerfile
+!experiments/requirements.txt
+!experiments/compose.sut.yml
+!scripts/
+!scripts/experiments/
+!scripts/experiments/**
+**/__pycache__/
