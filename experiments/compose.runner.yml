@@ -5,10 +5,11 @@ services:
     build:
       context: ..
       dockerfile: experiments/docker/Runner.Dockerfile
-    # The load host is separate from the 2-core/2-GiB target host.
+    # Runner resources are additional to the 2-core/2-GiB SUT budget, even on one host.
     # Linux host networking supports both localhost smoke tests and a remote SUT_HOST.
     network_mode: host
     cpus: 1
+    cpuset: ${RUNNER_CPUSET:-}
     mem_limit: 512m
     memswap_limit: 512m
     pids_limit: 128

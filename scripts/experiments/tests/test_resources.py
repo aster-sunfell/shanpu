@@ -52,6 +52,16 @@ class ResourceTest(unittest.TestCase):
         container['State']['OOMKilled'] = True
         with self.assertRaises(RuntimeError): validate_container('backend', container)
 
+    def test_docker_affinity_must_match_compose_before_start(self):
+        container=self.container()
+        container['HostConfig']['CpusetCpus']='0,2'
+        validate_container('backend',container,'0,2')
+        with self.assertRaisesRegex(RuntimeError,'affinity'):validate_container('backend',container,'0,4')
+        container=self.container(cpu=1)
+        container['HostConfig']['CpusetCpus']='4'
+        validate_runner_container(container,'4')
+        with self.assertRaisesRegex(RuntimeError,'affinity'):validate_runner_container(container,'2')
+
     def test_runner_is_bounded_and_cannot_spawn_other_containers(self):
         validate_runner_container(self.container(cpu=1))
         validate_runner_config({'cpus': 1, 'mem_limit': str(512 * MIB), 'memswap_limit': str(512 * MIB),

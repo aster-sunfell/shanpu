@@ -11,6 +11,9 @@ import subprocess
 import sys
 import time
 
+from host import (HostMonitor, cpu_list, cpu_string, environment, require_start_memory,
+                  select_affinity, validate_affinity, topology, container_resources, finalize_host_evidence)
+
 ROOT = Path(__file__).resolve().parents[3]
 RUNTIME = ROOT / ".local/experiments"
 ENV_FILE = RUNTIME / "sut.env"
@@ -38,6 +41,11 @@ def initialize():
 
 
 def compose(kind, *args):
+    affinity = RUNTIME / 'cpu-affinity.json'
+    if affinity.exists():
+        pins = json.loads(affinity.read_text())
+        os.environ['SUT_CPUSET'] = pins['sut']
+        os.environ['RUNNER_CPUSET'] = pins['runner']
     return ["docker", "compose", "--project-name", "shanpu-sut" if kind == "sut" else "shanpu-load",
             "--env-file", str(ENV_FILE), "--file", str(ROOT / f"experiments/compose.{kind}.yml"), *args]
 
@@ -57,6 +65,17 @@ def validate_engine(info):
     required = ("MemoryLimit", "SwapLimit", "CpuCfsQuota", "CpuCfsPeriod", "PidsLimit")
     if info.get("OSType") != "linux" or any(info.get(key) is not True for key in required):
         raise RuntimeError("Docker engine must support memory, swap, CPU quota and PID limits; refusing uncapped execution")
+    if info.get('KernelVersion') and info['KernelVersion'] != os.uname().release:
+        raise RuntimeError('Docker must use this Linux host kernel; remote/Desktop engines make host guards unreliable')
+
+
+def check_engine():
+    endpoint = json.loads(command(['docker', 'context', 'inspect', '--format', '{{json .Endpoints.docker.Host}}']))
+    if os.environ.get('DOCKER_HOST') and not os.environ.get('DOCKER_CONTEXT'):
+        endpoint = os.environ['DOCKER_HOST']
+    if not endpoint.startswith('unix://'):
+        raise RuntimeError('Use the local Linux Docker Unix socket; remote Docker contexts are unsupported')
+    validate_engine(json.loads(command(['docker', 'info', '--format', '{{json .}}'])))
 
 def validate_config(config):
     budget = config.get("x-test-machine", {})
@@ -79,7 +98,7 @@ def validate_config(config):
             "hostReserveMiB": 608, "machineMemoryMiB": 2048}
 
 
-def validate_container(name, container):
+def validate_container(name, container, expected_cpuset=None):
     cpus, mib = LIMITS[name]
     actual = container["HostConfig"]
     if (actual.get("NanoCpus") != round(cpus * 1e9) or actual.get("Memory") != mib * MIB
@@ -87,11 +106,16 @@ def validate_container(name, container):
             or actual.get("Privileged") or actual.get("NetworkMode") == "host"
             or actual.get("RestartPolicy", {}).get("Name") != "no"):
         raise RuntimeError(f"Docker did not apply the required CPU/memory/swap limits to {name}")
+    actual_cpuset = actual.get('CpusetCpus', '')
+    if expected_cpuset is not None and cpu_list(actual_cpuset or '') != cpu_list(expected_cpuset or ''):
+        raise RuntimeError(f'Docker did not apply the required CPU affinity to {name}')
     if (container["State"].get("OOMKilled") or not container["State"].get("Running")
             or container["State"].get("Health", {}).get("Status", "healthy") != "healthy"):
         raise RuntimeError(f"Target service {name} has stopped or was OOM-killed")
     return {"service": name, "imageId": container["Image"], "cpuLimit": cpus,
-            "memoryLimitMiB": mib, "memorySwapMiB": mib, "oomKilled": False}
+            "memoryLimitMiB": mib, "memorySwapMiB": mib, "oomKilled": False,
+            'startedAt': container['State'].get('StartedAt'),
+            'cpuset': cpu_string(cpu_list(actual_cpuset)) if actual_cpuset else ''}
 
 
 def machine_id():
@@ -107,10 +131,10 @@ def verify():
         if not identifier:
             raise RuntimeError(f"Missing target container: {name}")
         container = json.loads(command(["docker", "inspect", identifier]))[0]
-        services.append(validate_container(name, container))
+        services.append(validate_container(name, container, config['services'][name].get('cpuset', '')))
     result.update(instanceId=initialize()["SUT_INSTANCE_ID"], services=services, machineId=machine_id(),
                   source=json.loads((RUNTIME / "sut-source.json").read_text()),
-                  verifiedAtMs=int(time.time() * 1000), sameHostLoadIsNotAnIndependentBenchmark=True)
+                  environment=environment(), verifiedAtMs=int(time.time() * 1000))
     (RUNTIME / "target.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -175,19 +199,35 @@ def validate_runner_config(service):
             raise RuntimeError("The load runner must not access the Docker socket")
 
 
-def validate_runner_container(container):
+def validate_runner_container(container, expected_cpuset=None):
     actual = container["HostConfig"]
     if (actual.get("NanoCpus") != 1000000000 or actual.get("Memory") != 512 * MIB
             or actual.get("MemorySwap") != 512 * MIB or actual.get("PidsLimit") != 128
             or actual.get("Privileged") or actual.get("RestartPolicy", {}).get("Name") != "no"):
         raise RuntimeError("Docker did not apply the load runner limits")
+    if expected_cpuset is not None and cpu_list(actual.get('CpusetCpus', '') or '') != cpu_list(expected_cpuset or ''):
+        raise RuntimeError('Docker did not apply the load runner CPU affinity')
     if any("docker.sock" in mount.get("Source", "") for mount in container.get("Mounts", [])):
         raise RuntimeError("Load runner has an unexpected Docker socket mount")
 
 
+def pin(arguments):
+    parser = argparse.ArgumentParser(description='Persist CPU affinity for same-host measurements')
+    parser.add_argument('--sut-cpus')
+    parser.add_argument('--runner-cpus')
+    args = parser.parse_args(arguments)
+    check_engine()
+    for kind in ('sut', 'runner'):
+        if command(compose(kind, 'ps', '-q')).strip():
+            raise RuntimeError('Stop the SUT and runner before changing CPU affinity')
+    result = select_affinity(args.sut_cpus, args.runner_cpus)
+    (RUNTIME/'cpu-affinity.json').write_text(json.dumps(result, indent=2)+'\n')
+    print(json.dumps(result, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["config", "build", "up", "verify", "status", "stop", "run", "cleanup", "build-runner"])
+    parser.add_argument("action", choices=["pin", "preflight", "config", "build", "up", "verify", "status", "stop", "run", "cleanup", "build-runner"])
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.action == "run" and "--dry-run" in args.arguments:
@@ -195,32 +235,41 @@ def main():
         return preview(args.arguments)
     if args.action == "run":
         from protocol import parse_args
-        parse_args(args.arguments)
+        run_args = parse_args(args.arguments)
     initialize()
-    if args.action in {"run", "cleanup", "build", "build-runner"}:
+    if args.action in {"pin", "up", "verify", "stop", "run", "cleanup", "build", "build-runner"}:
         # Prevent a second invocation from recreating an actively running load container.
         host_lock = (RUNTIME / "load-host.lock").open("w")
         try:
             fcntl.flock(host_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError("Another build/load operation is active on this host") from None
+    if args.action == 'pin':
+        return pin(args.arguments)
     config = json.loads(command(compose("sut", "config", "--format", "json")))
     validate_config(config)
-    if args.action in {"build", "build-runner", "up", "verify", "run", "cleanup"}:
-        validate_engine(json.loads(command(["docker", "info", "--format", "{{json .}}"])))
-    if args.action == "config":
+    if args.action in {"preflight", "build", "build-runner", "up", "verify", "run", "cleanup"}:
+        check_engine()
+    if args.action == 'preflight':
+        windows = require_start_memory(True)
+        affinity = validate_affinity(os.environ.get('SUT_CPUSET', ''), os.environ.get('RUNNER_CPUSET', ''), topology())
+        print(json.dumps({'affinity': affinity, 'environment': environment(), 'windows': windows,
+                          'targetBudget': validate_config(config), 'status': 'ready-for-same-host'}, indent=2))
+    elif args.action == "config":
         print(json.dumps(validate_config(config), indent=2))
     elif args.action == "build":
         build()
     elif args.action == "build-runner":
         require_memory(768)
+        if command(compose('sut', 'ps', '-q')).strip():
+            raise RuntimeError('Stop the local target before building the runner')
         command(compose("runner", "build"), capture=False)
         (RUNTIME / "source.json").write_text(json.dumps(source_metadata(), indent=2) + "\n")
     elif args.action == "up":
         source = json.loads((RUNTIME / "sut-source.json").read_text())
         if source["sourceSha256"] != source_metadata("sut")["sourceSha256"]:
             raise RuntimeError("Sources changed since build; rebuild before starting the target")
-        require_memory(1536)
+        require_start_memory(True) if os.environ.get('SUT_CPUSET') else require_memory(1536)
         command(compose("sut", "create"), capture=False)
         # Inspect limits before starting any target process, not only after it is healthy.
         for name in LIMITS:
@@ -228,7 +277,7 @@ def main():
             container = json.loads(command(["docker", "inspect", identifier]))[0]
             # Validation of resource allocation is independent of process state.
             container["State"] = {"Running": True, "OOMKilled": False}
-            validate_container(name, container)
+            validate_container(name, container, config['services'][name].get('cpuset', ''))
         command(compose("sut", "up", "-d", "--wait", "--wait-timeout", "240"), capture=False)
         print(json.dumps(verify(), indent=2))
     elif args.action == "verify":
@@ -240,12 +289,26 @@ def main():
     else:
         if not (RUNTIME / "target.json").exists():
             raise RuntimeError("Missing target.json; run sut.sh verify on the target host and copy its public result here")
-        require_memory(768)
+        same_host = args.action == 'run' and run_args.deployment == 'same-host'
+        windows = require_start_memory(same_host)
+        target_ids = []
+        if same_host:
+            # Reinspect the local target, rather than trusting a stale copied target.json.
+            target = verify()
+            sut_sets = {service['cpuset'] for service in target['services']}
+            if not run_args.validation_only:
+                if len(sut_sets) != 1 or not next(iter(sut_sets)):
+                    raise RuntimeError('Same-host performance requires sut.sh pin and restarting the SUT')
+                validate_affinity(next(iter(sut_sets)), os.environ.get('RUNNER_CPUSET', ''), topology())
+            target_ids = [command(compose('sut', 'ps', '-q', name)).strip() for name in LIMITS]
         source = json.loads((RUNTIME / "source.json").read_text())
         if source["sourceSha256"] != source_metadata()["sourceSha256"]:
             raise RuntimeError("Source changed since the images were built; stop and rebuild first")
         # Use a Compose override so the engine can be inspected BEFORE k6/Python starts.
-        (RUNTIME / "load-host.json").write_text(json.dumps({"machineId": machine_id(), "cpus": 1, "memoryMiB": 512}) + "\n")
+        load_host = {'machineId': machine_id(), 'cpus': 1, 'memoryMiB': 512, 'environment': environment(),
+                     'engine': json.loads(command(['docker', 'version', '--format', '{{json .Server}}']))}
+        if windows:
+            load_host['windows'] = {k: windows[k] for k in ('totalBytes', 'version')}
         arguments = list(args.arguments)
         for index, argument in enumerate(arguments):
             if argument == "--baseline-report":
@@ -255,6 +318,10 @@ def main():
                 relative = Path(argument.split("=",1)[1]).resolve().relative_to(ROOT)
                 arguments[index] = "--baseline-report=" + str(Path("/workspace") / relative)
         overrides = {"command": arguments, "user": f"{os.getuid()}:{os.getgid()}"}
+        run_id = time.strftime('%Y%m%d-%H%M%S')+'-'+secrets.token_hex(3)
+        watch_directory = RUNTIME/'host-watch'/run_id
+        container_watch = Path('/workspace/.local/experiments/host-watch')/watch_directory.name
+        overrides['environment'] = {'BENCH_HOST_STATUS': str(container_watch/'status.json'), 'BENCH_RUN_ID': run_id}
         if args.action == "cleanup":
             if len(args.arguments) != 1:
                 raise RuntimeError("cleanup requires exactly one report directory")
@@ -270,15 +337,55 @@ def main():
             command(invocation + ["create", "--force-recreate", "load-runner"], capture=False)
             identifier = command(invocation + ["ps", "-a", "-q", "load-runner"]).strip()
             container = json.loads(command(["docker", "inspect", identifier]))[0]
-            validate_runner_container(container)
+            validate_runner_container(container, runner_config.get('cpuset', ''))
+            load_host['cpuset'] = container['HostConfig'].get('CpusetCpus', '')
+            load_host['imageId'] = container['Image']
+            (RUNTIME/'load-host.json').write_text(json.dumps(load_host)+'\n')
+            def observe():
+                rows = []
+                containers = json.loads(command(['docker', 'inspect', *target_ids, identifier], timeout=5))
+                if target_ids:
+                    expected = {row['service']: row['startedAt'] for row in target['services']}
+                    for name, value in zip(LIMITS, containers[:-1]):
+                        row = validate_container(name, value, config['services'][name].get('cpuset', ''))
+                        if row['startedAt'] != expected[name]:
+                            raise RuntimeError(f'Target service {name} restarted during this run')
+                        row['resources'] = container_resources(value)
+                        rows.append(row)
+                runner = containers[-1]
+                validate_runner_container(runner, runner_config.get('cpuset', ''))
+                if runner['State'].get('OOMKilled'):
+                    raise RuntimeError('Load runner was OOM-killed')
+                rows.append({'service': 'load-runner', 'resources': container_resources(runner)})
+                return rows
+
+            def stop_containers(identifiers):
+                command(['docker', 'stop', '--timeout', '5', *identifiers], timeout=15)
+
+            grace = run_args.drain_seconds + run_args.request_timeout + 30 if args.action == 'run' else 60
+            watchdog = HostMonitor(watch_directory, same_host, observe,
+                                   lambda: stop_containers([identifier, *target_ids]),
+                                   lambda: stop_containers([identifier]), grace)
+            failure = None
             try:
-                command(["docker", "start", "--attach", identifier], capture=False)
-                state = json.loads(command(["docker", "inspect", identifier]))[0]["State"]
-                if state["ExitCode"] or state.get("OOMKilled"):
-                    raise RuntimeError(f"Load runner failed (exit={state['ExitCode']}, OOM={state.get('OOMKilled')})")
+                with watchdog:
+                    command(["docker", "start", "--attach", identifier], capture=False)
+                    state = json.loads(command(["docker", "inspect", identifier]))[0]["State"]
+                watchdog.last_observation = 0
+                watchdog.sample()
+                if state["ExitCode"] or state.get("OOMKilled") or watchdog.failure:
+                    raise RuntimeError(f"Load runner failed (exit={state['ExitCode']}, OOM={state.get('OOMKilled')}, host={watchdog.failure}); host evidence: {watch_directory}")
+            except BaseException as error:
+                failure = str(error) or type(error).__name__
+                raise
             finally:
-                command(["docker", "stop", "--timeout", "15", identifier])
-                command(["docker", "rm", identifier])
+                try:
+                    if args.action == 'run':
+                        parent = RUNTIME/'validation/performance-v2' if run_args.validation_only else ROOT/'docs/experiments'
+                        finalize_host_evidence(parent/run_args.plan/run_id,watch_directory,watchdog.failure or failure)
+                finally:
+                    command(["docker", "stop", "--timeout", "15", identifier])
+                    command(["docker", "rm", identifier])
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 
 from analysis import percentiles, write_json
+from host import validate_affinity
 
 VERSION = 2
 
@@ -48,8 +49,11 @@ def parse_args(argv=None):
     parser.add_argument('--max-error-rate', type=float, default=.001)
     parser.add_argument('--min-samples', type=positive, default=1000, help='Eligible samples per rate across repetitions')
     parser.add_argument('--validation-only', action='store_true', help='Developer integration only; never emits performance claims')
+    parser.add_argument('--deployment', choices=['separate-host', 'same-host'],
+                        help='Default: separate-host for performance, same-host for developer validation')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
+    args.deployment = args.deployment or ('same-host' if args.validation_only else 'separate-host')
     try:
         args.rates = sorted(set(positive(v) for v in args.rates.split(',')))
         args.burst_multipliers = sorted(set(positive(v) for v in args.burst_multipliers.split(',')))
@@ -86,8 +90,9 @@ def validate_baseline(baseline, args, contract=None):
     if (baseline.get('schemaVersion') != VERSION or baseline.get('plan') != 'kafka-buffering'
             or baseline.get('stage') != 'capacity' or baseline.get('status') != 'completed'
             or baseline.get('scope') != ('validation' if args.validation_only else 'performance')
+            or baseline.get('deployment') != args.deployment
             or baseline.get('policy') != policy(args)):
-        raise RuntimeError('Baseline protocol, status, scope or SLO does not match this run')
+        raise RuntimeError('Baseline protocol, status, scope, deployment or SLO does not match this run; legacy baselines must be remeasured')
     b = baseline.get('paths', {}).get('B', {})
     if not b.get('passingRps'): raise RuntimeError('Baseline has no qualified stable B rate')
     if not args.validation_only and (not b.get('bounded') or b.get('failingRps', 0) - b['passingRps'] > max(1, b['passingRps'] * .1)):
@@ -121,10 +126,32 @@ def budgeted_matrix(args):
     return points
 
 
-def context_contract(target, settings, generator_hash=None):
-    fields = ('service', 'imageId', 'cpuLimit', 'memoryLimitMiB', 'memorySwapMiB')
-    context = {'instanceId': target['instanceId'], 'services': sorted([{k: s[k] for k in fields} for s in target['services']], key=lambda s: s['service']),
-               'settings': settings, 'protocol': VERSION, 'generatorSource': generator_hash}
+def validate_deployment(args, target, load_host):
+    target_id, load_id = target.get('machineId'), load_host.get('machineId')
+    if not target_id or not load_id:
+        raise RuntimeError('Missing verified target/load host identities')
+    if not args.validation_only and any(not value.get('environment') for value in (target,load_host)):
+        raise RuntimeError('Missing host environment fingerprints; refresh target verification and rebuild the runner')
+    same_host = target_id == load_id
+    if same_host != (args.deployment == 'same-host'):
+        raise RuntimeError('Host identities do not match --deployment; choose same-host or separate-host explicitly')
+    if same_host and not args.validation_only:
+        sets = {s.get('cpuset', '') for s in target['services']}
+        if len(sets) != 1 or not next(iter(sets)):
+            raise RuntimeError('Same-host performance requires all SUT services bound to the same two CPUs')
+        validate_affinity(next(iter(sets)), load_host.get('cpuset', ''),
+                          load_host.get('environment', {}).get('cpuTopology', []))
+
+
+def context_contract(target, settings, generator_hash=None, load_host=None, args=None):
+    fields = ('service', 'imageId', 'cpuLimit', 'memoryLimitMiB', 'memorySwapMiB', 'cpuset')
+    context = {'instanceId': target['instanceId'], 'services': sorted([{k: s.get(k) for k in fields} for s in target['services']], key=lambda s: s['service']),
+               'settings': settings, 'protocol': VERSION, 'generatorSource': generator_hash,
+               'targetHost': {k: target.get(k) for k in ('machineId', 'environment')}, 'loadHost': load_host}
+    if args is not None:
+        context['deployment'] = args.deployment
+        context['generator'] = {'vus': args.vus, 'requestTimeout': args.request_timeout,
+                                'drainSeconds': args.drain_seconds, 'warmup': 'one-paid-order-per-point'}
     return hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
 
 
@@ -190,22 +217,23 @@ def comparisons(args, results):
 
 def report(directory, meta, results, args):
     path_caps = capacities(args, results) if args.stage == 'capacity' else {}
-    paired = comparisons(args, results)
+    paired = comparisons(args, results) if meta['status'] != 'failed' else []
     formal = meta['scope'] == 'performance'
     gain = None
     paths = ['A','B'] if args.plan == 'redis-filtering' else ['B','C']
-    if formal and path_caps and all(path_caps[p]['bounded'] for p in paths):
+    if formal and meta['status'] == 'completed' and path_caps and all(path_caps[p]['bounded'] for p in paths):
         gain = (path_caps[paths[1]]['passingRps']/path_caps[paths[0]]['passingRps']-1)*100
     gain_range = None
     if gain is not None:
         a, b = path_caps[paths[0]], path_caps[paths[1]]
         gain_range = [(b['passingRps']/a['failingRps']-1)*100, (b['failingRps']/a['passingRps']-1)*100]
     artifact = {'schemaVersion': VERSION, 'plan': args.plan, 'stage': args.stage, 'status': meta['status'],
-                'scope': meta['scope'], 'policy': policy(args), 'contract': meta.get('contract'),
+                'scope': meta['scope'], 'deployment': args.deployment, 'policy': policy(args), 'contract': meta.get('contract'),
+                'environment': {'target': meta.get('target'), 'loadHost': meta.get('loadHost')},
                 'paths': path_caps, 'capacityGainPct': gain, 'capacityGainRangePct': gain_range, 'comparisons': paired,
                 'parameters': {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items()}}
     write_json(directory / ('capacity.json' if args.stage == 'capacity' else 'burst.json'), artifact)
-    title = '性能测量' if formal else '开发期流程验证，禁止用于性能结论'
+    title = ('本机受限资源性能测量' if args.deployment == 'same-host' else '分机性能测量') if formal else '开发期流程验证，禁止用于性能结论'
     lines = [f'# {args.plan} / {args.stage} / {title}', '', f"状态：{meta['status']}。", '',
              'A/B 固定 10% 有效、90% 已购重复。' if args.plan=='redis-filtering' else 'B/C 使用可实际下单的独立新用户。', '',
              'A/B 成功下单响应均为 PAID。' if args.plan=='redis-filtering' else 'B 成功下单响应 PAID，C 成功受理响应 PENDING。响应和最终完成分别统计，超时后提交单独记录。', '',
@@ -236,8 +264,11 @@ def report(directory, meta, results, args):
                 lines.append(f'- {path}：{desc}。')
             if gain is not None: lines.append(f'- 已测通过档位容量增幅：{gain:.2f}%；由容量区间推导的增幅范围为 {gain_range[0]:.2f}%～{gain_range[1]:.2f}%，不能将已测档位增幅当成精确最大容量。')
     else: lines += ['', '**此运行只验证执行、采集和核对流程，不输出延迟提升或容量结论，不能作为正式突发基线。**']
+    if args.deployment == 'same-host' and formal:
+        lines += ['', '**本机部署：待测端与发压端使用不同 CPU 集合，仍共享磁盘、缓存、内核及宿主机调度；结果限定于当前虚拟化环境和配额，不能直接外推独立 2 核 2 GiB 机器或线上容量。**']
     lines += ['', '## 证据与适用范围', '',
-              '- SLO、资源配额、源码、镜像与主机身份摘要见 manifest.json；两个部署仍须确认时钟同步和独占负载。',
+              f'- 部署模式：{args.deployment}。SLO、CPU 集合/拓扑、资源配额、源码、镜像及环境指纹见 manifest.json；保持后台负载和时钟条件一致。',
+              '- 宿主机内存、换页、CPU/磁盘与容器状态记录在 host-watch/samples.jsonl；WSL 本机模式同时检查 Windows 可用内存。',
               '- capacity.json / burst.json 保存每档位状态、有效配对与比较分布；invalid 和 insufficient-samples 都不充当容量失败上界。',
               '- 每点保留请求/提交/快照 JSONL、SQLite 关联证据、分类错误率、积压增长判定、资源采样和每秒 timeline.csv。',
               '- 数据核对错误、未排空、观测异常阻止后续点；发压不足不推断服务容量。']

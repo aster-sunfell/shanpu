@@ -9,6 +9,7 @@ x-test-machine:
 
 x-common: &common
   restart: "no"
+  cpuset: ${SUT_CPUSET:-}
   init: true
   logging:
     driver: json-file

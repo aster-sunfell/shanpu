@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 from protocol import (parse_args, budgeted_matrix, capacities, comparisons, refinement_rates,
-                      policy, validate_baseline, read_baseline, report)
+                      policy, validate_baseline, read_baseline, report, validate_deployment, context_contract)
 from fixtures import credential
 
 
@@ -81,16 +81,51 @@ class ProtocolTest(unittest.TestCase):
     def test_baseline_rejects_smoke_wrong_slo_and_changed_contract(self):
         args=parse_args(['kafka-buffering'])
         b={'schemaVersion':2,'plan':'kafka-buffering','stage':'capacity','status':'completed',
-           'scope':'performance','policy':policy(args),'contract':'same',
+           'scope':'performance','deployment':'separate-host','policy':policy(args),'contract':'same',
            'paths':{'B':{'passingRps':100,'failingRps':105,'bounded':True}}}
         validate_baseline(b,args,'same')
-        for changed in ({'scope':'validation'},{'contract':'different'},{'status':'running'},{'policy':{}}):
+        for changed in ({'scope':'validation'},{'contract':'different'},{'status':'running'},{'policy':{}},
+                        {'deployment':'same-host'}, {'deployment':None}):
             with self.subTest(changed=changed), self.assertRaises(RuntimeError): validate_baseline({**b,**changed},args,'same')
         b['paths']['B']['bounded']=False
         with self.assertRaises(RuntimeError): validate_baseline(b,args,'same')
 
+    def test_same_host_is_performance_and_keeps_formal_sample_requirements(self):
+        args = self.args('--deployment','same-host')
+        self.assertFalse(args.validation_only)
+        self.assertEqual(3,args.repeats)
+        for extra in (['--seconds','2'],['--repeats','1'],['--min-samples','2']):
+            with patch('sys.stderr'), self.assertRaises(SystemExit):
+                self.args('--deployment','same-host',*extra)
+
+    def test_same_host_checks_actual_identities_cpu_overlap_and_siblings(self):
+        args = self.args('--deployment','same-host')
+        target = {'machineId':'host','services':[{'cpuset':'0,2'}],'environment':{'kernel':'linux'}}
+        rows = [{'cpu':i,'socket':0,'core':i//2,'siblings':[i//2*2,i//2*2+1]} for i in range(6)]
+        load = {'machineId':'host','cpuset':'4','environment':{'cpuTopology':rows}}
+        validate_deployment(args,target,load)
+        with self.assertRaisesRegex(RuntimeError,'fingerprints'):
+            validate_deployment(args,{**target,'environment':None},load)
+        for change in ({'machineId':'other'},{'cpuset':'0'},{'cpuset':'1'},{'cpuset':''}):
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                validate_deployment(args,target,{**load,**change})
+        args.deployment='separate-host'
+        with self.assertRaises(RuntimeError):validate_deployment(args,target,load)
+
+    def test_environment_affinity_runner_limits_and_mode_are_bound_to_baseline(self):
+        args = self.args('--deployment','same-host')
+        target = {'instanceId':'sut','machineId':'host','environment':{'kernel':'one'},
+                  'services':[{'service':'backend','cpuset':'0,2'}]}
+        load = {'machineId':'host','cpuset':'4','memoryMiB':512,'environment':{'kernel':'one'}}
+        contract = context_contract(target,{},'hash',load,args)
+        for changed in ({'cpuset':'6'},{'memoryMiB':1024},{'environment':{'kernel':'two'}}):
+            self.assertNotEqual(contract,context_contract(target,{},'hash',{**load,**changed},args))
+        self.assertNotEqual(contract,context_contract({**target,'environment':{'kernel':'two'}},{},'hash',load,args))
+        args.deployment='separate-host'
+        self.assertNotEqual(contract,context_contract(target,{},'hash',load,args))
+
     def test_formal_report_preserves_capacity_uncertainty_and_paired_latency(self):
-        args=self.args()
+        args=self.args('--deployment','same-host')
         rows=[]
         for rate in (100,200,400):
             for path in ('A','B'):
@@ -102,6 +137,9 @@ class ProtocolTest(unittest.TestCase):
             directory=Path(temp)
             report(directory,{'scope':'performance','status':'completed','contract':'test'},rows,args)
             artifact=json.loads((directory/'capacity.json').read_text())
+            self.assertEqual('performance',artifact['scope'])
+            self.assertEqual('same-host',artifact['deployment'])
+            self.assertIn('本机受限资源性能测量',(directory/'report.md').read_text())
             self.assertEqual(100,artifact['capacityGainPct'])
             self.assertEqual([0,300],artifact['capacityGainRangePct'])
             self.assertEqual(40,artifact['comparisons'][0]['latencyReductionPct']['p50'])

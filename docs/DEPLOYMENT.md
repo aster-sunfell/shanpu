@@ -116,13 +116,13 @@ bash scripts/dev/stop.sh
 
 ## 7. 性能实验
 
-使用独立 `experiments/compose.sut.yml`（2 核 / 2 GiB 机器预算）与另一主机的 `experiments/compose.runner.yml`。先执行 `bash scripts/experiments/sut.sh build` 和 `up`，再运行两组正式性能计划：
+使用独立 `experiments/compose.sut.yml`（2 核 / 2 GiB 机器预算）与独立 `experiments/compose.runner.yml`。支持本机和分机；本机先执行 `sut.sh pin`、`sut.sh preflight`，再执行 `bash scripts/experiments/sut.sh build` 和 `up`，再运行两组正式性能计划：
 
-- `bash scripts/experiments/run-redis-filtering.sh --rates 25,50,100,200`：A/B 固定混合流量下的延迟与稳定容量。
-- `bash scripts/experiments/run-kafka-buffering.sh --stage capacity --rates 25,50,100,200`：B/C 稳定容量。
-- `bash scripts/experiments/run-kafka-buffering.sh --stage burst --baseline-report <正式 capacity.json>`：引用实测 B 基线的突发业务收益。
+- `bash scripts/experiments/run-redis-filtering.sh --deployment same-host --rates 25,50,100,200`：A/B 固定混合流量下的延迟与稳定容量。
+- `bash scripts/experiments/run-kafka-buffering.sh --deployment same-host --stage capacity --rates 25,50,100,200`：B/C 稳定容量。
+- `bash scripts/experiments/run-kafka-buffering.sh --deployment same-host --stage burst --baseline-report <正式 capacity.json>`：引用实测 B 基线的突发业务收益。
 
-旧演示场景、手填 Q 和校准冒烟入口已删除。正式测量至少三轮、容量窗口至少 60 秒、每档每链路至少 1000 个有效响应样本。短跑只能使用 `--validation-only`，产物进入忽略目录，不输出性能提升结论。分机部署、SLO 与容量区间解释见 [实验说明](./experiments/README.md) 和 [计划](./experiments/PLAN.md)。
+旧演示场景、手填 Q 和校准冒烟入口已删除。正式测量至少三轮、容量窗口至少 60 秒、每档每链路至少 1000 个有效响应样本。短跑只能使用 `--validation-only`，产物进入忽略目录，不输出性能提升结论。分机运行改为 `--deployment separate-host`。本机使用不同 CPU 集合、整机内存保护与环境绑定基线，正式报告仍进入 `docs/experiments/`，不直接外推线上容量。部署、SLO 与容量区间解释见 [实验说明](./experiments/README.md) 和 [计划](./experiments/PLAN.md)。
 
 每点完成核对并保存证据后释放临时 Redis 会话和缓存；DB 现场保留。整轮完成后可显式执行 `bash scripts/experiments/cleanup.sh <报告目录>` 分批清理专属 DB 数据；失败或未排空的运行不自动清理。
 

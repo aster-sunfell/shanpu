@@ -9,15 +9,17 @@ import shutil
 import time
 
 import transport
+from host import check_host_health
 
 POINTS = 10_000_000
 PRICE = 100
 BATCH = 500
 
 
-def check_disk(path):
-    if shutil.disk_usage(path).free < 512 * 1024 * 1024:
-        raise RuntimeError('Less than 512 MiB disk space remains; preserving evidence')
+def check_disk(path, *, check_host=True):
+    if check_host: check_host_health()
+    if shutil.disk_usage(path).free < 1024 * 1024 * 1024:
+        raise RuntimeError('Less than 1024 MiB disk space remains; preserving evidence')
 
 
 def token_for(uid, username, issued_at=None):
@@ -72,7 +74,7 @@ def create_users(prefix, count, disk_path):
     return pool
 
 
-def snapshot(config, directory, phase):
+def snapshot(config, directory, phase, *, check_host=True):
     aid, prefix = config['activityId'], config['userPrefix']
     metadata = {'stock': int(transport.sql(f'SELECT total_stock FROM t_seckill_activity WHERE id={aid};').strip()),
                 'redisStock': int(transport.redis_command('GET', f'shanpu:seckill:stock:{aid}')) if config['path'] != 'A' else None}
@@ -84,7 +86,7 @@ def snapshot(config, directory, phase):
         with (directory / f'{phase}-{kind}.jsonl').open('w') as file:
             for index, row in enumerate(transport.sql_rows(query)):
                 file.write(json.dumps(row, default=str) + '\n')
-                if index % 5000 == 0: check_disk(directory)
+                if index % 5000 == 0: check_disk(directory, check_host=check_host)
     if config['path'] != 'A':
         with (directory / f'{phase}-bought.jsonl').open('w') as file:
             for uid in transport.redis_members(f'shanpu:seckill:bought:{aid}'):
@@ -108,6 +110,7 @@ def prepare(config, product_id, private, directory, token, api, require_idle):
     if config['workload'] == 'mixed':
         prefix = config['userPrefix']
         for start in range(0, config['scheduled'], BATCH):
+            check_disk(directory)
             end = min(start + BATCH, config['scheduled'])
             count = sum(i % 10 != 9 for i in range(start, end))
             first_id, last_id = credential(pool, start)["userId"], credential(pool, end-1)["userId"]
@@ -126,6 +129,7 @@ def prepare(config, product_id, private, directory, token, api, require_idle):
     warm = api(f'/seckills/{aid}/grab', credential(pool, config['scheduled'])['token'], {})
     deadline = time.monotonic() + 60
     while transport.sql(f"SELECT COUNT(*) FROM t_order WHERE order_id='{warm['orderId']}' AND status=2;").strip() != '1':
+        check_disk(directory)
         if time.monotonic() > deadline: raise RuntimeError('Warmup order did not complete')
         time.sleep(.2)
     require_idle(token)

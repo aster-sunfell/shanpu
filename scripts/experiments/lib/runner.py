@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import platform
 import resource
+import shutil
 import secrets
 import signal
 import subprocess
@@ -18,7 +19,8 @@ import transport
 from analysis import Evidence, save_result, write_json
 from fixtures import POINTS, PRICE, create_users, credential, prepare, snapshot, check_disk, release_redis
 from protocol import (VERSION, parse_args, matrix, budgeted_matrix, policy, context_contract,
-                      validate_baseline, refinement_rates, capacities, read_baseline, report)
+                      validate_baseline, refinement_rates, capacities, read_baseline, report, validate_deployment)
+from host import check_host_health
 
 ROOT = Path(__file__).resolve().parents[3]
 RUNTIME = ROOT / '.local/experiments'
@@ -111,16 +113,12 @@ class Sampler:
                     except Exception as error:
                         sample["kafkaLagError"] = str(error)
                 self.backend_failures = self.backend_failures + 1 if "backendError" in sample else 0
-                available = next(int(line.split()[1]) for line in Path("/proc/meminfo").read_text().splitlines()
-                                 if line.startswith("MemAvailable:"))
-                if available < 128 * 1024:
-                    self.failure = "Load host available memory fell below 128 MiB"
                 if self.backend_failures >= 3:
                     self.failure = "Backend observation failed three times consecutively"
                 if sample.get("backend", {}).get("writeErrors"):
                     self.failure = "Backend commit journal failed"
                 try:
-                    check_disk(self.directory)
+                    check_disk(self.directory, check_host=False)
                 except RuntimeError as error:
                     self.failure = str(error)
                 file.write(json.dumps(sample, ensure_ascii=False) + "\n")
@@ -165,10 +163,11 @@ class JournalReader:
                 self.evidence.add_commits(page['events'])
                 for event in page['events']: file.write(json.dumps(event) + '\n')
                 if not self.has_more: break
-        check_disk(self.directory)
+        check_disk(self.directory, check_host=False)
 
 
 def measure(config, private, directory, token, args):
+    check_host_health()
     before_metrics = require_idle(token)
     write_json(directory / 'backend-before.json', before_metrics)
     write_json(directory / 'mysql-before.json', mysql_counters())
@@ -182,35 +181,51 @@ def measure(config, private, directory, token, args):
                      'RESULT_DIR': str(directory), 'API_BASE': f'http://{transport.host()}:18081/api'}
         clock_wall = time.time()*1000
         started = time.monotonic()
+        interruption = None
         with Sampler(directory, token) as sampler, (directory / 'k6.out').open('w') as output:
             process = subprocess.Popen(invocation, stdout=output, stderr=subprocess.STDOUT, cwd=ROOT, env=child_env)
             try:
                 deadline = time.monotonic() + config['seconds'] + config['baseSeconds'] + config['requestTimeout'] + 120
                 while process.poll() is None:
+                    try:
+                        check_host_health()
+                    except RuntimeError as error:
+                        interruption = str(error)
+                        break
                     if sampler.failure: raise RuntimeError(sampler.failure)
                     if time.monotonic() > deadline: raise RuntimeError('Load generation exceeded its time budget')
                     time.sleep(.5)
             finally:
                 if process.poll() is None:
-                    process.terminate()
+                    process.send_signal(signal.SIGINT)
                     try: process.wait(timeout=config['requestTimeout'] + 5)
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait(timeout=5)
-            if sampler.failure: raise RuntimeError(sampler.failure)
+            try:
+                check_host_health()
+            except RuntimeError as error:
+                interruption = interruption or str(error)
+            if sampler.failure and not interruption: raise RuntimeError(sampler.failure)
             evidence.load_requests()
             injection_end = evidence.scalar('SELECT MIN(e) FROM starts') or int(time.time()*1000)
             deadline_ms = injection_end + args.drain_seconds * 1000
+            drain_deadline = time.monotonic() + args.drain_seconds
             ambiguous = evidence.scalar("SELECT COUNT(*) FROM finishes WHERE outcome IN ('timeout','network_error','internal_error')")
             while True:
-                if sampler.failure: raise RuntimeError(sampler.failure)
+                try:
+                    check_host_health()
+                except RuntimeError as error:
+                    interruption = interruption or str(error)
+                if sampler.failure and not interruption: raise RuntimeError(sampler.failure)
                 journal.poll()
                 metrics = api('/admin/experiments/metrics', token)
                 if not journal.has_more and evidence.pending_accepted() == 0 and not any(lag().values()) and not metrics.get('poolActive', 0) and (not ambiguous or time.time()*1000 >= deadline_ms): break
                 if time.time()*1000 >= deadline_ms: break
+                if time.monotonic() >= drain_deadline: break
                 time.sleep(.5)
             cutoff = min(int(time.time()*1000), deadline_ms)
-            snapshot(config, directory, 'after')
+            snapshot(config, directory, 'after', check_host=False)
             evidence.load_snapshot('after')
             # Collect all already-written evidence, even if processing takes past cutoff.
             # Classification still uses commit timestamps <= cutoff.
@@ -229,6 +244,8 @@ def measure(config, private, directory, token, args):
         result = evidence.analyze(config, {}, cutoff, policy(args))
         result['clockShiftMs'] = round(drift,3)
         result['ambiguousResponseCount'] = ambiguous
+        if interruption:
+            result['correctnessErrors'].append('Host safety interrupted this point: ' + interruption)
         write_json(directory / 'load.json', {'planned':config['scheduled'], 'started':result['started'], 'missing':max(0,config['scheduled']-result['started']), 'metricsAggregation':'disabled; disk evidence is authoritative'})
         result.update(repeat=config['repeat'], seconds=config['seconds'], baseRate=config['baseRate'], baseSeconds=config['baseSeconds'], k6ExitCode=process.returncode,
                       wallSeconds=round(time.monotonic()-started, 3), backendDelta=delta(before_metrics, after_metrics))
@@ -258,11 +275,12 @@ def manifest(args, target, load_host):
     source = json.loads((RUNTIME / 'source.json').read_text())
     parameters = {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items()}
     return {'schemaVersion': VERSION, 'plan': args.plan, 'stage': args.stage,
-            'scope': 'validation' if args.validation_only else 'performance', 'status': 'running',
+            'scope': 'validation' if args.validation_only else 'performance', 'status': 'running', 'deployment': args.deployment,
             'startedAtMs': int(time.time()*1000), 'parameters': parameters, 'policy': policy(args),
             'target': target, 'loadHost': load_host, 'source': source,
             'database': os.environ['MYSQL_DATABASE'], 'platform': platform.platform(), 'points': [],
-            'limitations': ['Single-broker results have no availability/durability claim',
+            'hostWatch': str(Path(os.environ['BENCH_HOST_STATUS']).parent.relative_to(ROOT)),
+            'limitations': (['Same-host deployment shares storage, caches, kernel and host scheduling; quotas do not emulate a dedicated 2-core/2-GiB machine'] if args.deployment == 'same-host' else []) + ['Single-broker results have no availability/durability claim',
                            'After-commit observation includes callback delay and residual clock error',
                            'Resource quotas are per service; idle quota is not borrowed by other services',
                            'SUT Redis memory bounds fixture working sets; fixture failures are not capacity results',
@@ -275,6 +293,7 @@ def main(argv=None):
     points = budgeted_matrix(args)
     if args.dry_run:
         print(json.dumps({'scope': 'validation' if args.validation_only else 'performance',
+                          'deployment': args.deployment,
                           'policy': policy(args), 'initialMeasurements': points,
                           'refinementRounds': args.refine_steps if args.stage == 'capacity' else 0}, ensure_ascii=False, indent=2))
         return 0
@@ -283,14 +302,16 @@ def main(argv=None):
     load_host = json.loads((RUNTIME / 'load-host.json').read_text())
     if target['instanceId'] != os.environ['SUT_INSTANCE_ID'] or target['machineMemoryMiB'] != 2048 or target['cpuLimit'] != 2:
         raise RuntimeError('Target resource verification is missing or belongs to another SUT')
-    if not args.validation_only and (not target.get('machineId') or not load_host.get('machineId') or target['machineId'] == load_host.get('machineId')):
-        raise RuntimeError('Formal performance runs require distinct target/load hosts; same-host checks require --validation-only')
+    validate_deployment(args, target, load_host)
+    if not os.environ.get('BENCH_HOST_STATUS'):
+        raise RuntimeError('Missing host watchdog; launch through scripts/experiments/run.sh')
+    check_host_health()
     with (RUNTIME / 'experiment.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         health = api('/health')
         if any(health.get(key) != 'UP' for key in ('status', 'mysql', 'redis', 'kafka')):
             raise RuntimeError('All SUT dependencies must be healthy')
-        name = time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(3)
+        name = os.environ.get('BENCH_RUN_ID') or time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(3)
         parent = RUNTIME / 'validation/performance-v2' if args.validation_only else ROOT / 'docs/experiments'
         directory = parent / args.plan / name
         directory.mkdir(parents=True)
@@ -306,7 +327,8 @@ def main(argv=None):
             write_json(private / 'admin.json', admin_pool)
             admin = credential(admin_pool, 0)
             metrics = require_idle(admin['token'])
-            meta['contract'] = context_contract(target, {**metrics['settings'], 'localCacheEnabled': metrics['localCacheEnabled']}, meta['source']['sourceSha256'])
+            meta['contract'] = context_contract(target, {**metrics['settings'], 'localCacheEnabled': metrics['localCacheEnabled']},
+                                                meta['source']['sourceSha256'], load_host, args)
             write_json(directory / 'backend-settings.json', metrics)
             if args.baseline_report:
                 baseline = read_baseline(args.baseline_report)
@@ -317,6 +339,7 @@ def main(argv=None):
             refinements = 0
             while True:
                 for point in points:
+                    check_host_health()
                     if args.stage == 'capacity':
                         observations = capacities(args, results)[point['path']]['observations']
                         failures = [item['rate'] for item in observations if item['state']=='fail']
@@ -341,8 +364,11 @@ def main(argv=None):
                     value.pop("timeline", None)
                     results.append((point_name, value))
                     report(directory, meta, results, args)
+                    check_host_health()
                     if value['correctnessErrors'] or value['unresolvedCount']:
                         raise RuntimeError('Data/evidence invalid or accepted orders unresolved; preserve this run')
+                    if value['loadErrors']:
+                        raise RuntimeError('Load generation invalid; fix the runner before continuing the capacity sweep')
                     # Keep DB rows and all evidence; retire only this closed point's hot Redis data.
                     release_redis(private / point_name, point)
                     meta['points'][-1]['redisReleased'] = True
@@ -352,16 +378,29 @@ def main(argv=None):
                 if not rates: break
                 points = list(matrix(args, rates))
                 refinements += 1
+            check_host_health()
             meta['status'] = 'completed'
-            return 0
         except BaseException as error:
             meta.update(status='failed', error=str(error))
             raise
         finally:
             meta['finishedAtMs'] = int(time.time()*1000)
+            try:
+                check_host_health()
+                watch = Path(os.environ['BENCH_HOST_STATUS']).parent
+                (directory/'host-watch').mkdir(exist_ok=True)
+                for name in ('status.json', 'samples.jsonl'):
+                    shutil.copyfile(watch/name, directory/'host-watch'/name)
+                if json.loads((watch/'status.json').read_text()).get('failure'):
+                    meta.update(status='failed', error='Host safety interrupted the run; see host-watch/status.json')
+            except (OSError, ValueError, RuntimeError) as error:
+                meta.update(status='failed', error=f'Host safety/evidence check failed: {error}')
             report(directory, meta, results, args)
             write_json(directory / 'manifest.json', meta)
             print(f'现场与证据已保留：{directory}', flush=True)
+        if meta['status'] != 'completed':
+            raise RuntimeError(meta.get('error', 'Run was interrupted'))
+        return 0
 
 
 if __name__ == '__main__':
