@@ -1,6 +1,7 @@
 """Direct protocol clients on the load host; never mount the Docker socket."""
 import os
 import threading
+import time
 
 _kafka = None
 _kafka_lock = threading.Lock()
@@ -10,13 +11,18 @@ def host():
     return "127.0.0.1"
 
 
-def sql(statement):
+def mysql_connection(**options):
     import pymysql
+    settings = dict(host=host(), port=13306, user="root", password=os.environ["MYSQL_ROOT_PASSWORD"],
+                    database=os.environ["MYSQL_DATABASE"], charset="utf8mb4", autocommit=True,
+                    connect_timeout=5, read_timeout=30, write_timeout=30)
+    settings.update(options)
+    return pymysql.connect(**settings)
+
+
+def sql(statement):
     from pymysql.constants import CLIENT
-    connection = pymysql.connect(host=host(), port=13306, user="root", password=os.environ["MYSQL_ROOT_PASSWORD"],
-                                 database=os.environ["MYSQL_DATABASE"], charset="utf8mb4", autocommit=True,
-                                 connect_timeout=5, read_timeout=30, write_timeout=30,
-                                 client_flag=CLIENT.MULTI_STATEMENTS)
+    connection = mysql_connection(client_flag=CLIENT.MULTI_STATEMENTS)
     rows = []
     try:
         with connection.cursor() as cursor:
@@ -30,14 +36,41 @@ def sql(statement):
     return "\n".join(rows)
 
 
+def fixture_transaction(operations, progress):
+    """One bounded batch, checked writes, and no replay after connection loss."""
+    connection, phase = None, 'connect'
+    started = time.monotonic()
+    try:
+        progress(phase)
+        connection = mysql_connection(autocommit=False)
+        with connection.cursor() as cursor:
+            for phase, statement, parameters, expected in operations:
+                progress(phase)
+                cursor.execute(statement, parameters)
+                if cursor.rowcount != expected:
+                    raise RuntimeError(f'Expected {expected} affected rows, got {cursor.rowcount}')
+        phase = 'commit'
+        progress(phase)
+        connection.commit()
+    except Exception as error:
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception:
+                pass  # Keep the original failure; the broken connection cannot prove rollback.
+        code = error.args[0] if error.args and isinstance(error.args[0], int) else type(error).__name__
+        raise RuntimeError(f'Fixture transaction failed at {phase} after {time.monotonic()-started:.3f}s '
+                           f'(databaseError={code}); no automatic retry, preserve this point') from error
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 
 def sql_rows(statement):
     """Unbuffered query, with one server row in Python at a time."""
     import pymysql
-    connection = pymysql.connect(host=host(), port=13306, user="root", password=os.environ["MYSQL_ROOT_PASSWORD"],
-                                 database=os.environ["MYSQL_DATABASE"], charset="utf8mb4", autocommit=True,
-                                 connect_timeout=5, read_timeout=30, write_timeout=30,
-                                 cursorclass=pymysql.cursors.SSCursor)
+    connection = mysql_connection(cursorclass=pymysql.cursors.SSCursor)
     try:
         with connection.cursor() as cursor:
             cursor.execute(statement)

@@ -15,6 +15,24 @@ from protocol import VERSION, parse_args, policy
 
 
 class ActionsTest(unittest.TestCase):
+    def test_final_diagnostics_record_stopped_mysql_without_exporting_inspect_secrets(self):
+        value = {'Image': 'sha256:mysql', 'RestartCount': 0,
+                 'State': {'Status': 'exited', 'Running': False, 'OOMKilled': True, 'ExitCode': 137,
+                           'StartedAt': 'before', 'FinishedAt': 'after'},
+                 'Config': {'Env': ['MYSQL_ROOT_PASSWORD=private-secret']},
+                 'HostConfig': {'Binds': ['/private/path']}}
+        with tempfile.TemporaryDirectory() as temp, patch.object(actions, 'command', return_value=json.dumps([value])), \
+                patch('builtins.print') as output:
+            path = Path(temp) / 'containers-final.json'
+            actions.capture_final_containers({'mysql': 'container-id'}, path)
+            row = json.loads(path.read_text())['containers'][0]
+            self.assertEqual('mysql', row['service'])
+            self.assertTrue(row['state']['OOMKilled'])
+            self.assertEqual(137, row['state']['ExitCode'])
+            self.assertNotIn('private-secret', path.read_text())
+            self.assertNotIn('/private/path', path.read_text())
+            self.assertIn('OOM=True, exit=137', output.call_args.args[0])
+
     def test_execution_rejects_workstations_and_self_hosted_runners(self):
         for value in ({}, {'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'self-hosted'}):
             with patch.dict(os.environ, value, clear=True), self.assertRaisesRegex(RuntimeError, 'GitHub-hosted'):

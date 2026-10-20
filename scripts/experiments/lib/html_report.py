@@ -153,6 +153,15 @@ def stage_report(directory):
                         + ('<pre>' + text('\n'.join(errors)) + '</pre>' if errors else '<p>未报告数据或发压核对错误。</p>') + '</details>')
     if artifact.get('policy'):
         body.append('<details><summary>SLO 和样本要求</summary><pre>' + text(json.dumps(artifact['policy'], ensure_ascii=False, indent=2)) + '</pre></details>')
+    for path in sorted(directory.glob('*/preparation.json')):
+        value = read_json(path, {})
+        if value.get('status') != 'completed':
+            body.append(f'<details open><summary>{text(path.parent.name)} · 数据准备未完成</summary><pre>'
+                        + text(json.dumps(value, ensure_ascii=False, indent=2)) + '</pre></details>')
+    terminal = read_json(directory / 'containers-final.json')
+    if terminal:
+        body.append('<details><summary>结束时容器状态（清理前）</summary><pre>'
+                    + text(json.dumps(terminal, ensure_ascii=False, indent=2)) + '</pre></details>')
     body.append(resources(directory / 'host-watch/samples.jsonl'))
     return ''.join(body) + '</section>'
 

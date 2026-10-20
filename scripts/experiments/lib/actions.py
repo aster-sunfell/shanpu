@@ -143,6 +143,29 @@ def machine_id():
     return hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest()
 
 
+def capture_final_containers(identifiers, path):
+    """Preserve terminal state even when docker start --attach raises on failure.
+
+    Docker inspect also contains passwords and tokens, so export a field allowlist.
+    Read state before validation: a stopped/OOM-killed service is evidence itself.
+    """
+    names = [name for name, identifier in identifiers.items() if identifier]
+    values = json.loads(command(['docker', 'inspect', *(identifiers[name] for name in names)], timeout=5))
+    rows = []
+    for name, value in zip(names, values):
+        state = value.get('State', {})
+        rows.append({'service': name, 'imageId': value.get('Image'),
+                     'restartCount': value.get('RestartCount'),
+                     'state': {key: state.get(key) for key in
+                               ('Status', 'Running', 'OOMKilled', 'ExitCode', 'StartedAt', 'FinishedAt')}})
+    atomic_json(path, {'timeMs': int(time.time()*1000), 'containers': rows})
+    for row in rows:
+        state = row['state']
+        print(f"Container final state {row['service']}: status={state['Status']}, "
+              f"running={state['Running']}, OOM={state['OOMKilled']}, exit={state['ExitCode']}, "
+              f"restarts={row['restartCount']}", flush=True)
+
+
 def verify():
     config = json.loads(command(compose("sut", "config", "--format", "json")))
     result = validate_config(config)
@@ -344,6 +367,12 @@ def run_stage(arguments, deadline):
         failure = str(error) or type(error).__name__
         raise
     finally:
+        try:
+            capture_final_containers({**dict(zip(LIMITS, identifier_list)), 'load-runner': identifier},
+                                     result_dir / 'containers-final.json')
+        except Exception as error:
+            # Never hide the runner error if diagnostic collection itself fails.
+            print(f'Final container diagnostics unavailable: {type(error).__name__}', file=sys.stderr)
         finalize_host_evidence(result_dir, watch, failure or (watchdog.failure if watchdog else None))
         if identifier:
             command(['docker', 'stop', '--timeout', '15', identifier])

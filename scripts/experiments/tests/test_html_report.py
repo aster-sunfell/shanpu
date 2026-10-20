@@ -8,11 +8,29 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-from html_report import render
+from html_report import render, stage_report
 from report_site import merge_report
 
 
 class HtmlReportTest(unittest.TestCase):
+    def test_failed_preparation_and_terminal_mysql_state_render_without_capacity_claims(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp)
+            point = stage / '020-r1-mixed-200-B'
+            point.mkdir()
+            (stage / 'manifest.json').write_text(json.dumps({'status': 'failed'}))
+            (point / 'preparation.json').write_text(json.dumps({'status': 'failed', 'phase': 'point-logs',
+                 'batchStart': 300, 'batchEnd': 400, 'error': '<database error>'}))
+            (stage / 'containers-final.json').write_text(json.dumps({'containers': [
+                {'service': 'mysql', 'state': {'OOMKilled': True, 'ExitCode': 137}}]}))
+            html = stage_report(stage)
+            self.assertIn('数据准备未完成', html)
+            self.assertIn('point-logs', html)
+            self.assertIn('结束时容器状态', html)
+            self.assertIn('OOMKilled', html)
+            self.assertIn('&lt;database error&gt;', html)
+            self.assertNotIn('容量增幅', html)
+
     def report(self, root, run, status='completed', scope='performance', error=None):
         reports = root / f'evidence-{run}'
         reports.mkdir()
