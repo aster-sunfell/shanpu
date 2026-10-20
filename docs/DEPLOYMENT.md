@@ -116,11 +116,11 @@ bash scripts/dev/stop.sh
 
 ## 7. 性能实验
 
-性能实验仅在 GitHub 托管的 Linux Actions runner 执行。进入仓库 Actions → Performance experiments，选择 A/B、B/C 或完整流程；短时 `smoke` 仅验证采集与核对，不输出正式性能结论。
+性能实验仅在 GitHub 托管的 Linux Actions runner 执行。main 收到新提交后，Actions → Performance experiments 自动执行 A/B 和 B/C 完整正式实验，并发布 HTML；其他分支和 PR 不触发压测。
 
 被测服务合计 2 vCPU 配额，发压容器另占 1 vCPU；两端使用互斥 CPU 集合。B/C 容量和突发在同一 job 内引用刚测得的合格基线。每次使用独立临时数据库和凭证，归档后销毁容器和数据卷，不使用开发环境。
 
-HTML 报告和完整证据分别保存为 Actions artifacts；配置 Pages 后，正式分支可将 HTML 发布到报告网站，并通过仓库 About 的 Website 打开。参数、设置与结论边界见 [实验说明](./experiments/README.md) 和 [实验计划](./experiments/PLAN.md)。
+HTML 报告和完整证据分别保存为 Actions artifacts；配置 Pages 后，main 会将 HTML 发布到报告网站，并通过仓库 About 的 Website 打开。参数、设置与结论边界见 [实验说明](./experiments/README.md) 和 [实验计划](./experiments/PLAN.md)。
 
 ## 8. 重置数据
 

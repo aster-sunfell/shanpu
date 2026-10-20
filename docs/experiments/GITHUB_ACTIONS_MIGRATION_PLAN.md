@@ -127,3 +127,7 @@ job 超时暂设为 180 分钟，内部实验截止时间更短，为停止发�
 每次 Actions 运行生成可离线打开的 HTML 和原始证据 artifacts。main 手动运行可将 HTML 发布到 GitHub Pages，仓库 About 的 Website 指向 `https://aster-sunfell.github.io/shanpu/`。Pages 仅包含 HTML 和精简运行索引，使用独立报告历史分支保存最近 30 次及最近完整正式实验；验证、中断与失败均明确标记。
 
 工作流内声明最小 job 权限，无需个人 token secrets。首次需要管理员启用 Pages 的 GitHub Actions 来源并设置 Website。迁移分支可先通过 push 自动完成 smoke 和 HTML 下载产物验证，再进行正式实验和在线报告验收。
+
+## 10. main 合并后的触发策略
+
+根据最终实施要求，工作流只监听 main 的 push，不保留手动、PR、标签或迁移分支触发。任何 main 新提交均运行完整正式 full 实验，结束后发布已有 HTML；report-history 的归档提交不触发压测。实验参数直接定义在 workflow 中。Pages 与 Website 已配置，合并后的第一次 main push 用于正式实验和线上报告验收。

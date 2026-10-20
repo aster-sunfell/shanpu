@@ -18,4 +18,4 @@
 
 报告复核后限制 validation HTML 不输出容量区间或增幅。修正提交 `a775546` 的 [Actions 运行 39436086442](https://github.com/aster-sunfell/shanpu/actions/runs/39436086442) 再次通过 checks 和 performance：52 个 Python 回归、4 个 Node 调度验证以及真实 smoke 全流程均通过，HTML 与完整证据上传成功，专属容器和数据卷销毁成功。publish 因迁移分支规则跳过，尚未对 Pages 作线上验收。
 
-Pages 需要管理员完成一次性设置。未发布到线上前，不将 Website 地址标记为可用；完整正式实验与 Pages 验收尚待执行。
+Pages 与 Website 的一次性设置已确认完成。最终工作流仅由 main push 触发完整正式实验和发布；线上报告与正式实验结果以 main 合并后的运行记录为准。
