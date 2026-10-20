@@ -108,7 +108,7 @@ def stage_report(directory):
         if meta.get(key):
             body.append(f'<p class="failed">{text(meta[key])}</p>')
     paths = artifact.get('paths', {})
-    if paths:
+    if paths and artifact.get('scope') == 'performance':
         body.append('<h3>稳定容量区间</h3><ul>')
         for name, value in paths.items():
             if not completed:

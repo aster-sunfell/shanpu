@@ -71,6 +71,22 @@ class HtmlReportTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 merge_report(output, root / 'site')
 
+    def test_validation_stage_never_emits_capacity_claims(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = self.report(root, 1, scope='validation')
+            reports = root / 'evidence-1'
+            stage = reports / 'kafka-buffering' / 'capacity'
+            stage.mkdir(parents=True)
+            (stage / 'manifest.json').write_text(json.dumps({'status': 'completed', 'plan': 'kafka-buffering', 'stage': 'capacity'}))
+            (stage / 'capacity.json').write_text(json.dumps({'status': 'completed', 'scope': 'validation',
+                'capacityGainPct': 999, 'paths': {'B': {'passingRps': 5, 'bounded': False}}}))
+            render(reports, output)
+            html = (output / 'index.html').read_text()
+            self.assertNotIn('稳定容量区间', html)
+            self.assertNotIn('至少 5 RPS', html)
+            self.assertNotIn('容量增幅：', html)
+
     def test_measured_rows_timeline_and_resource_peaks_render_without_recomputing_claims(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
