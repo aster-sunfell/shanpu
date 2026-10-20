@@ -110,11 +110,41 @@ def container_resources(container):
         root = Path('/sys/fs/cgroup')/entry.lstrip('/')
         values = {name: (root/name).read_text().strip()
                   for name in ('memory.current', 'memory.events', 'cpu.stat', 'io.stat')}
+        values['memory.stat'] = '\n'.join(line for line in (root/'memory.stat').read_text().splitlines()
+                                         if line.split()[0] in ('anon', 'file', 'kernel', 'inactive_file'))
         if any(int(row.split()[1]) for row in values['memory.events'].splitlines() if row.startswith('oom_kill ')):
             raise RuntimeError('Container cgroup recorded an OOM kill; preserve this run')
         return values
     except (OSError, KeyError, StopIteration):
         return {'unavailable': 'Host cgroup v2 counters are unavailable; use external container resource sampling'}
+
+
+def preflight_memory(containers, reserve_mib):
+    try:
+        mysql = next(row for row in containers if row['service'] == 'mysql')
+        resources = mysql.get('resources', {})
+        current = int(resources['memory.current'])
+        fields = dict(line.split() for line in resources['memory.stat'].splitlines())
+        inactive = int(fields['inactive_file'])
+        events = {key: int(value) for key, value in
+                  (line.split() for line in resources['memory.events'].splitlines())}
+        limit = mysql['memoryLimitMiB'] * MIB
+        if not {'max', 'oom', 'oom_kill'} <= set(events): raise ValueError('Incomplete memory events')
+    except (KeyError, ValueError, StopIteration):
+        raise RuntimeError('Preflight requires readable MySQL cgroup memory counters') from None
+    if not 0 <= inactive <= current <= limit:
+        raise RuntimeError('Preflight MySQL memory counters are inconsistent or above the limit')
+    # An estimate, not guaranteed allocatable memory: do not count inactive file
+    # cache as anonymous working memory. Keep raw usage and pressure counters too.
+    working = current - inactive
+    sample = {'currentMiB': round(current/MIB, 3), 'inactiveFileMiB': round(inactive/MIB, 3),
+              'workingMiB': round(working/MIB, 3), 'headroomMiB': round((limit-working)/MIB, 3),
+              'requiredHeadroomMiB': reserve_mib, 'events': events}
+    if events.get('oom', 0) or events.get('oom_kill', 0) or limit-working < reserve_mib*MIB:
+        sample['error'] = (f"Preflight MySQL memory check failed: headroom={sample['headroomMiB']} MiB, "
+                           f"required={reserve_mib} MiB, current={sample['currentMiB']} MiB, "
+                           f"oom={events.get('oom',0)}, oom_kill={events.get('oom_kill',0)}")
+    return sample
 
 
 def check_host_health():

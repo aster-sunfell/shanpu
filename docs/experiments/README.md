@@ -8,7 +8,7 @@
 
 压测仅通过 `workflow_dispatch` 手动启动，平时向 main 或其他分支推送、提交 PR、创建标签和归档报告都不会自动发压。
 
-需要压测时，打开 [Actions → Performance experiments](https://github.com/aster-sunfell/shanpu/actions/workflows/performance.yml)，点击 **Run workflow**，选择 **main**，再点击 **Run workflow**。每次点击启动一次完整正式实验，结束后自动发布 HTML。仅允许 main 执行；选择其他分支时所有 job 跳过。
+需要压测时，打开 [Actions → Performance experiments](https://github.com/aster-sunfell/shanpu/actions/workflows/performance.yml)，点击 **Run workflow**，选择 **main**，再点击 **Run workflow**。每次点击先执行真实环境预检，通过并重建干净环境后才启动完整正式实验，结束后自动发布 HTML；预检失败同样保留诊断并生成报告。仅允许 main 执行；选择其他分支时所有 job 跳过。
 
 验证最新修正时请新建一次 Run workflow，不要在旧失败运行中点击 Re-run jobs；旧运行的重试沿用旧提交及其工作流配置。
 
@@ -31,6 +31,19 @@
 B/C 的突发只引用本 job 刚完成的容量报告。B 基线必须样本充分、有通过和有效失败上界、区间宽度不超过 10%（最低 1 RPS）。无法形成合格基线时停止，不手填 Q，不使用其他运行的旧基线。
 
 迁移期间已通过短时 smoke 验证 A/B、B/C 容量和突发的执行、证据关联及业务核对。验证报告标记 validation，不输出性能提升结论；最终工作流在 main 上运行正式 full 实验。
+
+## 正式测量前的真实环境预检
+
+三个 job 保持为 checks、performance、publish。checks 标记为 unit tests，只验证工具逻辑；真实预检位于 performance 中，使用正式镜像、同一 runner 和原有资源配额，构建只执行一次。
+
+1. 读取实际 MySQL 版本和内存配置，检查 cgroup 资源。MySQL 启动时要求至少 64 MiB 工作集估算余量，造数及短时请求阶段要求至少 32 MiB；OOM、重启、计数缺失或余量不足即停止。工作集估算为 memory.current 减 inactive_file，原始占用、内存类型与压力事件同时保留；这不是实际可分配内存保证，也不把正常文件缓存直接当作泄漏。
+2. 根据本次初始容量阶梯的计划请求量，快速准备 1.2 倍用户规模的混合数据。默认 full 对应 339840 个造数用户，按最大单点 12000 分批、交替走 A/B 准备流程，核对快照中的混合比例、预热用户、订单、流水、余额、库存和 Redis 已购集合。批间释放 Redis 热数据、保留 DB 历史，以提前覆盖数据累积问题；不等待正式测量窗口。
+3. 在已有大规模数据上，对 A/B/C 分别执行最大初始 RPS 的 3 秒请求，复用原 k6、证据关联和排空核对；任何发压无效、业务错误或未完成受理都会阻止正式运行。短时样本不用于 SLO 容量结论。
+4. 预检通过后先归档日志与提交证据，再销毁专属容器和数据卷，复用镜像重建。必须确认新实例、镜像与配额一致、六张业务表为空、Redis 为空、提交日志为空。随后签发绑定本次 run/attempt/job、代码、参数和新实例的一次性通过记录，正式执行入口缺少或不匹配时拒绝测量。
+
+造数与短时请求设 5 分钟内部预算，包含保护排空与环境重建的 workflow 步骤上限为 12 分钟，时间仍计入既有全程截止。失败报告标记 validation，并展示数据规模、内存余量、失败步骤、容器终态和环境重建结果。原始证据位于 `preflight/<run>-<attempt>-preflight/`；通过记录只在 runner 临时目录内。
+
+预检覆盖初始阶梯的数据量和短时请求，不能覆盖全部细化档位、未知突发规模或所有长时间累积效应。重建清空业务数据和进程状态；宿主缓存与内核仍由同一个 runner 共享。预检结果不替代正式实验，也不能作为突发基线。
 
 ## 资源条件
 

@@ -13,6 +13,24 @@ from report_site import merge_report
 
 
 class HtmlReportTest(unittest.TestCase):
+    def test_preflight_is_explicit_validation_and_never_renders_capacity_claims(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp)
+            (stage/'manifest.json').write_text(json.dumps({'status': 'completed', 'stage': 'preflight',
+                                                          'reset': {'status': 'completed', 'emptyRedis': True}}))
+            (stage/'preflight.json').write_text(json.dumps({'scope': 'validation', 'status': 'completed', 'dataset': {'seedUsers': 339840}}))
+            (stage/'capacity.json').write_text(json.dumps({'scope': 'performance', 'status': 'completed',
+                                                          'capacityGainPct': 100, 'paths': {'A': {'passingRps': 200}}}))
+            (stage/'memory-checks.jsonl').write_text(json.dumps({'workingMiB': 270, 'headroomMiB': 114})+'\n')
+            html = stage_report(stage)
+            self.assertIn('真实环境预检', html)
+            self.assertIn('validation', html)
+            self.assertIn('339840', html)
+            self.assertIn('270.00', html)
+            self.assertIn('重建后的环境核验', html)
+            self.assertNotIn('稳定容量区间', html)
+            self.assertNotIn('容量增幅：', html)
+
     def test_failed_preparation_and_terminal_mysql_state_render_without_capacity_claims(self):
         with tempfile.TemporaryDirectory() as temp:
             stage = Path(temp)

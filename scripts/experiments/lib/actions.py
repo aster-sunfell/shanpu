@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from host import (atomic_json, HostMonitor, cpu_list, cpu_string, environment, require_start_memory,
-                  select_affinity, container_resources, finalize_host_evidence)
+                  select_affinity, container_resources, finalize_host_evidence, preflight_memory)
 
 
 def require_actions():
@@ -40,6 +40,7 @@ REPORTS = Path(os.environ.get('BENCH_REPORTS', '/bench/reports'))
 ENV_FILE = RUNTIME / "sut.env"
 MIB = 1024 * 1024
 LIMITS = {"backend": (.8, 512), "mysql": (.5, 384), "redis": (.1, 96), "kafka": (.6, 448)}
+BUSINESS_TABLES = ('t_user', 't_product', 't_seckill_activity', 't_order', 't_point_log', 't_order_dlq_log')
 
 
 def command(args, *, capture=True, **kwargs):
@@ -289,7 +290,7 @@ def start_services():
     verify()
 
 
-def run_stage(arguments, deadline):
+def run_stage(arguments, deadline, *, preflight=False, mode='full'):
     from protocol import parse_args
     args = parse_args(arguments)
     require_start_memory()
@@ -302,7 +303,8 @@ def run_stage(arguments, deadline):
         raise RuntimeError('SUT sources changed after build')
     config = json.loads(command(compose('sut', 'config', '--format', 'json')))
     identifier_list = [command(compose('sut', 'ps', '-q', name)).strip() for name in LIMITS]
-    run_id = f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-{args.stage}-{secrets.token_hex(3)}"
+    run_id = (f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-preflight" if preflight else
+              f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-{args.stage}-{secrets.token_hex(3)}")
     watch = RUNTIME / 'host-watch' / run_id
     converted = list(arguments)
     for index, argument in enumerate(converted):
@@ -311,11 +313,14 @@ def run_stage(arguments, deadline):
     overrides = {'command': converted, 'user': f'{os.getuid()}:{os.getgid()}',
                  'environment': {'BENCH_RUN_ID': run_id,
                                  'BENCH_HOST_STATUS': str(Path('/bench/runtime/host-watch') / run_id / 'status.json')}}
-    result_dir = REPORTS / args.plan / run_id
+    if preflight:
+        overrides['entrypoint'] = ['python3', '/workspace/scripts/experiments/lib/preflight.py']
+        overrides['environment']['BENCH_PREFLIGHT_MODE'] = mode
+    result_dir = REPORTS / ('preflight' if preflight else args.plan) / run_id
     # Create evidence location before startup, so even a failed container launch is reported.
     result_dir.mkdir(parents=True)
-    atomic_json(result_dir / 'manifest.json', {'schemaVersion': 3, 'plan': args.plan, 'stage': args.stage,
-                'scope': 'validation' if args.validation_only else 'performance', 'status': 'running',
+    atomic_json(result_dir / 'manifest.json', {'schemaVersion': 3, 'plan': args.plan, 'stage': 'preflight' if preflight else args.stage,
+                'scope': 'validation' if preflight or args.validation_only else 'performance', 'status': 'running',
                 'deployment': 'github-actions', 'source': source, 'actions': actions_context()})
     identifier, watchdog, failure = None, None, None
     try:
@@ -334,8 +339,10 @@ def run_stage(arguments, deadline):
                          'engine': json.loads(command(['docker', 'version', '--format', '{{json .Server}}']))}
             atomic_json(RUNTIME / 'load-host.json', load_host)
             expected = {row['service']: row['startedAt'] for row in target['services']}
+            memory_observations = 0
 
             def observe():
+                nonlocal memory_observations
                 values = json.loads(command(['docker', 'inspect', *identifier_list, identifier], timeout=5))
                 rows = []
                 for name, value in zip(LIMITS, values[:-1]):
@@ -348,13 +355,20 @@ def run_stage(arguments, deadline):
                 if values[-1]['State'].get('OOMKilled'):
                     raise RuntimeError('Load runner was OOM-killed')
                 rows.append({'service': 'load-runner', 'resources': container_resources(values[-1])})
+                if preflight:
+                    sample = preflight_memory(rows, 64 if memory_observations == 0 else 32)
+                    sample['timeMs'] = int(time.time()*1000)
+                    with (result_dir/'memory-checks.jsonl').open('a') as log:
+                        log.write(json.dumps(sample)+'\n')
+                    memory_observations += 1
+                    if sample.get('error'): raise RuntimeError(sample['error'])
                 return rows
 
             def stop(ids):
                 command(['docker', 'stop', '--timeout', '5', *ids], timeout=20)
 
             watchdog = HostMonitor(watch, observe, lambda: stop([identifier, *identifier_list]),
-                                   lambda: stop([identifier]), args.drain_seconds + args.request_timeout + 30,
+                                   lambda: stop([identifier]), (min(args.drain_seconds, 30) if preflight else args.drain_seconds) + args.request_timeout + 30,
                                    deadline=deadline)
             with watchdog:
                 command(['docker', 'start', '--attach', identifier], capture=False)
@@ -380,6 +394,96 @@ def run_stage(arguments, deadline):
     return result_dir
 
 
+def experiment_parameters(mode, rates, seconds, repeats, vus, refine_steps):
+    return {'mode': mode, 'rates': sorted(set(int(rate) for rate in rates.split(','))),
+            'seconds': seconds, 'repeats': repeats, 'vus': vus, 'refineSteps': refine_steps}
+
+
+def reset_after_preflight(previous):
+    """Preserve diagnostics, then replace only this job's dedicated SUT volumes."""
+    cleanup()
+    values = initialize()
+    values['SUT_INSTANCE_ID'] = secrets.token_hex(12)
+    ENV_FILE.write_text(''.join(f'{key}={value}\n' for key, value in values.items()))
+    print(f"::add-mask::{values['SUT_INSTANCE_ID']}", flush=True)
+    start_services()
+    current = verify()
+    if current['instanceId'] == previous['instanceId']:
+        raise RuntimeError('Preflight reset did not replace the SUT instance')
+    fields = ('service', 'imageId', 'cpuLimit', 'memoryLimitMiB', 'cpuset')
+    before = [{key: row.get(key) for key in fields} for row in previous['services']]
+    after = [{key: row.get(key) for key in fields} for row in current['services']]
+    if before != after:
+        raise RuntimeError('Images or resource limits changed after preflight')
+    tables = BUSINESS_TABLES
+    query = ' UNION ALL '.join(f"SELECT '{name}',COUNT(*) FROM {name}" for name in tables)
+    result = command(compose('sut', 'exec', '-T', 'mysql', 'sh', '-c',
+                            'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --batch --skip-column-names --execute "$1"',
+                            'sh', query), timeout=30)
+    counts = {name: int(count) for name, count in (line.split('\t') for line in result.splitlines())}
+    if set(counts) != set(tables) or any(counts.values()):
+        raise RuntimeError('Preflight reset left business rows in the formal measurement database')
+    command(compose('sut', 'exec', '-T', 'backend', 'sh', '-c', 'test ! -s /evidence/commits.jsonl'), timeout=10)
+    redis_size = command(compose('sut', 'exec', '-T', 'redis', 'sh', '-c',
+                                'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli DBSIZE'), timeout=10)
+    if redis_size.strip() != '0':
+        raise RuntimeError('Preflight reset left Redis data in the formal environment')
+    return {'status': 'completed', 'instanceId': current['instanceId'], 'emptyTables': counts,
+            'emptyJournal': True, 'emptyRedis': True}
+
+
+def run_preflight(mode, rates, seconds, repeats, vus, refine_steps, minutes):
+    parameters = experiment_parameters(mode, rates, seconds, repeats, vus, refine_steps)
+    if mode not in ('full', 'redis', 'kafka', 'smoke') or not 1 <= minutes <= 5:
+        raise RuntimeError('Preflight requires a supported mode and a 1–5 minute data/probe budget')
+    marker = RUNTIME/'preflight-ready.json'
+    marker.unlink(missing_ok=True)
+    previous = verify()
+    directory = REPORTS/'preflight'/f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT','1')}-preflight"
+    arguments = ['redis-filtering', '--rates', rates, '--seconds', str(seconds), '--repeats', str(repeats),
+                 '--vus', str(vus), '--refine-steps', str(refine_steps)]
+    if mode == 'smoke': arguments.append('--validation-only')
+    deadline = min(time.monotonic()+minutes*60, json.loads((RUNTIME/'deadline.json').read_text())['monotonic'])
+    suite = json.loads((REPORTS/'suite.json').read_text())
+    suite.update(mode=mode, scope='validation', phase='preflight')
+    try:
+        run_stage(arguments, deadline, preflight=True, mode=mode)
+        collect(directory/'diagnostics')
+        reset = reset_after_preflight(previous)
+        meta = json.loads((directory/'manifest.json').read_text())
+        meta['reset'] = reset
+        atomic_json(directory/'manifest.json', meta)
+        atomic_json(marker, {'status': 'completed', 'parameters': parameters, 'actions': actions_context(),
+                            'source': json.loads((RUNTIME/'source.json').read_text())['sourceSha256'], 'reset': reset})
+        print('Preflight passed; fresh SUT and empty business tables verified before formal measurements', flush=True)
+    except BaseException as error:
+        suite.update(status='failed', error='Preflight/reset failed: '+str(error))
+        if (directory/'manifest.json').exists():
+            meta = json.loads((directory/'manifest.json').read_text())
+            meta.update(status='failed', error=str(error))
+            atomic_json(directory/'manifest.json', meta)
+        raise
+    finally:
+        atomic_json(REPORTS/'suite.json', suite)
+
+
+def require_preflight(parameters):
+    try:
+        marker = json.loads((RUNTIME/'preflight-ready.json').read_text())
+        source = json.loads((RUNTIME/'source.json').read_text())['sourceSha256']
+        if (marker['status'] != 'completed' or marker['parameters'] != parameters
+                or marker['actions'] != actions_context() or marker['source'] != source
+                or marker['reset']['status'] != 'completed'
+                or marker['reset']['instanceId'] != initialize()['SUT_INSTANCE_ID']
+                or marker['reset']['emptyJournal'] is not True or marker['reset']['emptyRedis'] is not True
+                or set(marker['reset']['emptyTables']) != set(BUSINESS_TABLES)
+                or any(marker['reset']['emptyTables'].values())):
+            raise ValueError('Preflight parameters, source, job or clean environment no longer match')
+        (RUNTIME/'preflight-ready.json').unlink()
+    except (OSError, KeyError, ValueError) as error:
+        raise RuntimeError('Successful preflight and verified clean reset are required before measurement: '+str(error)) from error
+
+
 def run_suite(mode, rates, seconds, repeats, vus, refine_steps, minutes):
     if mode not in ('full', 'redis', 'kafka', 'smoke'):
         raise RuntimeError('Unsupported experiment selection')
@@ -396,9 +500,10 @@ def run_suite(mode, rates, seconds, repeats, vus, refine_steps, minutes):
     deadline = min(time.monotonic() + minutes * 60,
                    json.loads((RUNTIME / 'deadline.json').read_text())['monotonic'])
     suite = json.loads((REPORTS / 'suite.json').read_text())
-    suite.update(mode=mode, scope='validation' if mode == 'smoke' else 'performance')
+    suite.update(mode=mode, scope='validation' if mode == 'smoke' else 'performance', phase='measurement')
     atomic_json(REPORTS / 'suite.json', suite)
     try:
+        require_preflight(experiment_parameters(mode, rates, seconds, repeats, vus, refine_steps))
         plans = ['redis-filtering', 'kafka-buffering'] if mode in ('full', 'smoke') else [
             'redis-filtering' if mode == 'redis' else 'kafka-buffering']
         for plan in plans:
@@ -423,8 +528,8 @@ def run_suite(mode, rates, seconds, repeats, vus, refine_steps, minutes):
         atomic_json(REPORTS / 'suite.json', suite)
 
 
-def collect():
-    public = REPORTS / 'diagnostics'
+def collect(public=None):
+    public = public or REPORTS / 'diagnostics'
     public.mkdir(parents=True, exist_ok=True)
     for kind in ('sut', 'runner'):
         try:
@@ -456,7 +561,7 @@ def cleanup():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['prepare', 'build', 'up', 'run', 'collect', 'cleanup'])
+    parser.add_argument('action', choices=['prepare', 'build', 'up', 'preflight', 'run', 'collect', 'cleanup'])
     parser.add_argument('--mode', choices=['full', 'redis', 'kafka', 'smoke'], default='full')
     parser.add_argument('--rates', default='25,50,100,200')
     parser.add_argument('--seconds', type=int, default=60)
@@ -475,6 +580,8 @@ def main():
         build()
     elif args.action == 'up':
         start_services()
+    elif args.action == 'preflight':
+        run_preflight(args.mode, args.rates, args.seconds, args.repeats, args.vus, args.refine_steps, args.minutes)
     elif args.action == 'run':
         run_suite(args.mode, args.rates, args.seconds, args.repeats, args.vus, args.refine_steps, args.minutes)
     elif args.action == 'collect':

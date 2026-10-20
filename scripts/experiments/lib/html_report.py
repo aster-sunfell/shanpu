@@ -96,8 +96,42 @@ def timeline(path):
     return ''.join(parts)
 
 
+def preflight_report(directory, meta):
+    body = ['<section><h2>真实环境预检</h2><p class="warning">用途：validation。'
+            '预检验证造数、短时请求和运行资源，不输出容量或性能提升结论。</p>',
+            '<p>状态：<strong>' + text(meta.get('status', 'incomplete')) + '</strong></p>']
+    if meta.get('error') or meta.get('hostFailure'):
+        body.append('<p class="failed">' + text(meta.get('error') or meta['hostFailure']) + '</p>')
+    for title, value in [('预检数据规模与业务核对', read_json(directory/'preflight.json')),
+                         ('清理并重建后的环境核验', meta.get('reset')),
+                         ('MySQL 实际配置与版本', read_json(directory/'mysql-settings.json')),
+                         ('结束时容器状态（清理前）', read_json(directory/'containers-final.json'))]:
+        if value:
+            body.append('<details><summary>' + text(title) + '</summary><pre>'
+                        + text(json.dumps(value, ensure_ascii=False, indent=2)) + '</pre></details>')
+    checks = directory/'memory-checks.jsonl'
+    if checks.exists():
+        values = []
+        with checks.open() as log:
+            for line in log:
+                try: values.append(json.loads(line))
+                except ValueError: continue
+        if values:
+            body.append('<p>MySQL 工作集估算峰值：' + number(max(v['workingMiB'] for v in values))
+                        + ' MiB；估算最小余量：' + number(min(v['headroomMiB'] for v in values))
+                        + ' MiB。扣除 inactive_file 的估算不保证实际可分配内存。</p>')
+    for path in sorted(directory.glob('*/preparation.json')):
+        value = read_json(path, {})
+        if value.get('status') != 'completed':
+            body.append('<pre>' + text(path.parent.name) + '\n' + text(json.dumps(value, ensure_ascii=False, indent=2)) + '</pre>')
+    body.append(resources(directory/'host-watch/samples.jsonl'))
+    return ''.join(body) + '</section>'
+
+
 def stage_report(directory):
     meta = read_json(directory / 'manifest.json', {})
+    if meta.get('stage') == 'preflight':
+        return preflight_report(directory, meta)
     artifact = read_json(directory / 'capacity.json') or read_json(directory / 'burst.json') or {}
     completed = meta.get('status') == 'completed' and artifact.get('status') == 'completed'
     title = f"{meta.get('plan', directory.parent.name)} / {meta.get('stage', 'unknown')}"

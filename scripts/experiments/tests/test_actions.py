@@ -57,6 +57,7 @@ class ActionsTest(unittest.TestCase):
                         'policy': policy(args), 'paths': {'B': {'passingRps': 100, 'failingRps': 105, 'bounded': True}}}
             (directory / 'capacity.json').write_text(json.dumps(baseline))
             with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
+                    patch.object(actions, 'require_preflight'), \
                     patch.object(actions, 'run_stage', return_value=directory) as stage:
                 actions.run_suite('kafka', '25,50', 60, 3, 20, 4, 10)
             self.assertEqual(2, stage.call_count)
@@ -69,6 +70,7 @@ class ActionsTest(unittest.TestCase):
             (directory / 'capacity.json').write_text(json.dumps(baseline))
             (root / 'suite.json').write_text(json.dumps({'status': 'running', 'stages': []}))
             with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
+                    patch.object(actions, 'require_preflight'), \
                     patch.object(actions, 'run_stage', return_value=directory) as stage:
                 with self.assertRaisesRegex(RuntimeError, 'bracketed'):
                     actions.run_suite('kafka', '25,50', 60, 3, 20, 4, 10)
