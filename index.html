@@ -1,0 +1,12 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>闪铺性能实验</title><style>
+:root{color-scheme:light;--ink:#172d3c;--muted:#526a79;--line:#d5e0e6;--accent:#096b65}
+*{box-sizing:border-box}body{margin:0;background:#f3f6f8;color:var(--ink);font:15px/1.65 system-ui,sans-serif}
+main{max-width:1240px;margin:auto;padding:36px 24px}h1{font-size:32px;line-height:1.25}h2{margin-top:32px}
+a{color:var(--accent)}section,.card,details{background:white;border:1px solid var(--line);border-radius:10px;padding:20px;margin:16px 0}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card{margin:0}.big{font-size:25px;font-weight:650}
+.muted{color:var(--muted)}.warning{background:#fff4df;border-left:5px solid #b97600;padding:14px}.failed{color:#a32e2e}
+.scroll{overflow:auto}table{border-collapse:collapse;min-width:760px;width:100%;font-size:14px}td,th{text-align:left;padding:9px;border-bottom:1px solid var(--line)}
+th{background:#edf3f6;white-space:nowrap}code{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6f8;padding:12px}
+summary{cursor:pointer;font-weight:600}svg{max-width:100%;height:auto}input{padding:10px;border:1px solid var(--line);border-radius:6px;width:100%;max-width:380px}
+footer{margin-top:30px;color:var(--muted)}.chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+</style></head><body><main><h1>闪铺性能实验</h1><p class="muted">GitHub Actions · A/B 延迟与容量 · B/C 稳定容量与突发收益</p><p class="warning">尚无完整正式实验。流程验证和失败记录均有明确标记。</p><section><h2>运行历史</h2><div class="scroll"><table><thead><tr><th>运行</th><th>模式</th><th>用途</th><th>状态</th><th>Commit</th></tr></thead><tbody><tr><td><a href="runs/39438351113-1/index.html">39438351113-1</a></td><td>full</td><td>performance</td><td>failed</td><td>962c1ee477111582391a60ef1e91e1b511542273</td></tr></tbody></table></div></section><footer>闪铺 · GitHub Actions 单机受限资源测量。vCPU 配额不能等同于独占物理核或线上容量。</footer></main></body></html>
