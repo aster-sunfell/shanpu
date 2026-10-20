@@ -1,4 +1,4 @@
-"""Safety regressions use synthetic pressure; never exhaust the workstation."""
+"""Watchdog regressions use synthetic pressure and never launch services."""
 import json
 import os
 from pathlib import Path
@@ -20,32 +20,33 @@ class HostTest(unittest.TestCase):
     def rows(self):
         return [{'cpu':i,'socket':0,'core':i//2,'siblings':[i//2*2,i//2*2+1]} for i in range(8)]
 
-    def test_cpu_selection_avoids_smt_siblings(self):
-        with patch('host.topology',return_value=self.rows()):
-            self.assertEqual(('0,2','4'),tuple(select_affinity()[k] for k in ('sut','runner')))
-        self.assertEqual([0,1,2,4],cpu_list('0-2,4'))
-        for sut,load in (('0,2','1'),('0,2','0'),('0,1','4'),('0,2','8'),('0','4')):
-            with self.subTest(sut=sut,load=load), self.assertRaises(RuntimeError):
-                validate_affinity(sut,load,self.rows())
+    def test_cpu_selection_keeps_smt_together_and_reserves_a_vcpu(self):
+        with patch('host.topology', return_value=self.rows()[:4]):
+            pins = select_affinity()
+            self.assertEqual(('0,1', '2', '3'), tuple(pins[k] for k in ('sut', 'runner', 'reserved')))
+            self.assertEqual([], pins['crossGroupSmt'])
+        self.assertEqual([0,1,2,4], cpu_list('0-2,4'))
+        for sut, load in (('0,2','0'), ('0,2','8'), ('0','4')):
+            with self.subTest(sut=sut, load=load), self.assertRaises(RuntimeError):
+                validate_affinity(sut, load, self.rows())
+        with patch('host.topology', return_value=self.rows()[:2]), self.assertRaisesRegex(RuntimeError, 'four'):
+            select_affinity()
 
     def test_malformed_cpu_ranges_are_rejected(self):
         for value in ('-1','3-1','0-9999999','0-1-2','x'):
             with self.subTest(value=value),self.assertRaises(RuntimeError):cpu_list(value)
 
-    def test_start_checks_linux_and_windows_available_memory(self):
-        with patch('host.memory',return_value={'MemAvailable':4*1024*MIB}), \
-             patch('host.windows_memory',return_value={'availableBytes':2*1024*MIB}):
-            with self.assertRaisesRegex(RuntimeError,'Windows'):require_start_memory(True)
-        with patch('host.memory',return_value={'MemAvailable':2*1024*MIB}):
-            with self.assertRaisesRegex(RuntimeError,'Linux'):require_start_memory(True)
+    def test_start_requires_available_runner_memory(self):
+        with patch('host.memory', return_value={'MemAvailable': 2*1024*MIB}):
+            with self.assertRaisesRegex(RuntimeError, '3072'):
+                require_start_memory()
 
     def monitor(self,directory):
-        return HostMonitor(directory,True,Mock(return_value=[]),Mock(),Mock(),30)
+        return HostMonitor(directory,Mock(return_value=[]),Mock(),Mock(),30)
 
     def test_pressure_latches_failure_without_clearing_after_recovery(self):
         with tempfile.TemporaryDirectory() as temp, \
-             patch('host.memory',return_value={'MemAvailable':900*MIB}), \
-             patch('host.windows_memory',return_value={'availableBytes':4000*MIB}):
+             patch('host.memory',return_value={'MemAvailable':900*MIB}):
             monitor=self.monitor(temp)
             monitor.sample()
             self.assertIn('1024',monitor.failure)
@@ -54,24 +55,15 @@ class HostTest(unittest.TestCase):
             self.assertIsNotNone(monitor.failure)
             self.assertEqual(2,len((Path(temp)/'samples.jsonl').read_text().splitlines()))
 
-    def test_windows_pressure_alone_stops_load(self):
-        with tempfile.TemporaryDirectory() as temp, \
-             patch('host.memory',return_value={'MemAvailable':4000*MIB}), \
-             patch('host.windows_memory',return_value={'availableBytes':900*MIB}):
-            monitor=self.monitor(temp);monitor.sample()
-            self.assertIn('1024',monitor.failure)
-
     def test_critical_pressure_stops_owned_containers_once(self):
         with tempfile.TemporaryDirectory() as temp, \
-             patch('host.memory',return_value={'MemAvailable':400*MIB}), \
-             patch('host.windows_memory',return_value={'availableBytes':4000*MIB}):
+             patch('host.memory',return_value={'MemAvailable':400*MIB}):
             monitor=self.monitor(temp);monitor.sample();monitor.sample()
             monitor.emergency_stop.assert_called_once()
 
     def test_critical_stop_still_runs_if_evidence_disk_cannot_be_written(self):
         with tempfile.TemporaryDirectory() as temp, \
              patch('host.memory',return_value={'MemAvailable':400*MIB}), \
-             patch('host.windows_memory',return_value=None), \
              patch('host.atomic_json',side_effect=OSError('disk full')):
             monitor=self.monitor(temp)
             with self.assertRaises(OSError):monitor.sample()
@@ -79,8 +71,7 @@ class HostTest(unittest.TestCase):
 
     def test_failed_observation_and_bounded_fallback(self):
         with tempfile.TemporaryDirectory() as temp, \
-             patch('host.memory',return_value={'MemAvailable':4000*MIB}), \
-             patch('host.windows_memory',return_value=None):
+             patch('host.memory',return_value={'MemAvailable':4000*MIB}):
             monitor=self.monitor(temp)
             monitor.observe.side_effect=RuntimeError('target restarted')
             monitor.sample()
@@ -89,10 +80,9 @@ class HostTest(unittest.TestCase):
             monitor.force_runner_stop.assert_called_once()
             self.assertEqual('target restarted',monitor.failure)
 
-    def test_clock_rollback_remains_invalid_on_same_host(self):
+    def test_clock_rollback_invalidates_actions_measurement(self):
         with tempfile.TemporaryDirectory() as temp, \
-             patch('host.memory',return_value={'MemAvailable':4000*MIB}), \
-             patch('host.windows_memory',return_value=None):
+             patch('host.memory',return_value={'MemAvailable':4000*MIB}):
             monitor=self.monitor(temp)
             monitor.clock_origin=(time.time()+1,time.monotonic())
             monitor.sample()
@@ -156,7 +146,7 @@ class HostTest(unittest.TestCase):
             before={'timeMs':int(time.time()*1000),'settings':{},'localCacheEnabled':False,'journalOffset':0,
                     'events':0,'sqlCalls':{},'processStartedAtMs':1}
             load=Load()
-            args=parse_args(['kafka-buffering','--deployment','same-host'])
+            args=parse_args(['kafka-buffering'])
             config=dict(activityId=12,path='C',workload='steady',seconds=1,baseSeconds=0,baseRate=1,
                         scheduled=1,rate=1,points=1000,plan='kafka-buffering',repeat=1,requestTimeout=1)
             with patch('runner.require_idle',return_value=before),patch('runner.mysql_counters',return_value={}), \

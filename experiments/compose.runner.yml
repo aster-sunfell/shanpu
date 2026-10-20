@@ -1,30 +1,33 @@
 name: shanpu-load
 services:
   load-runner:
-    image: shanpu-experiment-runner:local
+    image: shanpu-experiment-runner:ci
     build:
       context: ..
       dockerfile: experiments/docker/Runner.Dockerfile
     # Runner resources are additional to the 2-core/2-GiB SUT budget, even on one host.
-    # Linux host networking supports both localhost smoke tests and a remote SUT_HOST.
+    # Both projects live in the same ephemeral GitHub-hosted VM.
     network_mode: host
     cpus: 1
-    cpuset: ${RUNNER_CPUSET:-}
+    cpuset: ${RUNNER_CPUSET:?Actions must allocate load CPUs}
     mem_limit: 512m
     memswap_limit: 512m
     pids_limit: 128
     init: true
     restart: "no"
     environment:
-      SUT_HOST: ${SUT_HOST:-127.0.0.1}
+      SUT_HOST: 127.0.0.1
+      GITHUB_ACTIONS: "true"
+      BENCH_RUNTIME: /bench/runtime
+      BENCH_REPORTS: /bench/reports
       MYSQL_DATABASE: shanpu_bench
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?copy the private sut.env from the target host}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?copy the private sut.env from the target host}
-      JWT_SECRET: ${JWT_SECRET:?copy the private sut.env from the target host}
-      SUT_INSTANCE_ID: ${SUT_INSTANCE_ID:?copy the private sut.env from the target host}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Actions initializes disposable credentials}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Actions initializes disposable credentials}
+      JWT_SECRET: ${JWT_SECRET:?Actions initializes disposable credentials}
+      SUT_INSTANCE_ID: ${SUT_INSTANCE_ID:?Actions initializes disposable credentials}
     volumes:
-      - ../.local/experiments:/workspace/.local/experiments
-      - ../docs/experiments:/workspace/docs/experiments
+      - ${BENCH_RUNTIME:?}:/bench/runtime
+      - ${BENCH_REPORTS:?}:/bench/reports
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "2"}

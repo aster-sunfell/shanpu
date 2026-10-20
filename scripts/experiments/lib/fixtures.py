@@ -39,10 +39,6 @@ def credential(pool, index):
 
 
 def credentials(pool):
-    # Legacy evidence can still be explicitly cleaned; old scenarios are not runnable.
-    if isinstance(pool, list):
-        yield from pool
-        return
     for segment in pool['segments']:
         for index in range(segment['index'], segment['index'] + segment['count']):
             uid = segment['userId'] + index - segment['index']

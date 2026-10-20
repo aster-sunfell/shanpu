@@ -13,3 +13,6 @@ experiments/**/target/
 .idea/
 .local/
 __pycache__/
+
+# Generated GitHub Actions artifacts
+/artifacts/

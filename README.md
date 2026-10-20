@@ -9,7 +9,7 @@
 - [快速启动](./docs/QUICKSTART.md)
 - [部署](./docs/DEPLOYMENT.md)
 - [数据库与迁移](./docs/DATABASE.md)
-- [性能实验](./docs/experiments/README.md)
+- [性能实验与报告](./docs/experiments/README.md) · GitHub Actions 自动执行，HTML 报告支持 Pages 发布
 - [后端](./docs/BACKEND.md)
 - [前端](./docs/FRONTEND.md)
 
@@ -19,5 +19,5 @@
 - `frontend/`：Next.js 前端。
 - `scripts/dev/`：开发环境生命周期；`scripts/db/`：数据库数据操作；`scripts/experiments/`：实验执行与采样。
 - `deploy/`：部署配置。
-- `docs/`：项目文档、实验设计及正式报告。
+- `docs/`：项目文档与实验设计；运行报告保存在 Actions artifacts 和 Pages。
 - `.local/`：不入库的临时凭证与本地运行状态。

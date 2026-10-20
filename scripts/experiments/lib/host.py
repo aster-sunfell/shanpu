@@ -1,4 +1,4 @@
-"""Host affinity, environment evidence and a fail-closed workstation watchdog."""
+"""GitHub-hosted Linux runner affinity, evidence and an independent watchdog."""
 import json
 import os
 from pathlib import Path
@@ -25,24 +25,6 @@ def memory():
     values = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
     return {key: int(values[key].split()[0]) * 1024
             for key in ('MemTotal', 'MemAvailable', 'SwapTotal', 'SwapFree')}
-
-
-def windows_memory():
-    if 'microsoft' not in platform.release().lower():
-        return None
-    executable = shutil.which('powershell.exe') or '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
-    script = ("$s = Get-CimInstance Win32_OperatingSystem; "
-              "@{availableBytes=[long]$s.FreePhysicalMemory*1024; totalBytes=[long]$s.TotalVisibleMemorySize*1024; "
-              "version=$s.Version} | ConvertTo-Json -Compress")
-    try:
-        result = subprocess.run([executable, '-NoProfile', '-NonInteractive', '-Command', script],
-                                check=True, capture_output=True, text=True, timeout=5)
-        value = json.loads(result.stdout.lstrip('\ufeff').strip())
-        if not 0 <= value['availableBytes'] <= value['totalBytes']:
-            raise ValueError('invalid Windows memory counters')
-        return value
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        raise RuntimeError('Cannot read Windows host memory from WSL; enable PowerShell interop before same-host measurement') from error
 
 
 def cpu_list(value):
@@ -76,32 +58,34 @@ def topology():
 
 def validate_affinity(sut, runner, rows):
     sut, runner = cpu_list(sut), cpu_list(runner)
+    available = {row['cpu'] for row in rows}
+    if len(available) < 4:
+        raise RuntimeError('GitHub Actions measurement requires at least four available vCPUs')
     if len(sut) != 2 or len(runner) != 1 or set(sut) & set(runner):
-        raise RuntimeError('Same-host measurement requires two SUT CPUs and one distinct runner CPU')
-    indexed = {row['cpu']: row for row in rows}
-    selected = sut + runner
-    if any(cpu not in indexed for cpu in selected):
-        raise RuntimeError('Selected CPUs are not available to this host')
-    if len({(indexed[cpu]['socket'], indexed[cpu]['core']) for cpu in selected}) != 3:
-        raise RuntimeError('Choose CPUs from three distinct reported physical cores, avoiding SMT siblings')
+        raise RuntimeError('Require two SUT vCPUs and one distinct load vCPU')
+    if not set(sut + runner) <= available:
+        raise RuntimeError('Selected CPUs are unavailable')
+    shared = [row['cpu'] for row in rows if row['cpu'] in sut
+              and set(row['siblings']) & set(runner)]
     return {'sut': cpu_string(sut), 'runner': cpu_string(runner),
-            'topology': [indexed[cpu] for cpu in selected]}
+            'reserved': cpu_string(available - set(sut + runner)),
+            'crossGroupSmt': shared, 'topology': rows,
+            'isolation': 'disjoint-vCPU-sets; physical host resources remain shared'}
 
 
-def select_affinity(sut=None, runner=None):
+def select_affinity():
     rows = topology()
-    if bool(sut) != bool(runner):
-        raise RuntimeError('Supply both --sut-cpus and --runner-cpus, or neither for automatic selection')
-    if sut is None:
-        chosen, seen = [], set()
-        for row in rows:
-            core = (row['socket'], row['core'])
-            if core not in seen:
-                chosen.append(row['cpu']); seen.add(core)
-        if len(chosen) < 3:
-            raise RuntimeError('Same-host measurement requires at least three available reported CPU cores')
-        sut, runner = cpu_string(chosen[:2]), str(chosen[2])
-    return validate_affinity(sut, runner, rows)
+    groups = {}
+    for row in rows:
+        groups.setdefault((row['socket'], row['core']), []).append(row['cpu'])
+    # Keep reported SMT siblings together in the SUT when possible, rather
+    # than making k6 and the SUT compete on the same reported core.
+    pair = next((cpus[:2] for cpus in groups.values() if len(cpus) >= 2), None)
+    sut = pair or [row['cpu'] for row in rows[:2]]
+    remaining = [row['cpu'] for row in rows if row['cpu'] not in sut]
+    if len(remaining) < 2:
+        raise RuntimeError('GitHub Actions measurement requires at least four available vCPUs')
+    return validate_affinity(cpu_string(sut), str(remaining[0]), rows)
 
 
 def environment():
@@ -109,17 +93,12 @@ def environment():
                   if line.startswith('model name')), 'unknown')
     return {'kernel': platform.release(), 'platform': platform.platform(), 'cpuModel': model,
             'availableCpus': sorted(os.sched_getaffinity(0)), 'cpuTopology': topology(),
-            'memoryBytes': memory()['MemTotal'], 'wsl': 'microsoft' in platform.release().lower()}
+            'memoryBytes': memory()['MemTotal']}
 
 
-def require_start_memory(same_host):
-    threshold = START_MEMORY_MIB if same_host else 1536
-    if memory()['MemAvailable'] < threshold * MIB:
-        raise RuntimeError(f'Available Linux host memory is below {threshold} MiB; close unrelated workloads first')
-    windows = windows_memory() if same_host else None
-    if windows and windows['availableBytes'] < START_MEMORY_MIB * MIB:
-        raise RuntimeError('Available Windows host memory is below 3072 MiB; close unrelated workloads first')
-    return windows
+def require_start_memory():
+    if memory()['MemAvailable'] < START_MEMORY_MIB * MIB:
+        raise RuntimeError('Available runner memory is below 3072 MiB')
 
 
 def container_resources(container):
@@ -142,7 +121,7 @@ def check_host_health():
     """Read only host-produced evidence; the runner never receives Docker access."""
     name = os.environ.get('BENCH_HOST_STATUS')
     if not name:
-        return  # Offline analysis/tests and legacy cleanup do not launch load.
+        return  # Offline analysis and tests do not launch load.
     try:
         value = json.loads(Path(name).read_text())
         age = time.monotonic() - value['monotonicSeconds']
@@ -179,15 +158,14 @@ def finalize_host_evidence(directory, watch_directory, failure=None):
 
 class HostMonitor:
     """Independent of potentially blocked SQL/API calls inside the runner."""
-    def __init__(self, directory, same_host, observe, emergency_stop, force_runner_stop, grace_seconds):
+    def __init__(self, directory, observe, emergency_stop, force_runner_stop, grace_seconds, deadline=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.same_host, self.observe = same_host, observe
+        self.observe, self.deadline = observe, deadline
         self.emergency_stop, self.force_runner_stop = emergency_stop, force_runner_stop
         self.grace_seconds, self.failure, self.failed_at = grace_seconds, None, None
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
-        self.windows = None
         self.last_observation = 0
         self.targets = None
         self.emergency_stopped = False
@@ -204,16 +182,17 @@ class HostMonitor:
                                   if line.startswith(('pswpin ', 'pswpout '))]}
         try:
             if now - self.last_observation >= 5:
-                self.windows = windows_memory() if self.same_host else None
                 self.targets = self.observe()
                 self.last_observation = time.monotonic()
-            value.update(windowsMemory=self.windows, containers=self.targets)
+            value.update(containers=self.targets)
+            if self.deadline is not None and now >= self.deadline:
+                raise RuntimeError('Experiment reached its internal deadline; reserve time for drain and artifacts')
             wall_origin, mono_origin = self.clock_origin
             value['clockShiftMs'] = (time.time()-wall_origin-(time.monotonic()-mono_origin))*1000
             if abs(value['clockShiftMs']) > 50:
                 raise RuntimeError('Host wall clock shifted by more than 50 ms; preserve this run')
             limit = STOP_MEMORY_MIB * MIB
-            if value['linuxMemory']['MemAvailable'] < limit or self.windows and self.windows['availableBytes'] < limit:
+            if value['linuxMemory']['MemAvailable'] < limit:
                 raise RuntimeError('Host available memory fell below 1024 MiB; stop injection and preserve this run')
             if shutil.disk_usage(self.directory).free < 1024 * MIB:
                 raise RuntimeError('Host evidence disk has less than 1024 MiB free')
@@ -221,8 +200,7 @@ class HostMonitor:
             self.failure = self.failure or str(error)
             self.failed_at = self.failed_at or now
         value['failure'] = self.failure
-        critical = (value['linuxMemory']['MemAvailable'] < CRITICAL_MEMORY_MIB*MIB
-                    or self.windows and self.windows['availableBytes'] < CRITICAL_MEMORY_MIB*MIB)
+        critical = value['linuxMemory']['MemAvailable'] < CRITICAL_MEMORY_MIB*MIB
         try:
             atomic_json(self.directory/'status.json', value)
             with (self.directory/'samples.jsonl').open('a') as file:

@@ -80,52 +80,39 @@ class ProtocolTest(unittest.TestCase):
 
     def test_baseline_rejects_smoke_wrong_slo_and_changed_contract(self):
         args=parse_args(['kafka-buffering'])
-        b={'schemaVersion':2,'plan':'kafka-buffering','stage':'capacity','status':'completed',
-           'scope':'performance','deployment':'separate-host','policy':policy(args),'contract':'same',
+        b={'schemaVersion':3,'plan':'kafka-buffering','stage':'capacity','status':'completed',
+           'scope':'performance','deployment':'github-actions','policy':policy(args),'contract':'same',
            'paths':{'B':{'passingRps':100,'failingRps':105,'bounded':True}}}
         validate_baseline(b,args,'same')
         for changed in ({'scope':'validation'},{'contract':'different'},{'status':'running'},{'policy':{}},
-                        {'deployment':'same-host'}, {'deployment':None}):
+                        {'deployment':'legacy'}, {'deployment':None}):
             with self.subTest(changed=changed), self.assertRaises(RuntimeError): validate_baseline({**b,**changed},args,'same')
         b['paths']['B']['bounded']=False
         with self.assertRaises(RuntimeError): validate_baseline(b,args,'same')
 
-    def test_same_host_is_performance_and_keeps_formal_sample_requirements(self):
-        args = self.args('--deployment','same-host')
-        self.assertFalse(args.validation_only)
-        self.assertEqual(3,args.repeats)
-        for extra in (['--seconds','2'],['--repeats','1'],['--min-samples','2']):
-            with patch('sys.stderr'), self.assertRaises(SystemExit):
-                self.args('--deployment','same-host',*extra)
-
-    def test_same_host_checks_actual_identities_cpu_overlap_and_siblings(self):
-        args = self.args('--deployment','same-host')
-        target = {'machineId':'host','services':[{'cpuset':'0,2'}],'environment':{'kernel':'linux'}}
-        rows = [{'cpu':i,'socket':0,'core':i//2,'siblings':[i//2*2,i//2*2+1]} for i in range(6)]
-        load = {'machineId':'host','cpuset':'4','environment':{'cpuTopology':rows}}
-        validate_deployment(args,target,load)
-        with self.assertRaisesRegex(RuntimeError,'fingerprints'):
-            validate_deployment(args,{**target,'environment':None},load)
-        for change in ({'machineId':'other'},{'cpuset':'0'},{'cpuset':'1'},{'cpuset':''}):
+    def test_actions_checks_run_identity_environment_and_cpu_overlap(self):
+        args = self.args()
+        rows = [{'cpu': i, 'socket': 0, 'core': i//2, 'siblings': [i//2*2, i//2*2+1]} for i in range(4)]
+        actions = {'runId': '123', 'attempt': '1', 'job': 'performance'}
+        target = {'machineId': 'host', 'actions': actions, 'services': [{'cpuset': '0,1'}], 'environment': {'kernel': 'linux'}}
+        load = {'machineId': 'host', 'actions': actions, 'cpuset': '2', 'environment': {'cpuTopology': rows}}
+        validate_deployment(args, target, load)
+        for change in ({'machineId': 'other'}, {'cpuset': '0'}, {'actions': {'runId': 'other'}}, {'environment': None}):
             with self.subTest(change=change), self.assertRaises(RuntimeError):
-                validate_deployment(args,target,{**load,**change})
-        args.deployment='separate-host'
-        with self.assertRaises(RuntimeError):validate_deployment(args,target,load)
+                validate_deployment(args, target, {**load, **change})
 
-    def test_environment_affinity_runner_limits_and_mode_are_bound_to_baseline(self):
-        args = self.args('--deployment','same-host')
-        target = {'instanceId':'sut','machineId':'host','environment':{'kernel':'one'},
-                  'services':[{'service':'backend','cpuset':'0,2'}]}
-        load = {'machineId':'host','cpuset':'4','memoryMiB':512,'environment':{'kernel':'one'}}
-        contract = context_contract(target,{},'hash',load,args)
-        for changed in ({'cpuset':'6'},{'memoryMiB':1024},{'environment':{'kernel':'two'}}):
-            self.assertNotEqual(contract,context_contract(target,{},'hash',{**load,**changed},args))
-        self.assertNotEqual(contract,context_contract({**target,'environment':{'kernel':'two'}},{},'hash',load,args))
-        args.deployment='separate-host'
-        self.assertNotEqual(contract,context_contract(target,{},'hash',load,args))
+    def test_environment_affinity_and_actions_run_are_bound_to_baseline(self):
+        args = self.args()
+        target = {'instanceId': 'sut', 'machineId': 'host', 'environment': {'kernel': 'one'},
+                  'actions': {'runId': '123'}, 'services': [{'service': 'backend', 'cpuset': '0,1'}]}
+        load = {'machineId': 'host', 'cpuset': '2', 'memoryMiB': 512, 'environment': {'kernel': 'one'}}
+        contract = context_contract(target, {}, 'hash', load, args)
+        for change in ({'cpuset': '3'}, {'memoryMiB': 1024}, {'environment': {'kernel': 'two'}}):
+            self.assertNotEqual(contract, context_contract(target, {}, 'hash', {**load, **change}, args))
+        self.assertNotEqual(contract, context_contract({**target, 'actions': {'runId': '456'}}, {}, 'hash', load, args))
 
     def test_formal_report_preserves_capacity_uncertainty_and_paired_latency(self):
-        args=self.args('--deployment','same-host')
+        args=self.args()
         rows=[]
         for rate in (100,200,400):
             for path in ('A','B'):
@@ -138,8 +125,8 @@ class ProtocolTest(unittest.TestCase):
             report(directory,{'scope':'performance','status':'completed','contract':'test'},rows,args)
             artifact=json.loads((directory/'capacity.json').read_text())
             self.assertEqual('performance',artifact['scope'])
-            self.assertEqual('same-host',artifact['deployment'])
-            self.assertIn('本机受限资源性能测量',(directory/'report.md').read_text())
+            self.assertEqual('github-actions',artifact['deployment'])
+            self.assertIn('GitHub Actions 单机受限资源性能测量',(directory/'report.md').read_text())
             self.assertEqual(100,artifact['capacityGainPct'])
             self.assertEqual([0,300],artifact['capacityGainRangePct'])
             self.assertEqual(40,artifact['comparisons'][0]['latencyReductionPct']['p50'])

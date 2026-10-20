@@ -23,7 +23,8 @@ from protocol import (VERSION, parse_args, matrix, budgeted_matrix, policy, cont
 from host import check_host_health
 
 ROOT = Path(__file__).resolve().parents[3]
-RUNTIME = ROOT / '.local/experiments'
+RUNTIME = Path(os.environ.get('BENCH_RUNTIME', '/bench/runtime'))
+REPORTS = Path(os.environ.get('BENCH_REPORTS', '/bench/reports'))
 
 
 def sql(statement): return transport.sql(statement)
@@ -279,8 +280,8 @@ def manifest(args, target, load_host):
             'startedAtMs': int(time.time()*1000), 'parameters': parameters, 'policy': policy(args),
             'target': target, 'loadHost': load_host, 'source': source,
             'database': os.environ['MYSQL_DATABASE'], 'platform': platform.platform(), 'points': [],
-            'hostWatch': str(Path(os.environ['BENCH_HOST_STATUS']).parent.relative_to(ROOT)),
-            'limitations': (['Same-host deployment shares storage, caches, kernel and host scheduling; quotas do not emulate a dedicated 2-core/2-GiB machine'] if args.deployment == 'same-host' else []) + ['Single-broker results have no availability/durability claim',
+            'hostWatch': str(Path(os.environ['BENCH_HOST_STATUS']).parent.relative_to(RUNTIME)),
+            'limitations': ['GitHub-hosted vCPUs share storage, caches, kernel and host scheduling; quotas do not emulate dedicated physical cores'] + ['Single-broker results have no availability/durability claim',
                            'After-commit observation includes callback delay and residual clock error',
                            'Resource quotas are per service; idle quota is not borrowed by other services',
                            'SUT Redis memory bounds fixture working sets; fixture failures are not capacity results',
@@ -297,14 +298,14 @@ def main(argv=None):
                           'policy': policy(args), 'initialMeasurements': points,
                           'refinementRounds': args.refine_steps if args.stage == 'capacity' else 0}, ensure_ascii=False, indent=2))
         return 0
-    if os.environ.get('BENCH_CONTAINER') != '1': raise RuntimeError('Use the resource-limited load-runner container')
+    if os.environ.get('BENCH_CONTAINER') != '1' or os.environ.get('GITHUB_ACTIONS') != 'true': raise RuntimeError('Use the resource-limited load-runner container')
     target = json.loads((RUNTIME / 'target.json').read_text())
     load_host = json.loads((RUNTIME / 'load-host.json').read_text())
     if target['instanceId'] != os.environ['SUT_INSTANCE_ID'] or target['machineMemoryMiB'] != 2048 or target['cpuLimit'] != 2:
         raise RuntimeError('Target resource verification is missing or belongs to another SUT')
     validate_deployment(args, target, load_host)
     if not os.environ.get('BENCH_HOST_STATUS'):
-        raise RuntimeError('Missing host watchdog; launch through scripts/experiments/run.sh')
+        raise RuntimeError('Missing Actions watchdog; launch through the performance workflow')
     check_host_health()
     with (RUNTIME / 'experiment.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -312,9 +313,9 @@ def main(argv=None):
         if any(health.get(key) != 'UP' for key in ('status', 'mysql', 'redis', 'kafka')):
             raise RuntimeError('All SUT dependencies must be healthy')
         name = os.environ.get('BENCH_RUN_ID') or time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(3)
-        parent = RUNTIME / 'validation/performance-v2' if args.validation_only else ROOT / 'docs/experiments'
+        parent = REPORTS
         directory = parent / args.plan / name
-        directory.mkdir(parents=True)
+        directory.mkdir(parents=True, exist_ok=True)
         private = RUNTIME / name
         private.mkdir(mode=0o700)
         meta, results = manifest(args, target, load_host), []

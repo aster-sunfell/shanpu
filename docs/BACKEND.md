@@ -41,9 +41,9 @@
 
 #### 1.3.1 实验与数据口径
 
-Redis 前置过滤和 Kafka 异步受理分别按 [实验计划](./experiments/PLAN.md)设计对照实验。分别通过 `scripts/experiments/run-redis-filtering.sh` 和 `scripts/experiments/run-kafka-buffering.sh` 执行；使用独立活动、固定到达率和事务提交后的逐笔核对。C 的 PENDING 响应只表示受理，不能与同步完成吞吐直接比较。运行参数与报告口径见 [实验说明](./experiments/README.md)。
+Redis 前置过滤和 Kafka 异步受理分别按 [实验计划](./experiments/PLAN.md)设计对照实验。通过 GitHub Actions 的 Performance experiments 工作流选择 A/B 或 B/C 执行；使用独立活动、固定到达率和事务提交后的逐笔核对。C 的 PENDING 响应只表示受理，不能与同步完成吞吐直接比较。运行参数与报告口径见 [实验说明](./experiments/README.md)。
 
-正式运行的报告、参数、指标及资源采样保存在 `docs/experiments/<实验名>/<运行编号>/`。执行方式和现有场景限制见 [实验说明](./experiments/README.md)。本文不再列出缺少实测报告支持的性能数字。
+正式运行的报告、参数、指标及资源采样保存在 Actions 的 HTML 和证据 artifacts 中，配置 Pages 后发布可在线浏览的 HTML 报告。执行方式和现有场景限制见 [实验说明](./experiments/README.md)。本文不再列出缺少实测报告支持的性能数字。
 
 ## 2. 目录结构
 

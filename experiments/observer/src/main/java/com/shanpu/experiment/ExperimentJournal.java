@@ -30,7 +30,7 @@ public class ExperimentJournal {
     private final AtomicLong asyncAttempts = new AtomicLong();
 
     public ExperimentJournal(@Value("${shanpu.experiment.enabled:false}") boolean enabled,
-                             @Value("${shanpu.experiment.journal:.local/experiments/commits.jsonl}") String path,
+                             @Value("${shanpu.experiment.journal:/evidence/commits.jsonl}") String path,
                              ObjectMapper mapper) {
         this.enabled = enabled;
         this.path = Path.of(path).toAbsolutePath().normalize();

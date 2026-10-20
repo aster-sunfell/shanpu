@@ -7,7 +7,7 @@ _kafka_lock = threading.Lock()
 
 
 def host():
-    return os.environ.get("SUT_HOST", "127.0.0.1")
+    return "127.0.0.1"
 
 
 def sql(statement):

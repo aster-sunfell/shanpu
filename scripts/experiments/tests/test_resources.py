@@ -4,7 +4,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-from infra import LIMITS, MIB, validate_config, validate_container, validate_runner_container, validate_runner_config, validate_engine
+from actions import LIMITS, MIB, validate_config, validate_container, validate_runner_container, validate_runner_config, validate_engine
 from runner import budgeted_matrix, parse_args
 
 

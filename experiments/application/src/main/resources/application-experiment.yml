@@ -2,7 +2,7 @@
 shanpu:
   experiment:
     enabled: true
-    journal: ${SHANPU_EXPERIMENT_JOURNAL:.local/experiments/commits.jsonl}
+    journal: ${SHANPU_EXPERIMENT_JOURNAL:/evidence/commits.jsonl}
   kafka:
     dlq-rescue:
       cron: "-"

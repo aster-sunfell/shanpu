@@ -9,7 +9,7 @@ x-test-machine:
 
 x-common: &common
   restart: "no"
-  cpuset: ${SUT_CPUSET:-}
+  cpuset: ${SUT_CPUSET:?Actions must allocate SUT CPUs}
   init: true
   logging:
     driver: json-file
@@ -24,7 +24,7 @@ services:
     memswap_limit: 384m
     pids_limit: 128
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?run sut.sh to initialize credentials}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Actions initializes disposable credentials}
       MYSQL_DATABASE: shanpu_bench
     command:
       - --innodb-buffer-pool-size=128M
@@ -33,7 +33,7 @@ services:
       - --innodb-log-buffer-size=8M
       - --innodb-flush-log-at-trx-commit=2
       - --default-time-zone=+08:00
-    ports: ["${SUT_BIND_ADDRESS:-127.0.0.1}:13306:3306"]
+    ports: ["127.0.0.1:13306:3306"]
     volumes: ["mysql-data:/var/lib/mysql"]
     healthcheck:
       test: [CMD-SHELL, 'MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" mysqladmin -h 127.0.0.1 -uroot ping --silent']
@@ -49,9 +49,9 @@ services:
     memswap_limit: 96m
     pids_limit: 32
     environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?run sut.sh to initialize credentials}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Actions initializes disposable credentials}
     command: [sh, -c, 'exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 48mb --maxmemory-policy noeviction --save "" --appendonly yes --appendfsync everysec']
-    ports: ["${SUT_BIND_ADDRESS:-127.0.0.1}:16379:6379"]
+    ports: ["127.0.0.1:16379:6379"]
     volumes: ["redis-data:/data"]
     healthcheck:
       test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping']
@@ -72,7 +72,7 @@ services:
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:19092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://${SUT_HOST:-127.0.0.1}:19092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://127.0.0.1:19092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
@@ -92,16 +92,16 @@ services:
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_LOG_RETENTION_BYTES: "134217728"
       KAFKA_LOG_SEGMENT_BYTES: "16777216"
-    ports: ["${SUT_BIND_ADDRESS:-127.0.0.1}:19092:19092"]
+    ports: ["127.0.0.1:19092:19092"]
     volumes: ["kafka-data:/var/lib/kafka/data"]
     # No Kafka CLI healthcheck: each invocation would create another JVM in this budget.
 
   backend:
     <<: *common
-    image: shanpu-experiment-sut:local
+    image: shanpu-experiment-sut:ci
     build:
-      context: ../.local/experiments/build
-      dockerfile: ../../../experiments/docker/Sut.Dockerfile
+      context: ${BENCH_RUNTIME:?}/build
+      dockerfile: ${BENCH_ROOT:?}/experiments/docker/Sut.Dockerfile
     cpus: 0.8
     mem_limit: 512m
     memswap_limit: 512m
@@ -114,10 +114,10 @@ services:
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      JWT_SECRET: ${JWT_SECRET:?run sut.sh to initialize credentials}
-      SUT_INSTANCE_ID: ${SUT_INSTANCE_ID:?run sut.sh to initialize credentials}
+      JWT_SECRET: ${JWT_SECRET:?Actions initializes disposable credentials}
+      SUT_INSTANCE_ID: ${SUT_INSTANCE_ID:?Actions initializes disposable credentials}
       SHANPU_EXPERIMENT_JOURNAL: /evidence/commits.jsonl
-    ports: ["${SUT_BIND_ADDRESS:-127.0.0.1}:18081:8080"]
+    ports: ["127.0.0.1:18081:8080"]
     volumes: ["evidence:/evidence"]
     depends_on:
       mysql: {condition: service_healthy}

@@ -1,0 +1,208 @@
+name: Performance experiments
+run-name: Performance · ${{ inputs.experiment || 'smoke' }} · ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: Experiment selection (smoke never produces performance claims)
+        type: choice
+        options: [full, redis, kafka, smoke]
+        default: full
+      rates:
+        description: Initial capacity ladder in RPS
+        type: string
+        default: '25,50,100,200'
+      seconds:
+        description: Minimum seconds per capacity point (formal >=60)
+        type: number
+        default: 60
+      repeats:
+        description: Repeats per rate (formal >=3)
+        type: number
+        default: 3
+      vus:
+        description: Fixed VUs per scenario (1-100)
+        type: number
+        default: 20
+      refine_steps:
+        description: Capacity interval refinement rounds (0-6)
+        type: number
+        default: 4
+      publish:
+        description: Publish HTML to Pages (main branch only; Pages must be enabled)
+        type: boolean
+        default: true
+  # Bootstrap validation without first merging the migration into main.
+  push:
+    branches: [refactor/github-actions-load-testing]
+    paths:
+      - '.github/workflows/performance.yml'
+      - 'scripts/experiments/**'
+      - 'experiments/**'
+      - 'backend/**'
+      - 'pom.xml'
+  pull_request:
+    paths:
+      - '.github/workflows/performance.yml'
+      - 'scripts/experiments/**'
+      - 'experiments/**'
+      - 'backend/**'
+      - 'pom.xml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Protocol, resource, evidence and report regressions
+        run: |
+          python3 -m unittest discover -s scripts/experiments/tests -v
+          node scripts/experiments/tests/schedule.test.mjs
+
+  performance:
+    needs: checks
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      BENCH_ROOT: ${{ github.workspace }}
+      BENCH_REPORTS: ${{ github.workspace }}/artifacts/performance
+      BENCH_MODE: ${{ inputs.experiment || 'smoke' }}
+      BENCH_RATES: ${{ inputs.rates || '25,50,100,200' }}
+      # Use JSON so an explicit zero is not replaced by a truthy fallback.
+      BENCH_INPUTS: ${{ toJSON(inputs) }}
+    outputs:
+      html: ${{ steps.html.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set ephemeral runtime directory
+        run: echo "BENCH_RUNTIME=$RUNNER_TEMP/shanpu-performance/runtime" >> "$GITHUB_ENV"
+      - name: Check runner and allocate disjoint vCPU sets
+        run: python3 scripts/experiments/lib/actions.py prepare
+      - name: Build all images before measurement
+        timeout-minutes: 25
+        run: python3 scripts/experiments/lib/actions.py build
+      - name: Start and verify isolated services
+        timeout-minutes: 8
+        run: python3 scripts/experiments/lib/actions.py up
+      - name: Execute measured experiments and verify evidence
+        timeout-minutes: 150
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          inputs = json.loads(os.environ['BENCH_INPUTS'] or '{}')
+          command = ['python3', 'scripts/experiments/lib/actions.py', 'run',
+                     '--mode', os.environ['BENCH_MODE'], '--rates', os.environ['BENCH_RATES'],
+                     '--seconds', str(inputs.get('seconds', 60)), '--repeats', str(inputs.get('repeats', 3)),
+                     '--vus', str(inputs.get('vus', 20)), '--refine-steps', str(inputs.get('refine_steps', 4)),
+                     '--minutes', '145']
+          subprocess.run(command, check=True)
+          PY
+      - name: Preserve diagnostics before deleting ephemeral services
+        if: always()
+        timeout-minutes: 3
+        run: python3 scripts/experiments/lib/actions.py collect
+      - name: Generate standalone HTML including partial or failed runs
+        id: html
+        if: always()
+        timeout-minutes: 3
+        run: |
+          python3 scripts/experiments/lib/html_report.py --reports "$BENCH_REPORTS" --output artifacts/html
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: Upload HTML report
+        if: always() && steps.html.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-html
+          path: artifacts/html/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload full evidence (disposable credentials are outside this directory)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-evidence
+          path: artifacts/performance/
+          retention-days: 14
+          compression-level: 6
+      - name: Destroy dedicated containers and volumes
+        if: always()
+        timeout-minutes: 3
+        run: python3 scripts/experiments/lib/actions.py cleanup
+
+  publish:
+    needs: performance
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' && needs.performance.outputs.html == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: performance-pages
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v5
+        with:
+          name: performance-html
+          path: current-html
+      - name: Check Pages configuration
+        uses: actions/configure-pages@v5
+      - name: Checkout archive storage
+        uses: actions/checkout@v6
+        with:
+          path: history
+          fetch-depth: 0
+      - name: Restore report history branch
+        working-directory: history
+        run: |
+          if git ls-remote --exit-code --heads origin report-history > /dev/null; then
+            git fetch origin report-history
+            git checkout -B report-history FETCH_HEAD
+          else
+            git checkout --orphan report-history
+            git rm -rf --ignore-unmatch .
+          fi
+      - name: Build archive and latest complete formal report index
+        run: python3 scripts/experiments/lib/report_site.py --current current-html --archive history
+      - name: Persist rendered report history
+        working-directory: history
+        run: |
+          git config --local user.name 'github-actions[bot]'
+          git config --local user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html reports.json .nojekyll runs
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish performance report ${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            git push origin HEAD:report-history
+          fi
+      - name: Export only public site files
+        run: |
+          mkdir public-site
+          cp history/index.html history/reports.json history/.nojekyll public-site/
+          cp -R history/runs public-site/
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: public-site
+      - name: Publish report website
+        id: deployment
+        uses: actions/deploy-pages@v4
