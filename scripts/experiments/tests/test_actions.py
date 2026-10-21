@@ -103,7 +103,7 @@ class ActionsTest(unittest.TestCase):
                 actions.run_suite('kafka', None, 60, 3, 200, 4, 10)
             self.assertEqual('failed', json.loads((root/'suite.json').read_text())['status'])
 
-    def test_default_full_suite_uses_distinct_ladders_and_same_200_vu_generator_for_burst(self):
+    def test_default_full_suite_uses_fixed_starts_and_same_200_vu_generator_for_burst(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root/'suite.json').write_text(json.dumps({'status': 'running', 'stages': []}))
@@ -128,8 +128,9 @@ class ActionsTest(unittest.TestCase):
                     patch.object(actions, 'require_preflight'), patch.object(actions, 'run_stage', side_effect=stage):
                 actions.run_suite('full', None, 60, 3, 200, 4, 30)
             self.assertEqual(3, len(called))
-            self.assertEqual([200, 250, 300, 350, 400], called[0].rates)
-            self.assertEqual([200, 225, 250, 275, 300], called[1].rates)
+            self.assertEqual([500], called[0].rates)
+            self.assertEqual([300], called[1].rates)
+            self.assertTrue(all(args.capacity_search == 'fixed-start-probe-confirm' for args in called))
             self.assertEqual('burst', called[2].stage)
             self.assertEqual(200, called[2].q)
             self.assertTrue(all(args.vus == 200 for args in called))

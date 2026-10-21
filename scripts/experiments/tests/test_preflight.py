@@ -28,16 +28,17 @@ class PreflightTest(unittest.TestCase):
         self.assertEqual('redis-filtering', args.plan)
         self.assertLess(preflight.dataset_plan(args, 'redis')['seedUsers'], plan['seedUsers'])
 
-    def test_new_baseline_preflight_sizes_both_plan_specific_ladders_and_binds_them_to_marker(self):
+    def test_fixed_start_preflight_sizes_starting_blocks_and_binds_them_to_marker(self):
         args = parse_args(['redis-filtering'])
         plan = preflight.dataset_plan(args, 'full')
-        self.assertEqual(990000, plan['initialLadderRequests'])
-        self.assertEqual(1188000, plan['seedUsers'])
-        self.assertEqual(24000, plan['batchUsers'])
-        self.assertEqual([200, 225, 250, 275, 300], plan['planRates']['kafka-buffering'])
+        self.assertEqual(288000, plan['initialLadderRequests'])
+        self.assertEqual(345600, plan['seedUsers'])
+        self.assertEqual(30000, plan['batchUsers'])
+        self.assertEqual([300], plan['planRates']['kafka-buffering'])
         parameters = actions.experiment_parameters('full', None, 60, 3, 200, 4)
         self.assertEqual(plan['planRates'], parameters['rates'])
         self.assertEqual(200, parameters['vus'])
+        self.assertEqual('fixed-start-probe-confirm', parameters['capacitySearch'])
         self.assertNotEqual(parameters, actions.experiment_parameters('full', '200,300', 60, 3, 200, 4))
 
     def test_readiness_rate_is_capped_independently_of_capacity_and_preserves_mixed_eligible_requests(self):
@@ -96,6 +97,7 @@ class PreflightTest(unittest.TestCase):
                     patch.object(actions, 'require_start_memory'), patch.object(actions, 'check_engine'), \
                     patch.object(actions, 'verify', return_value=target), patch.object(actions, 'source_metadata', return_value={'sourceSha256': 'source'}), \
                     patch.object(actions, 'actions_context', return_value={}), patch.object(actions, 'environment', return_value={}), \
+                    patch.object(actions, 'machine_id', return_value='test-host'), \
                     patch.object(actions, 'compose', side_effect=lambda *a: ['compose', *a]), \
                     patch.object(actions, 'command', side_effect=command), \
                     patch.object(actions, 'validate_runner_config'), patch.object(actions, 'validate_runner_container'), \

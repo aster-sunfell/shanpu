@@ -30,7 +30,7 @@ def dataset_plan(args, mode):
             # Readiness must not require passing the highest capacity rung.
             # Ten seconds also exercises an eligible mixed request at 1 RPS.
             'probeRate': min(5, min(args.rates)), 'warmupSeconds': 10, 'probeSeconds': 10,
-            'coverage': 'Initial capacity ladders plus 20%; not all refinements, burst sizes or long-duration effects'}
+            'coverage': 'Configured formal starting blocks plus 20%; not all adaptive candidates, bursts or long-duration effects'}
 
 
 def verify_fixture(directory, config):

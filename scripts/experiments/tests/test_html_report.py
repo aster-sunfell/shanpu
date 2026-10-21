@@ -16,6 +16,39 @@ from report_data import Stage
 
 
 class HtmlReportTest(unittest.TestCase):
+    def test_discovery_is_shown_separately_and_never_enters_capacity_charts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = self.capacity_fixture(Path(temp))
+            artifact = json.loads((directory/'capacity.json').read_text())
+            artifact['search'] = {'strategy': 'fixed-start-probe-confirm', 'fixedStartRps': 500,
+                'stopReason': 'inconclusive', 'paths': {'A': {'stopReason': 'generator-limited',
+                    'probes': [{'rate': 625, 'state': 'generator-limited', 'scope': 'validation'}]}}}
+            (directory/'capacity.json').write_text(json.dumps(artifact))
+            # Even a misplaced probe result must not become a capacity/latency row.
+            probe = directory/'misplaced-probe'
+            probe.mkdir()
+            (probe/'result.json').write_text(json.dumps({'phase': 'probe', 'scope': 'validation',
+                'path': 'A', 'rate': 99999, 'valid': True, 'sloPassed': True}))
+            stage = Stage(directory)
+            self.assertFalse(any(row.get('phase') == 'probe' for row in stage.rows))
+            html = stage_report(stage)
+            self.assertIn('固定起点 500 RPS', html)
+            self.assertIn('validation / 不计容量', html)
+            self.assertIn('generator-limited', html)
+            self.assertNotIn('99999', html)
+
+    def test_selected_kafka_workflow_does_not_show_an_unrequested_redis_experiment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            reports = root/'reports'
+            reports.mkdir()
+            (reports/'suite.json').write_text(json.dumps({'mode': 'kafka', 'status': 'inconclusive', 'scope': 'performance'}))
+            self.capacity_fixture(reports, plan='kafka-buffering')
+            render(reports, root/'html')
+            html = (root/'html/index.html').read_text()
+            self.assertIn('Kafka 异步化收益与代价', html)
+            self.assertNotIn('href="#ab"', html)
+
     def capacity_fixture(self, reports, plan='redis-filtering', status='completed', scope='performance'):
         stage=reports/plan/'capacity'
         stage.mkdir(parents=True)

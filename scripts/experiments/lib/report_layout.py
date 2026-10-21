@@ -225,6 +225,15 @@ def diagnostics(stage):
     if stage.artifact.get('search'):
         search=stage.artifact['search']
         body.append('<p>容量搜索停止原因：'+text(search.get('stopReason') or '未记录')+'</p>')
+        if search.get('strategy') == 'fixed-start-probe-confirm':
+            body.append('<p>固定起点 '+text(search.get('fixedStartRps'))+' RPS；短探路为 validation，'
+                        '只选择本次正式候选，不计入容量、样本或配对收益，也不读取历史结果。</p>')
+            probes = [[NAMES.get(path, path), text(row['rate']), text(row['state']), 'validation / 不计容量']
+                      for path, state in search.get('paths', {}).items() for row in state.get('probes', [])]
+            if probes:
+                body.append(table(['探路方案', 'RPS', '短时结果', '用途'], probes))
+            body.append('<p>各路径停止原因：'+text('；'.join(path+': '+str(state.get('stopReason') or state.get('probeStopReason'))
+                        for path, state in search.get('paths', {}).items()))+'</p>')
     rows=[]
     for path,r in stage.points:
         eligible=r.get('classes',{}).get('eligible',{})

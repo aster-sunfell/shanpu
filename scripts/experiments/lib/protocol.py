@@ -11,8 +11,8 @@ from host import validate_affinity
 
 VERSION = 3
 DEFAULT_VUS = 200
-INITIAL_RATES = {'redis-filtering': (200, 250, 300, 350, 400),
-                 'kafka-buffering': (200, 225, 250, 275, 300)}
+# Fixed starting points selected from run 39557663264. No historical reports are read.
+INITIAL_RATES = {'redis-filtering': (500,), 'kafka-buffering': (300,)}
 
 
 def capacity_rates(plan, override=None):
@@ -40,14 +40,16 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='Measure latency, stable capacity and burst business outcomes')
     parser.add_argument('plan', choices=['redis-filtering', 'kafka-buffering'])
     parser.add_argument('--stage', choices=['capacity', 'burst'], default='capacity')
-    parser.add_argument('--rates', help='Override the plan-specific initial capacity ladder')
+    parser.add_argument('--rates', help='Explicit full ladder (overrides the default fixed-start probe/confirm search)')
     parser.add_argument('--baseline-report', type=Path, help='capacity.json from a completed B/C capacity run')
     parser.add_argument('--seconds', type=positive, default=60)
     parser.add_argument('--repeats', type=positive, default=3)
     parser.add_argument('--vus', type=positive, default=DEFAULT_VUS)
     parser.add_argument('--refine-steps', type=int, default=4)
     parser.add_argument('--expand-steps', type=int, default=2, help='Per-path upward/downward search rounds')
-    parser.add_argument('--search-minutes', type=positive, default=50, help='Capacity search budget, including fixtures')
+    parser.add_argument('--search-minutes', type=positive, default=30, help='Capacity search budget, including probes and fixtures')
+    parser.add_argument('--probe-seconds', type=positive, default=20, help='Validation-only boundary discovery window')
+    parser.add_argument('--probe-steps', type=positive, default=8, help='Maximum discovery points per path')
     parser.add_argument('--burst-multipliers', default='2,5')
     parser.add_argument('--burst-seconds', type=positive, default=10)
     parser.add_argument('--base-seconds', type=positive, default=10)
@@ -64,6 +66,7 @@ def parse_args(argv=None):
     try:
         args.rates_override = args.rates
         args.rates = capacity_rates(args.plan, args.rates)
+        args.capacity_search = 'ladder' if args.rates_override else 'fixed-start-probe-confirm'
         args.burst_multipliers = sorted(set(positive(v) for v in args.burst_multipliers.split(',')))
     except (ValueError, argparse.ArgumentTypeError) as error: parser.error(str(error))
     if args.stage == 'burst' and args.plan != 'kafka-buffering': parser.error('Burst is only available in the B/C plan')
@@ -72,6 +75,8 @@ def parse_args(argv=None):
     if not 0 <= args.refine_steps <= 6: parser.error('--refine-steps must be in [0,6]')
     if not 0 <= args.expand_steps <= 4: parser.error('--expand-steps must be in [0,4]')
     if args.search_minutes > 60: parser.error('--search-minutes must be at most 60')
+    if not 5 <= args.probe_seconds <= 30 or args.probe_steps > 12:
+        parser.error('Probes require 5–30 seconds and at most 12 steps per path')
     if args.repeats > 10 or len(args.rates) > 10 or len(args.burst_multipliers) > 5: parser.error('Too many repeats or rate levels')
     if args.vus > DEFAULT_VUS: parser.error('At most 200 VUs per scenario; calibrate within the fixed load-runner budget')
     if max(args.seconds, args.base_seconds, args.burst_seconds, args.drain_seconds, args.request_timeout) > 600:
@@ -172,7 +177,9 @@ def context_contract(target, settings, generator_hash=None, load_host=None, args
     if args is not None:
         context['deployment'] = args.deployment
         context['generator'] = {'vus': args.vus, 'requestTimeout': args.request_timeout,
-                                'drainSeconds': args.drain_seconds, 'warmup': 'capacity-stage-25-50-100rps-10s-plus-one-paid-order-per-point'}
+                                'drainSeconds': args.drain_seconds, 'warmup': 'capacity-stage-25-50-100rps-10s-plus-one-paid-order-per-point',
+                                'capacitySearch': args.capacity_search, 'probeSeconds': args.probe_seconds,
+                                'probeSteps': args.probe_steps}
     if database_settings is not None:
         context['databaseSettings'] = database_settings
     return hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
@@ -184,7 +191,8 @@ def capacities(args, results):
     for path in paths:
         groups = defaultdict(list)
         for _, point in results:
-            if point['path'] == path and point['workload'] != 'burst': groups[point['rate']].append(point)
+            if point['path'] == path and point['workload'] != 'burst' and point.get('phase') != 'probe':
+                groups[point['rate']].append(point)
         observations, passed, failed = [], [], []
         for rate, rows in sorted(groups.items()):
             complete = len(rows) == args.repeats and {r['repeat'] for r in rows} == set(range(1,args.repeats+1)) and all(r['valid'] for r in rows)
@@ -246,6 +254,7 @@ def point_fits_budget(point, remaining_seconds):
 def comparisons(args, results):
     if args.validation_only: return []
     paths = ['A', 'B'] if args.plan == 'redis-filtering' else ['B', 'C']
+    results = [(name, r) for name, r in results if r.get('phase') != 'probe']
     indexed = {(r['rate'], r['path'], r['repeat']): r for _, r in results}
     comparisons = []
     for rate in sorted({r['rate'] for _, r in results}):

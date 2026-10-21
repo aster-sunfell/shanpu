@@ -415,7 +415,8 @@ def run_stage(arguments, deadline, *, preflight=False, mode='full'):
 def experiment_parameters(mode, rates, seconds, repeats, vus, refine_steps):
     from protocol import capacity_rates
     return {'mode': mode, 'rates': {plan: capacity_rates(plan, rates) for plan in ('redis-filtering', 'kafka-buffering')},
-            'seconds': seconds, 'repeats': repeats, 'vus': vus, 'refineSteps': refine_steps}
+            'seconds': seconds, 'repeats': repeats, 'vus': vus, 'refineSteps': refine_steps,
+            'capacitySearch': 'ladder' if rates else 'fixed-start-probe-confirm'}
 
 
 def reset_after_preflight(previous):

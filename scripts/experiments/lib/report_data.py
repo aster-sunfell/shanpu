@@ -33,7 +33,7 @@ class Stage:
         self.points=[]
         for file in sorted(self.directory.glob('*/result.json')):
             value=read_json(file)
-            if value: self.points.append((file.parent,value))
+            if value and value.get('phase') != 'probe': self.points.append((file.parent,value))
 
     @property
     def rows(self): return [value for _,value in self.points]

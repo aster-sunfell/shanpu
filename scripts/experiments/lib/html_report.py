@@ -29,7 +29,8 @@ def render(reports, output):
     body = [overview(suite, stages, actions, status, scope)]
     navigation = [('overview', '本次结论', '◈'), ('schemes', '方案说明', '◇')]
     plans = ['redis-filtering', 'kafka-buffering']
-    if suite.get('mode') in plans: plans = [suite['mode']]
+    selected_plan = {'redis': 'redis-filtering', 'kafka': 'kafka-buffering'}.get(suite.get('mode'), suite.get('mode'))
+    if selected_plan in plans: plans = [selected_plan]
     paths = ['B', 'C'] if plans == ['kafka-buffering'] else ['A', 'B'] if plans == ['redis-filtering'] else ['A', 'B', 'C']
     body.append(schemes(paths))
     if not stages:

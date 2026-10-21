@@ -18,6 +18,7 @@ import urllib.request
 
 import transport
 import observation
+import adaptive_search
 from analysis import Evidence, save_result, write_json
 from fixtures import POINTS, PRICE, create_users, credential, prepare, snapshot, check_disk, release_redis
 from protocol import (VERSION, parse_args, matrix, budgeted_matrix, policy, context_contract,
@@ -296,7 +297,8 @@ def measure(config, private, directory, token, args):
         write_json(directory / 'load.json', {'planned':config['scheduled'], 'started':result['started'],
                    'missing':max(0,config['scheduled']-result['started']), 'vus':config['vus'],
                    'vuExhausted':result['vuExhausted'], 'metricsAggregation':'disabled; disk evidence and k6 warnings are authoritative'})
-        result.update(repeat=config['repeat'], seconds=config['seconds'], baseRate=config['baseRate'], baseSeconds=config['baseSeconds'], k6ExitCode=process.returncode,
+        result.update(phase=config.get('phase', 'confirmation'), scope='validation' if args.validation_only else 'performance',
+                      repeat=config['repeat'], seconds=config['seconds'], baseRate=config['baseRate'], baseSeconds=config['baseSeconds'], k6ExitCode=process.returncode,
                       wallSeconds=round(time.monotonic()-started, 3), backendDelta=delta(before_metrics, after_metrics))
         if abs(drift)>50 or abs(after_metrics['runnerClock']['offsetEstimateMs'])>50+after_metrics['runnerClock']['uncertaintyMs']:
             result['correctnessErrors'].append('Clock shifted during the point or target/load clocks diverged')
@@ -394,8 +396,11 @@ def main(argv=None):
     if args.dry_run:
         print(json.dumps({'scope': 'validation' if args.validation_only else 'performance',
                           'deployment': args.deployment,
-                          'policy': policy(args), 'initialMeasurements': points,
-                          'expansionRoundsPerPath': args.expand_steps if args.stage == 'capacity' else 0,
+                          'policy': policy(args), 'capacitySearch': args.capacity_search,
+                          'fixedStartRps': args.rates[0] if args.capacity_search == 'fixed-start-probe-confirm' else None,
+                          'probeSeconds': args.probe_seconds, 'probeStepsPerPath': args.probe_steps,
+                          'initialMeasurements': points if args.capacity_search == 'ladder' or args.validation_only or args.stage == 'burst' else [],
+                          'expansionRoundsPerPath': args.expand_steps if args.stage == 'capacity' and args.capacity_search == 'ladder' else 0,
                           'capacityBudgetMinutes': args.search_minutes,
                           'refinementRounds': args.refine_steps if args.stage == 'capacity' else 0}, ensure_ascii=False, indent=2))
         return 0
@@ -443,91 +448,129 @@ def main(argv=None):
             meta['productId'] = product_id
             if args.stage == 'capacity':
                 warm_runtime(args, product_id, private, directory, admin['token'])
-            rounds = {path: {'expand': 0, 'refine': 0} for path in capacities(args, results)}
-            search_deadline = min(time.monotonic()+args.search_minutes*60,
-                                  float(os.environ.get('BENCH_STAGE_DEADLINE', 'inf'))-args.drain_seconds-args.request_timeout-60)
-            meta['search'] = {'budgetMinutes': args.search_minutes, 'rounds': rounds, 'history': [], 'stopReason': None}
-            budget_exhausted = False
-            while True:
-                started_rates = set()
-                for index, point in enumerate(points):
-                    check_host_health()
-                    if args.stage == 'capacity':
-                        bounds = capacities(args, results)
-                        observations = bounds[point['path']]['observations']
-                        failures = [item['rate'] for item in observations if item['state']=='fail']
-                        if failures and point['rate'] > min(failures):
-                            continue
-                        remaining = search_deadline-time.monotonic()
-                        # Reserve an entire new rate's remaining repetitions before
-                        # allocating fixtures, so budget stops normally land between rates.
-                        block = [p for p in points[index:] if p['rate'] == point['rate'] and not any(
-                            o['state'] == 'fail' and o['rate'] < p['rate'] for o in bounds[p['path']]['observations'])]
-                        if point['rate'] not in started_rates:
-                            required = sum(p['seconds']+p['requestTimeout']+30 for p in block)
-                        else:
-                            required = point['seconds']+point['requestTimeout']+30
-                        if not point_fits_budget(point, remaining) or remaining < required:
-                            meta['search']['stopReason'] = 'time-budget'
-                            budget_exhausted = True
-                            print('Capacity search stopped at its budget; retaining qualified observations', flush=True)
-                            break
-                        started_rates.add(point['rate'])
-                        if len(meta['points']) >= 200:
-                            meta['search']['stopReason'] = 'point-limit'
-                            budget_exhausted = True
-                            break
-                    check_disk(directory)
-                    point_name = f"{len(meta['points'])+1:03d}-r{point['repeat']}-{point['workload']}-{point['rate']}-{point['path']}"
-                    point_dir = directory / point_name
-                    point_dir.mkdir()
-                    point['userPrefix'] = 'x' + secrets.token_hex(6)
-                    meta['points'].append({'directory': point_name, 'userPrefix': point['userPrefix']})
-                    write_json(directory / 'manifest.json', meta)
-                    current = require_idle(admin['token'])
-                    if (current['settings'] != metrics['settings'] or current['localCacheEnabled'] != metrics['localCacheEnabled']
-                            or current.get('processStartedAtMs') != metrics.get('processStartedAtMs')):
-                        raise RuntimeError('Backend settings/process changed between points')
-                    print(f"测量 {point_name}: {point['scheduled']} 请求", flush=True)
-                    prepare(point, product_id, private / point_name, point_dir, admin['token'], api, require_idle)
-                    meta['points'][-1]['activityId'] = point['activityId']
-                    write_json(directory / 'manifest.json', meta)
-                    value = measure(point, private / point_name, point_dir, admin['token'], args)
-                    value.pop("timeline", None)
-                    results.append((point_name, value))
-                    print(f"结果 {point_name}: valid={value['valid']}, SLO={value['sloPassed']}, "
-                          f"started={value['started']}/{value['scheduled']}, "
-                          f"peakHttpInFlight={value.get('peakHttpInFlight')}, VUs={point['vus']}, "
-                          f"responseP99Ms={value['classes'].get('eligible', {}).get('responseMs', {}).get('p99')}", flush=True)
-                    report(directory, meta, results, args)
-                    check_host_health()
-                    if value['correctnessErrors'] or value['unresolvedCount']:
-                        raise RuntimeError('Data/evidence invalid or accepted orders unresolved; preserve this run')
-                    if value['loadErrors']:
-                        raise RuntimeError(
-                            f"Load generation invalid: {'; '.join(value['loadErrors'])} "
-                            f"(planned={value['scheduled']}, started={value['started']}, "
-                            f"missing={value['missingRequests']}, VUs={point['vus']}, "
-                            f"lagP99Ms={value['generatorLagMs']['p99']}). "
-                            'See point/result.json and k6.out; this is not a service capacity failure')
-                    # Keep DB rows and all evidence; retire only this closed point's hot Redis data.
-                    release_redis(private / point_name, point)
-                    meta['points'][-1]['redisReleased'] = True
-                    write_json(directory / 'manifest.json', meta)
-                if args.stage != 'capacity' or budget_exhausted: break
-                candidates = search_candidates(args, results, rounds)
-                if not candidates:
-                    meta['search']['stopReason'] = ('bounds-resolved' if all(not baseline_readiness(b)
-                        for b in capacities(args, results).values()) else 'round-limit-or-inconclusive-evidence')
-                    break
-                selected = {(c['path'], c['rate']) for c in candidates}
-                points = [p for p in matrix(args, sorted({c['rate'] for c in candidates}))
-                          if (p['path'], p['rate']) in selected]
-                for candidate in candidates:
-                    rounds[candidate['path']][candidate['reason']] += 1
-                meta['search']['history'].append(candidates)
+            adaptive = (args.stage == 'capacity' and not args.validation_only
+                        and args.capacity_search == 'fixed-start-probe-confirm')
+
+            def checkpoint():
                 write_json(directory/'manifest.json', meta)
-                print('Capacity search next: '+json.dumps(candidates), flush=True)
+                report(directory, meta, results, args)
+
+            def execute_point(config, phase):
+                point = dict(config)
+                check_host_health()
+                check_disk(directory)
+                probe = phase == 'probe'
+                entries = meta.setdefault('probePoints', []) if probe else meta['points']
+                point_name = f"{len(entries)+1:03d}-r{point['repeat']}-{point['workload']}-{point['rate']}-{point['path']}"
+                relative = Path('probes')/point_name if probe else Path(point_name)
+                point_dir = directory/relative
+                point_dir.mkdir(parents=True)
+                point['userPrefix'] = 'x'+secrets.token_hex(6)
+                entries.append({'directory': str(relative), 'userPrefix': point['userPrefix'],
+                                'phase': phase, 'scope': 'validation' if probe else meta['scope']})
+                checkpoint()
+                current = require_idle(admin['token'])
+                if (current['settings'] != metrics['settings'] or current['localCacheEnabled'] != metrics['localCacheEnabled']
+                        or current.get('processStartedAtMs') != metrics.get('processStartedAtMs')):
+                    raise RuntimeError('Backend settings/process changed between points')
+                print(f"{'短探路（validation，不计容量）' if probe else '测量'} {point_name}: {point['scheduled']} 请求", flush=True)
+                prepare(point, product_id, private/relative, point_dir, admin['token'], api, require_idle)
+                entries[-1]['activityId'] = point['activityId']
+                checkpoint()
+                selected = copy.copy(args)
+                if probe:
+                    selected.validation_only = True
+                value = measure(point, private/relative, point_dir, admin['token'], selected)
+                value.pop('timeline', None)
+                value['phase'] = phase
+                value['scope'] = 'validation' if probe else meta['scope']
+                value['evidenceDirectory'] = str(relative)
+                if not probe:
+                    results.append((point_name, value))
+                write_json(point_dir/'result.json', value)
+                print(f"结果 {point_name}: phase={phase}, valid={value['valid']}, SLO={value['sloPassed']}, "
+                      f"started={value['started']}/{value['scheduled']}, "
+                      f"peakHttpInFlight={value.get('peakHttpInFlight')}, VUs={point['vus']}, "
+                      f"responseP99Ms={value['classes'].get('eligible', {}).get('responseMs', {}).get('p99')}", flush=True)
+                checkpoint()
+                check_host_health()
+                if value['correctnessErrors'] or value['unresolvedCount']:
+                    raise RuntimeError('Data/evidence invalid or accepted orders unresolved; preserve this run')
+                limited = adaptive and adaptive_search.recoverable_load_limit(value)
+                if value['loadErrors'] and not limited:
+                    raise RuntimeError(
+                        f"Load generation invalid: {'; '.join(value['loadErrors'])} "
+                        f"(planned={value['scheduled']}, started={value['started']}, "
+                        f"missing={value['missingRequests']}, VUs={point['vus']}, "
+                        f"lagP99Ms={value['generatorLagMs']['p99']}). "
+                        'See point/result.json and k6.out; this is not a service capacity failure')
+                if not value['valid'] and not limited:
+                    raise RuntimeError('Measurement is invalid; preserve this point')
+                if limited:
+                    # Recovery requires the same full conservation/commit checks plus an idle SUT.
+                    # Disk evidence is retained; only verified closed-point hot data is retired.
+                    require_idle(admin['token'])
+                    print('发压受限：该点不作为容量边界；证据已保留，核对空闲后继续其他候选。', flush=True)
+                release_redis(private/relative, point)
+                entries[-1]['redisReleased'] = True
+                checkpoint()
+                return value
+
+            if adaptive:
+                search_deadline = min(time.monotonic()+args.search_minutes*60,
+                                      float(os.environ.get('BENCH_STAGE_DEADLINE', 'inf'))-args.drain_seconds-args.request_timeout-60)
+                adaptive_search.run(args, execute_point, results, meta,
+                                    lambda: search_deadline-time.monotonic(), checkpoint)
+            else:
+                rounds = {path: {'expand': 0, 'refine': 0} for path in capacities(args, results)}
+                search_deadline = min(time.monotonic()+args.search_minutes*60,
+                                      float(os.environ.get('BENCH_STAGE_DEADLINE', 'inf'))-args.drain_seconds-args.request_timeout-60)
+                meta['search'] = {'budgetMinutes': args.search_minutes, 'rounds': rounds, 'history': [], 'stopReason': None}
+                budget_exhausted = False
+                while True:
+                    started_rates = set()
+                    for index, point in enumerate(points):
+                        check_host_health()
+                        if args.stage == 'capacity':
+                            bounds = capacities(args, results)
+                            observations = bounds[point['path']]['observations']
+                            failures = [item['rate'] for item in observations if item['state']=='fail']
+                            if failures and point['rate'] > min(failures):
+                                continue
+                            remaining = search_deadline-time.monotonic()
+                            # Reserve an entire new rate's remaining repetitions before
+                            # allocating fixtures, so budget stops normally land between rates.
+                            block = [p for p in points[index:] if p['rate'] == point['rate'] and not any(
+                                o['state'] == 'fail' and o['rate'] < p['rate'] for o in bounds[p['path']]['observations'])]
+                            if point['rate'] not in started_rates:
+                                required = sum(p['seconds']+p['requestTimeout']+30 for p in block)
+                            else:
+                                required = point['seconds']+point['requestTimeout']+30
+                            if not point_fits_budget(point, remaining) or remaining < required:
+                                meta['search']['stopReason'] = 'time-budget'
+                                budget_exhausted = True
+                                print('Capacity search stopped at its budget; retaining qualified observations', flush=True)
+                                break
+                            started_rates.add(point['rate'])
+                            if len(meta['points']) >= 200:
+                                meta['search']['stopReason'] = 'point-limit'
+                                budget_exhausted = True
+                                break
+                        execute_point(point, 'confirmation')
+                    if args.stage != 'capacity' or budget_exhausted: break
+                    candidates = search_candidates(args, results, rounds)
+                    if not candidates:
+                        meta['search']['stopReason'] = ('bounds-resolved' if all(not baseline_readiness(b)
+                            for b in capacities(args, results).values()) else 'round-limit-or-inconclusive-evidence')
+                        break
+                    selected = {(c['path'], c['rate']) for c in candidates}
+                    points = [p for p in matrix(args, sorted({c['rate'] for c in candidates}))
+                              if (p['path'], p['rate']) in selected]
+                    for candidate in candidates:
+                        rounds[candidate['path']][candidate['reason']] += 1
+                    meta['search']['history'].append(candidates)
+                    write_json(directory/'manifest.json', meta)
+                    print('Capacity search next: '+json.dumps(candidates), flush=True)
             check_host_health()
             meta['status'] = 'completed'
         except BaseException as error:

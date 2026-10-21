@@ -13,7 +13,7 @@ from protocol import capacities, parse_args, search_candidates
 
 
 class CapacitySearchTest(unittest.TestCase):
-    def run_search(self, passing, *, deadline='inf', invalid=False):
+    def run_search(self, passing, *, deadline='inf', invalid=False, adaptive=False, response=None, expected_error=None):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             runtime, reports = root/'runtime', root/'reports'
@@ -33,7 +33,7 @@ class CapacitySearchTest(unittest.TestCase):
 
             def measure(config, *args):
                 calls.append(dict(config))
-                return {'path': config['path'], 'rate': config['rate'], 'repeat': config['repeat'],
+                value = {'path': config['path'], 'rate': config['rate'], 'repeat': config['repeat'],
                         'workload': config['workload'], 'valid': not invalid,
                         'sloPassed': config['rate'] <= passing[config['path']], 'unresolvedCount': 0,
                         'classes': {'eligible': {'responseMs': {'samples': config['scheduled'], 'p99': 100}}},
@@ -41,6 +41,8 @@ class CapacitySearchTest(unittest.TestCase):
                         'loadErrors': ['Insufficient VUs'] if invalid else [],
                         'started': config['scheduled'], 'scheduled': config['scheduled'],
                         'missingRequests': 0, 'generatorLagMs': {'p99': 1}}
+                if response: value.update(response(config))
+                return value
 
             def report(directory, meta, results, args):
                 reports_written.append((dict(meta), list(results), args))
@@ -57,13 +59,51 @@ class CapacitySearchTest(unittest.TestCase):
                     patch.object(runner, 'check_disk'), patch.object(runner, 'prepare', side_effect=prepare), \
                     patch.object(runner, 'warm_runtime'), patch.object(runner, 'measure', side_effect=measure), patch.object(runner, 'release_redis'), \
                     patch.object(runner, 'report', side_effect=report), patch('builtins.print'):
-                if invalid:
-                    with self.assertRaisesRegex(RuntimeError, 'Load generation invalid'):
-                        runner.main(['kafka-buffering'])
+                arguments = ['kafka-buffering', *([] if adaptive else ['--rates', '200,225,250,275,300'])]
+                if invalid or expected_error:
+                    with self.assertRaisesRegex(RuntimeError, expected_error or 'Load generation invalid'):
+                        runner.main(arguments)
                 else:
-                    self.assertEqual(0, runner.main(['kafka-buffering']))
+                    self.assertEqual(0, runner.main(arguments))
             meta = json.loads((reports/'kafka-buffering/run/manifest.json').read_text())
+            if adaptive:
+                for entry in meta.get('probePoints', []):
+                    data = json.loads((reports/'kafka-buffering/run'/entry['directory']/'result.json').read_text())
+                    self.assertEqual(('probe', 'validation'), (data['phase'], data['scope']))
+                self.assertTrue(all(r.get('phase') != 'probe' for _, r in reports_written[-1][1]))
             return calls, meta, capacities(reports_written[-1][2], reports_written[-1][1])
+
+    def test_default_adaptive_runner_starts_at_300_and_separates_probe_evidence(self):
+        calls, meta, bounds = self.run_search({'B': 330, 'C': 450}, adaptive=True)
+        self.assertEqual([300, 300], [p['rate'] for p in calls[:2]])
+        self.assertEqual('completed', meta['status'])
+        self.assertLessEqual(len(meta['points']), 15)
+        self.assertTrue(meta['probePoints'])
+        self.assertTrue(all(b['bounded'] for b in bounds.values()))
+
+    def test_adaptive_runner_retains_generator_limited_probe_and_continues_other_path(self):
+        def response(point):
+            if point['path'] == 'B' and point['rate'] >= 350:
+                return {'valid': False, 'sloPassed': False,
+                        'loadErrors': ['k6 exhausted its fixed VU pool (Insufficient VUs); arrivals were dropped']}
+            return {}
+        calls, meta, bounds = self.run_search({'B': 10000, 'C': 450}, adaptive=True, response=response)
+        self.assertEqual('completed', meta['status'])
+        self.assertIsNotNone(bounds['B']['passingRps'])
+        self.assertIsNone(bounds['B']['failingRps'])
+        self.assertTrue(bounds['C']['bounded'])
+        self.assertTrue(any(p['state'] == 'generator-limited' for p in meta['search']['paths']['B']['probes']))
+
+    def test_adaptive_runner_still_aborts_on_data_errors_and_unknown_load_failures(self):
+        for response, error in (({'correctnessErrors': ['stock mismatch']}, 'Data/evidence invalid'),
+                                ({'valid': False, 'loadErrors': ['k6 exit 1']}, 'Load generation invalid'),
+                                ({'unresolvedCount': 1}, 'Data/evidence invalid')):
+            with self.subTest(response=response):
+                calls, meta, bounds = self.run_search({'B': 330, 'C': 450}, adaptive=True,
+                                                      response=lambda p: response, expected_error=error)
+                self.assertEqual(1, len(calls))
+                self.assertEqual('failed', meta['status'])
+                self.assertTrue(all(b['passingRps'] is None for b in bounds.values()))
 
     def test_paths_stop_above_their_own_failure_and_refine_independently(self):
         calls, meta, bounds = self.run_search({'B': 260, 'C': 230})
