@@ -139,7 +139,7 @@ class HostTest(unittest.TestCase):
                     {'type':'finish','requestId':'steady:0','index':0,'startedAtMs':t,'finishedAtMs':t+20,'outcome':'accepted','responseMs':20,'orderId':'900'}]
             (directory/'requests.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in events))
             commit={'activityId':12,'userId':7,'orderId':'900','commitObservedAtMs':t+30}
-            journal=Mock(has_more=False)
+            journal=Mock(has_more=False,partial_tail=False)
             def reader(offset,config,token,evidence):
                 journal.poll.side_effect=lambda:evidence.add_commits([commit]) if not evidence.scalar('SELECT COUNT(*) FROM commits') else None
                 return journal
@@ -150,7 +150,7 @@ class HostTest(unittest.TestCase):
             config=dict(activityId=12,path='C',workload='steady',seconds=1,baseSeconds=0,baseRate=1,
                         scheduled=1,rate=1,points=1000,plan='kafka-buffering',repeat=1,requestTimeout=1,vus=100)
             with patch('runner.require_idle',return_value=before),patch('runner.mysql_counters',return_value={}), \
-                 patch('runner.api',side_effect=lambda *a:{**before,'timeMs':int(time.time()*1000),'events':1}), \
+                 patch('runner.observation.fresh_metrics',side_effect=lambda:{**before,'timeMs':int(time.time()*1000),'events':1}), \
                  patch('runner.lag',return_value={'0':0}),patch('runner.sql',return_value='0'), \
                  patch('runner.Sampler') as sampler,patch('runner.JournalReader',side_effect=reader), \
                  patch('runner.subprocess.Popen',return_value=load),patch('runner.snapshot') as snapshot, \
@@ -160,7 +160,7 @@ class HostTest(unittest.TestCase):
             self.assertEqual(signal.SIGINT,load.signal)
             self.assertEqual(1,result['completed'])
             self.assertFalse(result['valid'])
-            self.assertTrue(any('Host safety' in value for value in result['correctnessErrors']))
+            self.assertTrue(any('Measurement interrupted' in value for value in result['correctnessErrors']))
             snapshot.assert_called_once_with(config,directory,'after',check_host=False)
 
 

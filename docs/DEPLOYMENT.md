@@ -1,4 +1,4 @@
-# 闪铺本地开发与压测
+# 闪铺开发、生产与压测部署
 
 ## 1. 运行方式
 
@@ -16,9 +16,17 @@
 
 `docker-compose.yml` 固定项目名为 `shanpu`，使用 `shanpu_mysql-data`、`shanpu_redis-data`、`shanpu_kafka-data` 三个数据卷。Nginx 和 k6 使用 Linux host 网络，直接访问宿主机回环地址；Nginx 不配置 `ports`。
 
+生产基线为 `deploy/compose.2c2g.yml`，包含 backend、frontend、Nginx、MySQL、Redis、Kafka 六个容器。本地 Compose 继承其中的中间件，保留宿主机前后端；压测待测端 `experiments/compose.sut.yml` 继承全部六个服务，发压端另用 `experiments/compose.runner.yml`，不占用待测端预算。
+
+应用性能参数统一在 `backend/src/main/resources/application-2c2g.yml`；`dev` 和 `prod` profile 都自动加载。Tomcat 使用 32 个处理线程、256 个连接、64 个连接排队位，连接及 keep-alive 超时均为 5 秒；数据库池最多 8 个连接、等待上限 3 秒。本地调试可显式覆盖参数，但其结果不作为容量证据。运行时镜像固定 digest，后端 JRE 版本与 `.sdkmanrc` 的 Java 17.0.18+8 对齐；生产和压测共用同一份 Dockerfile、JVM 参数及启动脚本。
+
+执行 `python3 scripts/experiments/lib/runtime_alignment.py` 可比较展开后的三套 Compose，不启动服务；Actions checks 和正式执行前都会核验。仅允许本地手动重启策略、宿主地址/端口，以及压测观测组件、专属数据和凭据等明确差异。
+
 ## 2. 生命周期
 
-所有 Compose 服务显式设置 `restart: "no"`，由开发者手动启动和停止。容器退出、Docker 重启或电脑重启后，需要重新执行启动任务。`up -d` 表示容器在后台运行，关闭终端或 VS Code 后仍会继续运行。健康检查判断服务是否就绪，不负责自动重启。
+本地四个容器均设置 `restart: "no"`，随用随开；容器退出、Docker 或电脑重启后，需要重新执行启动任务。生产和压测待测端使用 `restart: unless-stopped`，异常退出或 Docker 重启后自动恢复，显式手动停止后保持停止。发压容器仍为 `restart: "no"`，避免失败后自动重复发压；测量期间待测服务重启会使结果无效并保留证据。
+
+`up -d` 表示容器在后台运行，关闭终端或 VS Code 后仍会继续运行。健康检查判断服务是否就绪，不会单凭 unhealthy 状态触发 Docker 重启。
 
 日常停止使用 `bash scripts/dev/stop.sh`，保留容器和数据卷。Java 与 Next.js 使用 VS Code 的“终止任务”或所在终端的 Ctrl+C 停止。打开工作区不会自动启动任何服务。
 
@@ -37,7 +45,7 @@
 
 `scripts/lib/dev-common.sh` 统一加载环境变量，并固定 Compose 文件和项目名，使启动脚本可从任意目录调用。
 
-后端脚本先加载 SDKMAN 初始化脚本，在仓库根目录执行 `sdk env`，应用 `.sdkmanrc` 指定的 `17.0.18-tem`，并校验 `JAVA_HOME` 与实际 `java` 命令均指向该 SDK。初始化失败或版本不符时直接退出。环境确认后才运行 Maven clean 打包，通过 `exec java -jar` 启动；默认设置 `dev` profile（可用 `SPRING_PROFILES_ACTIVE` 覆盖）、东八区时区与回环监听地址，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。默认 JVM 参数为 `-Xms256m -Xmx1g`，可通过 `JAVA_OPTS` 调整。进程 PID 写入忽略目录 `.local/run/backend.pid`。
+后端脚本先加载 SDKMAN，在仓库根目录执行 `sdk env`，校验 `.sdkmanrc` 指定的 `17.0.18-tem` 后才运行 Maven clean 打包。默认使用 `dev -> 2c2g` profile、东八区时区与回环监听，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。JVM 参数读取共用的 `backend/docker/java.options`，默认按 512 MiB 内存预算和一个可见处理器启动；可用 `JAVA_OPTS` 覆盖。宿主进程没有容器的 CPU/PID/内存硬隔离，不能将本地运行解释为等价压测。默认日志为 INFO，调试时可设置 `SHANPU_LOG_LEVEL=DEBUG`。PID 写入 `.local/run/backend.pid`。
 
 前端脚本通过 `pnpm dev` 启动，注入：
 
@@ -50,6 +58,8 @@
 ## 4. 网关与热更新
 
 `deploy/nginx.conf.template` 由 Nginx 官方镜像在启动时按环境变量生成配置。模板替换仅处理三个端口变量，保留 `$http_host` 等 Nginx 变量。
+
+本地、生产和待测端共用 `deploy/nginx.api.conf`，统一 API 请求头、上游连接复用和超时。网关使用一个 worker、512 个连接位；本地仅页面代理保留 WebSocket、关闭缓冲和热更新需要的长超时。
 
 - `/api/` 转发到宿主机 Java，保留 `/api` 路径。
 - `/` 转发到宿主机 Next.js，支持 WebSocket Upgrade，并关闭代理缓冲。
@@ -67,11 +77,11 @@ Compose 只负责创建 `MYSQL_DATABASE` 指定的空库。表结构由后端启
 
 已有非空数据库必须先核对结构并显式 baseline，再启动后端；操作步骤见 [数据库管理](./DATABASE.md)。原有 MySQL 数据卷继续保留。
 
-资源上限为 1.5 CPU / 1 GiB，buffer pool 为 384 MiB。启动健康检查通过后，Java 健康接口使用实际 SQL 连接检查数据库。
+资源上限为 0.5 CPU / 384 MiB，buffer pool 为 128 MiB，最多 32 个连接，关闭 Performance Schema 并限制内部临时表。Java 健康接口使用实际 SQL 连接检查数据库。
 
 ### Redis
 
-Redis 启用密码、AOF 与 `appendfsync everysec`，使用 `redis-data` 持久卷，内存上限为 256 MiB，淘汰策略为 `noeviction`。Redis 同时保存库存和已购标记，达到内存上限时返回写入错误，业务 Key 依照各自 TTL 过期。容器内存上限为 384 MiB。
+Redis 启用密码、AOF 与 `appendfsync everysec`，使用 `redis-data` 持久卷，数据内存上限为 48 MiB，淘汰策略为 `noeviction`。达到内存上限时返回写入错误，业务 Key 依照各自 TTL 过期。容器上限为 0.1 CPU / 96 MiB。
 
 ### Kafka
 
@@ -79,11 +89,11 @@ Redis 启用密码、AOF 与 `appendfsync everysec`，使用 `redis-data` 持久
 
 | Listener | 地址 | 调用方 |
 |---|---|---|
-| INTERNAL | `kafka:9092` | Compose 网络客户端、容器健康检查 |
-| EXTERNAL | 容器 9094，发布为 `127.0.0.1:${KAFKA_PORT}` | 宿主机 Java |
+| INTERNAL | `kafka:9092` | Compose 网络客户端 |
+| EXTERNAL | 容器 19092，发布为 `127.0.0.1:${KAFKA_PORT}` | 宿主机 Java、发压端 |
 | CONTROLLER | `kafka:9093` | KRaft 内部通信，不发布 |
 
-宿主机 listener 的 advertised 地址为 `127.0.0.1:${KAFKA_PORT}`。固定 cluster ID、node ID 和数据卷，JVM 堆为 256–512 MiB，容器上限为 768 MiB。
+宿主机 listener 的 advertised 地址为 `127.0.0.1:${KAFKA_PORT}`。固定 cluster ID、node ID 和数据卷，JVM 堆为 128–192 MiB，容器上限为 0.4 CPU / 384 MiB。不使用反复创建 JVM 的 CLI 健康检查；Kafka 就绪由后端健康接口和压测协议客户端确认。
 
 Spring `KafkaConfig` 在后端启动时声明 `shanpu.seckill.order`（3 分区）和 `shanpu.seckill.order.dlq`（1 分区），副本数均为 1。消费者并发度为 3。Producer 使用幂等发送和 `acks=all`；单节点用于开发联调，不提供节点级容错。
 
@@ -114,14 +124,30 @@ bash scripts/dev/status.sh
 bash scripts/dev/stop.sh
 ```
 
-## 7. 性能实验
+## 7. 全容器生产部署
 
-性能实验仅在 GitHub 托管的 Linux Actions runner 执行。main 收到新提交后，Actions → Performance experiments 自动执行 A/B 和 B/C 完整正式实验，并发布 HTML；其他分支和 PR 不触发压测。
+从仓库根目录准备独立的生产环境文件，设置数据库/Redis 密码、JWT 密钥、端口，并按机器实际可用 CPU 设置 `SUT_CPUSET`（默认 `0,1`）。`.env.production` 已被 Git 忽略。
+
+```bash
+cp .env.example .env.production
+# 编辑 .env.production，替换开发凭据
+docker compose --env-file .env.production -f deploy/compose.2c2g.yml build
+docker compose --env-file .env.production -f deploy/compose.2c2g.yml up -d --wait --wait-timeout 300
+docker compose --env-file .env.production -f deploy/compose.2c2g.yml ps
+```
+
+入口为 `http://服务器地址:8089`；前后端通过容器网络通信，MySQL/Redis/Kafka/后端宿主端口仅绑定回环。项目名为 `shanpu-production`，数据卷与本地开发隔离。六个服务合计 CPU 配额为 2，容器内存为 1632 MiB，预算另计宿主余量 416 MiB；宿主余量是预算说明，并非 Docker 硬预留。
+
+## 8. 性能实验
+
+性能实验仅在 GitHub 托管的 Linux Actions runner 执行。在 Actions → Performance experiments 中选择 main，手动 Run workflow，执行 A/B 和 B/C 完整实验并发布 HTML；推送与 PR 不会自动发压。
 
 被测服务合计 2 vCPU 配额，发压容器另占 1 vCPU；两端使用互斥 CPU 集合。B/C 容量和突发在同一 job 内引用刚测得的合格基线。每次使用独立临时数据库和凭证，归档后销毁容器和数据卷，不使用开发环境。
 
+业务请求经过 Nginx，前端容器计入预算但不施加浏览器负载。指标每秒原子写入证据卷，发压端只读采集，避免与业务争抢 Tomcat 连接；关键核对等待新快照，过期或不完整证据仍使测量无效。实验关闭定时补偿、超时处理、对账与定时预热，启用提交/SQL 观测；这些差异会写入报告，结果不等同于启用全部后台任务的生产容量。
+
 HTML 报告和完整证据分别保存为 Actions artifacts；配置 Pages 后，main 会将 HTML 发布到报告网站，并通过仓库 About 的 Website 打开。参数、设置与结论边界见 [实验说明](./experiments/README.md) 和 [实验计划](./experiments/PLAN.md)。
 
-## 8. 重置数据
+## 9. 重置数据
 
 日常操作使用 `stop` 保留数据。仅在明确需要清空全部本地数据时执行 `docker compose down -v`，这会删除 MySQL、Redis 和 Kafka 的数据卷。再次启动中间件后，由后端 Flyway 创建业务表；演示数据仍需显式执行 `bash scripts/db/seed-demo.sh` 导入。

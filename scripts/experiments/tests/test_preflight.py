@@ -77,7 +77,7 @@ class PreflightTest(unittest.TestCase):
             def command(args, **kwargs):
                 calls.append(args)
                 if args[:2] == ['compose', 'sut']:
-                    if 'config' in args: return json.dumps({'services': {n: {'cpuset': '0,1'} for n in actions.LIMITS}})
+                    if 'config' in args: return json.dumps({'services': {n: {'cpuset': '0,1', 'pids_limit': 128} for n in actions.LIMITS}})
                     return args[-1]+'-id'
                 if args[:2] == ['compose', 'runner']:
                     if '--file' in args:
@@ -88,7 +88,7 @@ class PreflightTest(unittest.TestCase):
                 if args[:2] == ['docker', 'version']: return '{}'
                 return ''
 
-            def validate(name, value, cpuset):
+            def validate(name, value, cpuset, pids):
                 return {'service': name, 'startedAt': 'before', 'memoryLimitMiB': actions.LIMITS[name][1]}
 
             with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \

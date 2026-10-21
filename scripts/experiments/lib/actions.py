@@ -12,6 +12,7 @@ import sys
 import time
 from host import (atomic_json, HostMonitor, cpu_list, cpu_string, environment, require_start_memory,
                   select_affinity, container_resources, finalize_host_evidence, preflight_memory)
+from runtime_alignment import check_alignment
 
 
 def require_actions():
@@ -39,7 +40,8 @@ RUNTIME = Path(os.environ.get('BENCH_RUNTIME', '/bench/runtime'))
 REPORTS = Path(os.environ.get('BENCH_REPORTS', '/bench/reports'))
 ENV_FILE = RUNTIME / "sut.env"
 MIB = 1024 * 1024
-LIMITS = {"backend": (.8, 512), "mysql": (.5, 384), "redis": (.1, 96), "kafka": (.6, 448)}
+LIMITS = {"backend": (.75, 512), "mysql": (.5, 384), "redis": (.1, 96), "kafka": (.4, 384),
+          "frontend": (.15, 192), "nginx": (.1, 64)}
 BUSINESS_TABLES = ('t_user', 't_product', 't_seckill_activity', 't_order', 't_point_log', 't_order_dlq_log')
 
 
@@ -63,6 +65,10 @@ def initialize():
 
 
 def compose(kind, *args):
+    # Published ports and disposable DB name differ; service/runtime limits are inherited unchanged.
+    os.environ.update(MYSQL_PORT="13306", REDIS_PORT="16379", KAFKA_PORT="19092",
+                      BACKEND_PORT="18081", GATEWAY_PORT="18080", GATEWAY_BIND_ADDRESS="127.0.0.1",
+                      MYSQL_DATABASE="shanpu_bench")
     affinity = RUNTIME / 'cpu-affinity.json'
     if affinity.exists():
         pins = json.loads(affinity.read_text())
@@ -101,7 +107,7 @@ def check_engine():
 
 def validate_config(config):
     budget = config.get("x-test-machine", {})
-    if budget != {"cpus": 2, "memory_mib": 2048, "host_reserve_mib": 608}:
+    if budget != {"cpus": 2, "memory_mib": 2048, "host_reserve_mib": 416}:
         raise RuntimeError("Target-machine budget must remain exactly 2 CPUs / 2048 MiB")
     if set(config["services"]) != set(LIMITS):
         raise RuntimeError("Unexpected services in the target-machine budget")
@@ -110,25 +116,27 @@ def validate_config(config):
         service = config["services"][name]
         if (float(service.get("cpus", 0)) != cpus or int(service.get("mem_limit", 0)) != mib * MIB
                 or int(service.get("memswap_limit", 0)) != mib * MIB
-                or service.get("restart") != "no" or not 0 < service.get("pids_limit", 0) <= 192):
+                or service.get("restart") != "unless-stopped" or not 0 < service.get("pids_limit", 0) <= 192):
             raise RuntimeError(f"Invalid hard resource limits for {name}")
         total_cpu += cpus
         total_memory += mib
     if abs(total_cpu - 2) > 1e-9 or total_memory + budget["host_reserve_mib"] != 2048:
         raise RuntimeError("Target budget sum is inconsistent")
     return {"cpuLimit": total_cpu, "containerMemoryMiB": total_memory,
-            "hostReserveMiB": 608, "machineMemoryMiB": 2048}
+            "hostReserveMiB": 416, "machineMemoryMiB": 2048}
 
 
-def validate_container(name, container, expected_cpuset=None):
+def validate_container(name, container, expected_cpuset=None, expected_pids=None):
     cpus, mib = LIMITS[name]
     actual = container["HostConfig"]
     if (actual.get("NanoCpus") != round(cpus * 1e9) or actual.get("Memory") != mib * MIB
             or actual.get("MemorySwap") != mib * MIB or not 0 < actual.get("PidsLimit", 0) <= 192
             or actual.get("Privileged") or actual.get("NetworkMode") == "host"
-            or actual.get("RestartPolicy", {}).get("Name") != "no"):
+            or actual.get("RestartPolicy", {}).get("Name") != "unless-stopped"):
         raise RuntimeError(f"Docker did not apply the required CPU/memory/swap limits to {name}")
     actual_cpuset = actual.get('CpusetCpus', '')
+    if expected_pids is not None and actual.get('PidsLimit') != expected_pids:
+        raise RuntimeError(f'Docker did not apply the required PID limit to {name}')
     if expected_cpuset is not None and cpu_list(actual_cpuset or '') != cpu_list(expected_cpuset or ''):
         raise RuntimeError(f'Docker did not apply the required CPU affinity to {name}')
     if (container["State"].get("OOMKilled") or not container["State"].get("Running")
@@ -136,6 +144,8 @@ def validate_container(name, container, expected_cpuset=None):
         raise RuntimeError(f"Target service {name} has stopped or was OOM-killed")
     return {"service": name, "imageId": container["Image"], "cpuLimit": cpus,
             "memoryLimitMiB": mib, "memorySwapMiB": mib, "oomKilled": False,
+            'pidsLimit': actual['PidsLimit'],
+            'restartPolicy': actual['RestartPolicy']['Name'],
             'startedAt': container['State'].get('StartedAt'),
             'cpuset': cpu_string(cpu_list(actual_cpuset)) if actual_cpuset else ''}
 
@@ -168,6 +178,7 @@ def capture_final_containers(identifiers, path):
 
 
 def verify():
+    alignment = check_alignment()
     config = json.loads(command(compose("sut", "config", "--format", "json")))
     result = validate_config(config)
     services = []
@@ -176,11 +187,12 @@ def verify():
         if not identifier:
             raise RuntimeError(f"Missing target container: {name}")
         container = json.loads(command(["docker", "inspect", identifier]))[0]
-        services.append(validate_container(name, container, config['services'][name].get('cpuset', '')))
+        services.append(validate_container(name, container, config['services'][name].get('cpuset', ''),
+                                           config['services'][name]['pids_limit']))
     result.update(instanceId=initialize()["SUT_INSTANCE_ID"], services=services, machineId=machine_id(),
                   actions=actions_context(),
                   source=json.loads((RUNTIME / "sut-source.json").read_text()),
-                  environment=environment(), verifiedAtMs=int(time.time() * 1000))
+                  environment=environment(), configurationAlignment=alignment, verifiedAtMs=int(time.time() * 1000))
     (RUNTIME / "target.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -189,7 +201,7 @@ def source_metadata(scope="runner"):
     digest = hashlib.sha256()
     if scope == "sut":
         names = ("pom.xml", "backend", "experiments/observer", "experiments/application",
-                 "experiments/docker/Sut.Dockerfile", "experiments/compose.sut.yml")
+                 "experiments/compose.sut.yml", "deploy", "frontend")
     else:
         names = ("scripts/experiments", "experiments/docker/Runner.Dockerfile",
                  "experiments/requirements.txt", "experiments/compose.runner.yml")
@@ -197,7 +209,7 @@ def source_metadata(scope="runner"):
     for name in names:
         root = ROOT / name
         paths.extend([root] if root.is_file() else (p for p in root.rglob("*") if p.is_file()
-                     and not {"target", "__pycache__"}.intersection(p.parts)))
+                     and not {"target", "__pycache__", "node_modules", ".next", ".git"}.intersection(p.parts)))
     for path in sorted(paths):
         digest.update(str(path.relative_to(ROOT)).encode() + b"\0")
         with path.open("rb") as file:
@@ -220,14 +232,17 @@ def build():
                     "tar --exclude=target -cf - pom.xml backend experiments | tar -xf - -C /build && "
                     "cd /build && mvn -B -ntp '-Dtest=!DatabaseMigrationTest,!OrderConcurrencyTest' "
                     "-Dsurefire.failIfNoSpecifiedTests=false '-DargLine=-Xmx192m -XX:ActiveProcessorCount=2' package && "
-                    "cp experiments/application/target/shanpu-experiment-app-1.0.0.jar /output/app.jar")
+                    "cp experiments/application/target/shanpu-experiment-app-1.0.0.jar /output/app.jar && "
+                    "mkdir -p /output/docker && "
+                    "cp backend/docker/java.options /output/docker/java.options && "
+                    "cp backend/docker/entrypoint.sh /output/docker/entrypoint.sh")
     command(["docker", "run", "--rm", "--name", "shanpu-experiment-build", "--cpus", "2",
              "--memory", "768m", "--memory-swap", "768m", "--pids-limit", "128",
              "-e", "MAVEN_OPTS=-Xms64m -Xmx384m -XX:ActiveProcessorCount=2",
              "-v", f"{ROOT}:/source:ro", "-v", f"{output}:/output",
              "-v", "shanpu-experiment-m2:/root/.m2", "maven:3.9-eclipse-temurin-17",
              "sh", "-c", build_script], capture=False)
-    command(compose("sut", "build", "backend"), capture=False)
+    command(compose("sut", "build", "backend", "frontend"), capture=False)
     command(compose("runner", "build"), capture=False)
     if source["sourceSha256"] != source_metadata()["sourceSha256"] or sut_source["sourceSha256"] != source_metadata("sut")["sourceSha256"]:
         raise RuntimeError("Sources changed during build; build again to capture a consistent image")
@@ -261,6 +276,7 @@ def validate_runner_container(container, expected_cpuset=None):
 def prepare_actions():
     require_start_memory()
     check_engine()
+    check_alignment()
     REPORTS.mkdir(parents=True, exist_ok=True)
     for name, value in initialize().items():
         # Mask disposable secrets before Docker emits any build/startup output.
@@ -278,6 +294,7 @@ def prepare_actions():
 
 def start_services():
     require_start_memory()
+    check_alignment()
     config = json.loads(command(compose('sut', 'config', '--format', 'json')))
     validate_config(config)
     command(compose('sut', 'create'), capture=False)
@@ -285,7 +302,7 @@ def start_services():
         identifier = command(compose('sut', 'ps', '-a', '-q', name)).strip()
         value = json.loads(command(['docker', 'inspect', identifier]))[0]
         value['State'] = {'Running': True, 'OOMKilled': False}
-        validate_container(name, value, config['services'][name]['cpuset'])
+        validate_container(name, value, config['services'][name]['cpuset'], config['services'][name]['pids_limit'])
     command(compose('sut', 'up', '-d', '--wait', '--wait-timeout', '300'), capture=False)
     verify()
 
@@ -347,7 +364,7 @@ def run_stage(arguments, deadline, *, preflight=False, mode='full'):
                 values = json.loads(command(['docker', 'inspect', *identifier_list, identifier], timeout=5))
                 rows = []
                 for name, value in zip(LIMITS, values[:-1]):
-                    row = validate_container(name, value, config['services'][name]['cpuset'])
+                    row = validate_container(name, value, config['services'][name]['cpuset'], config['services'][name]['pids_limit'])
                     if row['startedAt'] != expected[name]:
                         raise RuntimeError('SUT container restarted: ' + name)
                     row['resources'] = container_resources(value)
@@ -571,11 +588,15 @@ def collect(public=None):
             (public / f'{kind}.log').write_text(log)
         except (OSError, subprocess.SubprocessError) as error:
             (public / f'{kind}.log').write_text(type(error).__name__)
-    # Export commit journal before the ephemeral volume is destroyed.
+    # Export the last complete snapshot even if the publisher/runner failed.
     try:
         identifier = command(compose('sut', 'ps', '-a', '-q', 'backend')).strip()
         if identifier:
-            command(['docker', 'cp', f'{identifier}:/evidence/commits.jsonl', str(public / 'journal.jsonl')])
+            for source, destination in (('commits.jsonl', 'journal.jsonl'), ('metrics.json', 'backend-last.json')):
+                try:
+                    command(['docker', 'cp', f'{identifier}:/evidence/{source}', str(public / destination)])
+                except subprocess.SubprocessError:
+                    pass  # A failure before the first commit need not create a journal.
     except subprocess.SubprocessError:
         pass
 

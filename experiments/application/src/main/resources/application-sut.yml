@@ -1,31 +1,4 @@
-server:
-  address: 0.0.0.0
-  port: 8080
-  tomcat:
-    threads:
-      max: 32
-      min-spare: 4
-    max-connections: 128
-    accept-count: 64
-spring:
-  datasource:
-    druid:
-      initial-size: 2
-      min-idle: 2
-      max-active: 8
-      max-wait: 3000
-  data:
-    redis:
-      lettuce:
-        shutdown-timeout: 100ms
-  kafka:
-    producer:
-      buffer-memory: 8388608
-    consumer:
-      max-poll-records: 20
-      properties:
-        fetch.max.bytes: 1048576
-        max.partition.fetch.bytes: 262144
+# All performance parameters come from the shared business 2c2g profile.
 shanpu:
   experiment:
     sut-id: ${SUT_INSTANCE_ID}

@@ -1,0 +1,9 @@
+# Shared business/experiment runtime. Percentages follow the container memory limit.
+-XX:+UseG1GC
+-XX:InitialRAMPercentage=25.0
+-XX:MaxRAMPercentage=50.0
+-XX:MaxMetaspaceSize=128m
+-XX:MaxDirectMemorySize=48m
+-Xss512k
+-XX:+ExitOnOutOfMemoryError
+-Duser.timezone=Asia/Shanghai

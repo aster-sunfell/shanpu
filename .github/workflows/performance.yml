@@ -25,6 +25,7 @@ jobs:
           persist-credentials: false
       - name: Protocol, resource, evidence and report regressions
         run: |
+          python3 scripts/experiments/lib/runtime_alignment.py
           python3 -m unittest discover -s scripts/experiments/tests -v
           node scripts/experiments/tests/schedule.test.mjs
 

@@ -20,6 +20,7 @@ services:
       GITHUB_ACTIONS: "true"
       BENCH_RUNTIME: /bench/runtime
       BENCH_REPORTS: /bench/reports
+      BENCH_EVIDENCE: /bench/evidence
       MYSQL_DATABASE: shanpu_bench
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Actions initializes disposable credentials}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Actions initializes disposable credentials}
@@ -28,6 +29,12 @@ services:
     volumes:
       - ${BENCH_RUNTIME:?}:/bench/runtime
       - ${BENCH_REPORTS:?}:/bench/reports
+      - sut-evidence:/bench/evidence:ro
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "2"}
+
+volumes:
+  sut-evidence:
+    external: true
+    name: shanpu-sut_evidence

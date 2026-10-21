@@ -16,6 +16,3 @@ shanpu:
       cron: "-"
     stock-reconcile:
       cron: "-"
-logging:
-  level:
-    com.shanpu: INFO

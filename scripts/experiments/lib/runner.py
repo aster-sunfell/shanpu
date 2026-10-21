@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Performance-only A/B and B/C execution in the bounded load-runner container."""
+import copy
 import fcntl
 import json
 import os
@@ -16,6 +17,7 @@ import time
 import urllib.request
 
 import transport
+import observation
 from analysis import Evidence, save_result, write_json
 from fixtures import POINTS, PRICE, create_users, credential, prepare, snapshot, check_disk, release_redis
 from protocol import (VERSION, parse_args, matrix, budgeted_matrix, policy, context_contract,
@@ -40,10 +42,12 @@ def redis(*args): return transport.redis_command(*args)
 def lag(): return transport.lag()
 
 def api(path, token=None, body=None):
+    if path == '/admin/experiments/metrics':
+        return observation.metrics()
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(f"http://{transport.host()}:18081/api{path}",
+    request = urllib.request.Request(f"http://{transport.host()}:18080/api{path}",
                                      headers=headers, data=json.dumps(body).encode() if body is not None else None)
     with urllib.request.urlopen(request, timeout=10) as response:
         value = json.load(response)
@@ -56,12 +60,9 @@ def api(path, token=None, body=None):
 
 def require_idle(token):
     started = time.time() * 1000
-    metrics = api("/admin/experiments/metrics", token)
+    metrics = observation.fresh_metrics()
     finished = time.time() * 1000
-    offset, uncertainty = metrics["timeMs"] - (started + finished) / 2, (finished - started) / 2
-    metrics["runnerClock"] = {"offsetEstimateMs": round(offset, 3), "uncertaintyMs": round(uncertainty, 3)}
-    if abs(offset) > 50 + uncertainty:
-        raise RuntimeError("SUT/load host clocks differ by more than 50 ms; synchronize clocks before measuring")
+    metrics["runnerClock"] = observation.clock_evidence(metrics, started, finished)
     if not metrics["enabled"] or metrics.get("writeErrors"):
         raise RuntimeError("Experiment journal disabled or unhealthy; start the dedicated SUT stack")
     if metrics.get("settings", {}).get("sutId") != os.environ["SUT_INSTANCE_ID"]:
@@ -136,7 +137,7 @@ class Sampler:
                         sample["kafkaLagError"] = str(error)
                 self.backend_failures = self.backend_failures + 1 if "backendError" in sample else 0
                 if self.backend_failures >= 3:
-                    self.failure = "Backend observation failed three times consecutively"
+                    self.failure = "Backend observation failed three times consecutively: "+sample['backendError']
                 if sample.get("backend", {}).get("writeErrors"):
                     self.failure = "Backend commit journal failed"
                 try:
@@ -173,14 +174,19 @@ class JournalReader:
         self.offset, self.activity, self.token = offset, config['activityId'], token
         self.evidence, self.directory = evidence, evidence.directory
         self.has_more = False
+        self.partial_tail = False
 
     def poll(self):
         # Fixed-size API pages go straight to disk. No list of historical commits.
         with (self.directory / 'commits.jsonl').open('a') as file:
             for _ in range(64):
-                page = api(f'/admin/experiments/commits?activityId={self.activity}&after={self.offset}', self.token)
-                if page['nextOffset'] < self.offset or page['hasMore'] and page['nextOffset'] == self.offset:
+                page = observation.commits(self.offset, self.activity)
+                self.partial_tail = page.get('partialTail', False)
+                if page['nextOffset'] < self.offset:
                     raise RuntimeError('Commit cursor was truncated or did not advance')
+                if page['nextOffset'] == self.offset and page['hasMore']:
+                    self.has_more = True
+                    break  # A concurrently appended final line may still be incomplete.
                 self.offset, self.has_more = page['nextOffset'], page['hasMore']
                 self.evidence.add_commits(page['events'])
                 for event in page['events']: file.write(json.dumps(event) + '\n')
@@ -214,7 +220,7 @@ def measure(config, private, directory, token, args):
         invocation = ['k6', 'run', '--no-summary', '--no-thresholds', '--log-format', 'raw', '--console-output', str(directory / 'requests.jsonl'),
                       str(ROOT / 'scripts/experiments/k6' / f"{config['plan']}.js")]
         child_env = {**os.environ, 'POINT_CONFIG': str(private / 'point.json'), 'USER_FILE': str(private / 'users.json'),
-                     'RESULT_DIR': str(directory), 'API_BASE': f'http://{transport.host()}:18081/api'}
+                     'RESULT_DIR': str(directory), 'API_BASE': f'http://{transport.host()}:18080/api'}
         clock_wall = time.time()*1000
         started = time.monotonic()
         interruption = None
@@ -228,7 +234,9 @@ def measure(config, private, directory, token, args):
                     except RuntimeError as error:
                         interruption = str(error)
                         break
-                    if sampler.failure: raise RuntimeError(sampler.failure)
+                    if sampler.failure:
+                        interruption = sampler.failure
+                        break
                     if time.monotonic() > deadline: raise RuntimeError('Load generation exceeded its time budget')
                     time.sleep(.5)
             finally:
@@ -242,7 +250,7 @@ def measure(config, private, directory, token, args):
                 check_host_health()
             except RuntimeError as error:
                 interruption = interruption or str(error)
-            if sampler.failure and not interruption: raise RuntimeError(sampler.failure)
+            interruption = interruption or sampler.failure
             evidence.load_requests()
             injection_end = evidence.scalar('SELECT MIN(e) FROM starts') or int(time.time()*1000)
             deadline_ms = injection_end + args.drain_seconds * 1000
@@ -253,25 +261,27 @@ def measure(config, private, directory, token, args):
                     check_host_health()
                 except RuntimeError as error:
                     interruption = interruption or str(error)
-                if sampler.failure and not interruption: raise RuntimeError(sampler.failure)
+                interruption = interruption or sampler.failure
                 journal.poll()
-                metrics = api('/admin/experiments/metrics', token)
-                if not journal.has_more and evidence.pending_accepted() == 0 and not any(lag().values()) and not metrics.get('poolActive', 0) and (not ambiguous or time.time()*1000 >= deadline_ms): break
+                metrics = observation.fresh_metrics()
+                if not journal.has_more and not journal.partial_tail and evidence.pending_accepted() == 0 and not any(lag().values()) and not metrics.get('poolActive', 0) and (not ambiguous or time.time()*1000 >= deadline_ms): break
                 if time.time()*1000 >= deadline_ms: break
                 if time.monotonic() >= drain_deadline: break
                 time.sleep(.5)
             cutoff = min(int(time.time()*1000), deadline_ms)
             snapshot(config, directory, 'after', check_host=False)
             evidence.load_snapshot('after')
+            clock_start = time.time()*1000
+            after_metrics = observation.fresh_metrics()
+            clock_end = time.time()*1000
             # Collect all already-written evidence, even if processing takes past cutoff.
             # Classification still uses commit timestamps <= cutoff.
             while True:
                 journal.poll()
                 if not journal.has_more: break
-            clock_start = time.time()*1000
-            after_metrics = api('/admin/experiments/metrics', token)
-            clock_end = time.time()*1000
-            after_metrics['runnerClock'] = {'offsetEstimateMs': after_metrics['timeMs']-(clock_start+clock_end)/2, 'uncertaintyMs': (clock_end-clock_start)/2}
+            if journal.partial_tail:
+                raise RuntimeError('Commit journal contains an incomplete final record; preserving invalid evidence')
+            after_metrics['runnerClock'] = observation.clock_evidence(after_metrics, clock_start, clock_end)
             write_json(directory / 'backend-after.json', after_metrics)
             write_json(directory / 'mysql-after.json', mysql_counters())
             final_lag = lag()
@@ -282,7 +292,7 @@ def measure(config, private, directory, token, args):
         result['clockShiftMs'] = round(drift,3)
         result['ambiguousResponseCount'] = ambiguous
         if interruption:
-            result['correctnessErrors'].append('Host safety interrupted this point: ' + interruption)
+            result['correctnessErrors'].append('Measurement interrupted this point: ' + interruption)
         write_json(directory / 'load.json', {'planned':config['scheduled'], 'started':result['started'],
                    'missing':max(0,config['scheduled']-result['started']), 'vus':config['vus'],
                    'vuExhausted':result['vuExhausted'], 'metricsAggregation':'disabled; disk evidence and k6 warnings are authoritative'})
@@ -304,6 +314,10 @@ def measure(config, private, directory, token, args):
         result['sloPassed'] &= result['valid']
         save_result(directory, result)
         return result
+    except BaseException as error:
+        write_json(directory/'measurement-error.json', {'type': type(error).__name__, 'error': str(error),
+                   'observationChannel': 'read-only-evidence-volume', 'timeMs': int(time.time()*1000)})
+        raise
     finally:
         evidence.close()
 
@@ -317,12 +331,61 @@ def manifest(args, target, load_host):
             'target': target, 'loadHost': load_host, 'source': source,
             'database': os.environ['MYSQL_DATABASE'], 'platform': platform.platform(), 'points': [],
             'hostWatch': str(Path(os.environ['BENCH_HOST_STATUS']).parent.relative_to(RUNTIME)),
+            'observationChannel': 'read-only-evidence-volume',
+            'entrypoint': 'nginx -> backend; frontend running without browser load',
+            'runtimeProfile': 'prod -> 2c2g (shared deployment configuration)',
+            'experimentDifferences': ['Commit/SQL observation is enabled within the backend resource quota',
+                                     'Compensation, timeout, reconciliation and scheduled warmup jobs are disabled',
+                                     'Frontend is running without browser workload'],
             'limitations': ['GitHub-hosted vCPUs share storage, caches, kernel and host scheduling; quotas do not emulate dedicated physical cores'] + ['Single-broker results have no availability/durability claim',
                            'After-commit observation includes callback delay and residual clock error',
                            'Resource quotas are per service; idle quota is not borrowed by other services',
                            'SUT Redis memory bounds fixture working sets; fixture failures are not capacity results',
                            'After-commit journal flushes, mapper/AOP counters and sampling add measurement overhead',
                            'Global MySQL counters include observer queries; results describe this instrumented deployment']}
+
+
+def warm_runtime(args, product_id, private, directory, token):
+    """Warm the retained process after reset; these points never enter capacity results."""
+    selected = copy.copy(args)
+    selected.validation_only = True
+    selected.drain_seconds = min(args.drain_seconds, 30)
+    rates = sorted({min(min(args.rates), rate) for rate in (25, 50, 100)})
+    paths = ('A', 'B') if args.plan == 'redis-filtering' else ('B', 'C')
+    summary = {'scope': 'validation', 'status': 'running', 'points': []}
+    write_json(directory/'warmup.json', summary)
+    try:
+        for rate in rates:
+            for path in paths:
+                check_host_health()
+                if time.monotonic()+10+args.request_timeout+selected.drain_seconds+30 >= float(os.environ.get('BENCH_STAGE_DEADLINE', 'inf')):
+                    raise RuntimeError('Insufficient stage budget for runtime warmup and drain')
+                name = f'{path}-{rate}'
+                output = directory/'warmup'/name
+                output.mkdir(parents=True)
+                point = {'plan': args.plan, 'path': path, 'workload': 'mixed' if args.plan=='redis-filtering' else 'steady',
+                         'repeat': 1, 'rate': rate, 'seconds': 10, 'baseSeconds': 0, 'baseRate': 1,
+                         'vus': args.vus, 'requestTimeout': args.request_timeout, 'points': POINTS,
+                         'scheduled': rate*10, 'userPrefix': 'x'+secrets.token_hex(6)}
+                print(f'Runtime warmup {name}: {rate} RPS, 10s (validation; excluded from capacity)', flush=True)
+                prepare(point, product_id, private/'warmup'/name, output, token, api, require_idle)
+                value = measure(point, private/'warmup'/name, output, token, selected)
+                errors = list(value['loadErrors'])+list(value['correctnessErrors'])
+                if value['unresolvedCount']: errors.append('Unresolved accepted orders')
+                if any(c['failed'] for c in value['classes'].values()): errors.append('Unexpected warmup responses')
+                if value['completed'] != value['eligible']: errors.append('Eligible warmup orders incomplete')
+                passed = value['valid'] and not errors
+                summary['points'].append({'path': path, 'rate': rate, 'status': 'completed' if passed else 'failed',
+                                          'started': value['started'], 'scheduled': point['scheduled'], 'errors': errors})
+                write_json(directory/'warmup.json', summary)
+                if not passed: raise RuntimeError(f'Runtime warmup {name} invalid: '+ '; '.join(errors))
+                release_redis(private/'warmup'/name, point)
+        summary['status'] = 'completed'
+    except BaseException as error:
+        summary.update(status='failed', error=str(error))
+        raise
+    finally:
+        write_json(directory/'warmup.json', summary)
 
 
 def main(argv=None):
@@ -378,6 +441,8 @@ def main(argv=None):
                 write_json(directory / 'baseline.json', baseline)
             product_id = int(sql(f"INSERT INTO t_product(title,price,stock,status) VALUES ('experiment-{name}',{PRICE},0,1); SELECT LAST_INSERT_ID();").strip())
             meta['productId'] = product_id
+            if args.stage == 'capacity':
+                warm_runtime(args, product_id, private, directory, admin['token'])
             rounds = {path: {'expand': 0, 'refine': 0} for path in capacities(args, results)}
             search_deadline = min(time.monotonic()+args.search_minutes*60,
                                   float(os.environ.get('BENCH_STAGE_DEADLINE', 'inf'))-args.drain_seconds-args.request_timeout-60)

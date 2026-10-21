@@ -11,15 +11,15 @@ from runner import budgeted_matrix, parse_args
 
 class ResourceTest(unittest.TestCase):
     def config(self):
-        return {'x-test-machine': {'cpus': 2, 'memory_mib': 2048, 'host_reserve_mib': 608},
+        return {'x-test-machine': {'cpus': 2, 'memory_mib': 2048, 'host_reserve_mib': 416},
                 'services': {name: {'cpus': cpu, 'mem_limit': memory * MIB, 'memswap_limit': memory * MIB,
-                                    'pids_limit': 128, 'restart': 'no'} for name, (cpu, memory) in LIMITS.items()}}
+                                    'pids_limit': 128, 'restart': 'unless-stopped'} for name, (cpu, memory) in LIMITS.items()}}
 
-    def container(self, cpu=.8, memory=512):
+    def container(self, cpu=.75, memory=512, restart='unless-stopped'):
         return {'Image': 'sha256:fixture', 'State': {'Running': True, 'OOMKilled': False},
                 'HostConfig': {'NanoCpus': round(cpu * 1e9), 'Memory': memory * MIB,
                                'MemorySwap': memory * MIB, 'PidsLimit': 128,
-                               'RestartPolicy': {'Name': 'no'}}}
+                               'RestartPolicy': {'Name': restart}}}
 
     def test_engine_without_resource_support_is_rejected(self):
         info = {key: True for key in ('MemoryLimit', 'SwapLimit', 'CpuCfsQuota', 'CpuCfsPeriod', 'PidsLimit')}
@@ -53,21 +53,32 @@ class ResourceTest(unittest.TestCase):
         container['State']['OOMKilled'] = True
         with self.assertRaises(RuntimeError): validate_container('backend', container)
 
+    def test_actual_pid_limit_must_equal_the_resolved_deployment(self):
+        validate_container('backend', self.container(), expected_pids=128)
+        with self.assertRaisesRegex(RuntimeError, 'PID limit'):
+            validate_container('backend', self.container(), expected_pids=64)
+
+    def test_target_auto_restarts_but_load_cannot_repeat_after_a_failure(self):
+        with self.assertRaises(RuntimeError):
+            validate_container('backend', self.container(restart='no'))
+        with self.assertRaises(RuntimeError):
+            validate_runner_container(self.container(cpu=1,restart='unless-stopped'))
+
     def test_docker_affinity_must_match_compose_before_start(self):
         container=self.container()
         container['HostConfig']['CpusetCpus']='0,2'
         validate_container('backend',container,'0,2')
         with self.assertRaisesRegex(RuntimeError,'affinity'):validate_container('backend',container,'0,4')
-        container=self.container(cpu=1)
+        container=self.container(cpu=1,restart='no')
         container['HostConfig']['CpusetCpus']='4'
         validate_runner_container(container,'4')
         with self.assertRaisesRegex(RuntimeError,'affinity'):validate_runner_container(container,'2')
 
     def test_runner_is_bounded_and_cannot_spawn_other_containers(self):
-        validate_runner_container(self.container(cpu=1))
+        validate_runner_container(self.container(cpu=1,restart='no'))
         validate_runner_config({'cpus': 1, 'mem_limit': str(512 * MIB), 'memswap_limit': str(512 * MIB),
                                 'pids_limit': 128, 'restart': 'no'})
-        container = self.container(cpu=1)
+        container = self.container(cpu=1,restart='no')
         container['Mounts'] = [{'Source': '/var/run/docker.sock'}]
         with self.assertRaises(RuntimeError): validate_runner_container(container)
 

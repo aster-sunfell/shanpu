@@ -1,0 +1,184 @@
+name: shanpu-production
+
+# Fixed target-machine budget. The verifier checks both this sum and Docker HostConfig.
+# Compose has no project-wide cap: 1632 MiB for containers + 416 MiB host reserve = 2 GiB.
+x-test-machine:
+  cpus: 2
+  memory_mib: 2048
+  host_reserve_mib: 416
+
+x-common: &common
+  restart: unless-stopped
+  cpuset: ${SUT_CPUSET:-0,1}
+  init: true
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "2"}
+
+services:
+  mysql:
+    <<: *common
+    image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+    cpus: 0.5
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 128
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set this deployment secret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-shanpu}
+    command:
+      # Fit the existing 384 MiB limit; SHOW GLOBAL STATUS remains available.
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=128M
+      # Shared 2c2g app pool uses eight connections; reserve admin/migration headroom.
+      - --max-connections=32
+      - --thread-cache-size=4
+      - --table-open-cache=128
+      - --temptable-max-ram=16M
+      - --temptable-max-mmap=0
+      - --tmp-table-size=4M
+      - --max-heap-table-size=4M
+      - --innodb-log-buffer-size=8M
+      - --innodb-flush-log-at-trx-commit=2
+      - --default-time-zone=+08:00
+    ports: ["127.0.0.1:${MYSQL_PORT:-3306}:3306"]
+    volumes: ["mysql-data:/var/lib/mysql"]
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" mysqladmin -h 127.0.0.1 -uroot ping --silent']
+      interval: 15s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    <<: *common
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    cpus: 0.1
+    mem_limit: 96m
+    memswap_limit: 96m
+    pids_limit: 32
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set this deployment secret}
+    command: [sh, -c, 'exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 48mb --maxmemory-policy noeviction --save "" --appendonly yes --appendfsync everysec']
+    ports: ["127.0.0.1:${REDIS_PORT:-6379}:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping']
+      interval: 15s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    <<: *common
+    image: apache/kafka:3.7.2@sha256:8bd63e1bd445e5e19427a4bdbcc3d23bf6efd774b058a41b36ba87fda7623e34
+    cpus: 0.4
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 192
+    environment:
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://127.0.0.1:${KAFKA_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_LOG_CLEANER_DEDUPE_BUFFER_SIZE: "16777216"
+      KAFKA_LOG_CLEANER_THREADS: "1"
+      KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS: "3"
+      KAFKA_BACKGROUND_THREADS: "2"
+      KAFKA_QUEUED_MAX_REQUESTS: "100"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_NUM_NETWORK_THREADS: "2"
+      KAFKA_NUM_IO_THREADS: "2"
+      KAFKA_NUM_RECOVERY_THREADS_PER_DATA_DIR: "1"
+      KAFKA_HEAP_OPTS: -Xms128m -Xmx192m -Xss512k -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_LOG_RETENTION_BYTES: "134217728"
+      KAFKA_LOG_SEGMENT_BYTES: "16777216"
+    ports: ["127.0.0.1:${KAFKA_PORT:-9092}:19092"]
+    volumes: ["kafka-data:/var/lib/kafka/data"]
+    # No Kafka CLI healthcheck: each invocation would create another JVM in this budget.
+
+  backend:
+    <<: *common
+    image: shanpu-backend:2c2g
+    build:
+      context: ../backend
+      target: production
+    cpus: 0.75
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 128
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      MYSQL_PORT: "3306"
+      REDIS_PORT: "6379"
+      MYSQL_HOST: mysql
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-shanpu}
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET:?Set this deployment secret}
+    ports: ["127.0.0.1:${BACKEND_PORT:-8081}:8080"]
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      kafka: {condition: service_started}
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O - http://127.0.0.1:8080/api/health | grep -q ''"status":"UP"''']
+      interval: 15s
+      timeout: 8s
+      retries: 20
+      start_period: 45s
+
+  frontend:
+    <<: *common
+    image: shanpu-frontend:2c2g
+    build:
+      context: ../frontend
+    cpus: 0.15
+    mem_limit: 192m
+    memswap_limit: 192m
+    pids_limit: 64
+    environment:
+      NODE_OPTIONS: --max-old-space-size=96
+    depends_on:
+      backend: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "require('http').get('http://127.0.0.1:3000/favicon.ico', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  nginx:
+    <<: *common
+    image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    cpus: 0.1
+    mem_limit: 64m
+    memswap_limit: 64m
+    pids_limit: 32
+    ports: ["${GATEWAY_BIND_ADDRESS:-0.0.0.0}:${GATEWAY_PORT:-8089}:8080"]
+    volumes:
+      - ./nginx.2c2g.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.api.conf:/etc/nginx/api.conf:ro
+    depends_on:
+      backend: {condition: service_healthy}
+      frontend: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O - http://127.0.0.1:8080/healthz | grep -q ok']
+      interval: 15s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mysql-data:
+  redis-data:
+  kafka-data:

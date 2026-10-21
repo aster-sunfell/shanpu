@@ -1,6 +1,12 @@
 # GitHub Actions 性能实验
 
-压测仅在 GitHub 托管 Linux runner 执行，在同一台临时虚拟机中运行 backend、MySQL、Redis、Kafka 和 Python/k6。无需开发者本机运行服务，也无需在仓库配置数据库密码或 SSH 密钥 secrets。
+压测仅在 GitHub 托管 Linux runner 执行，在同一台临时虚拟机中运行后端、前端、Nginx、MySQL、Redis、Kafka 和独立的 Python/k6 发压容器。无需开发者本机运行服务，也无需在仓库配置数据库密码或 SSH 密钥 secrets。
+
+待测端完整继承 `deploy/compose.2c2g.yml` 的生产部署；生产与待测服务使用 `restart: unless-stopped` 自动恢复，本地开发覆盖为 `restart: "no"`。发压容器不自动重启，防止重复实验。测量中的服务退出或重启仍使结果无效，自动恢复不能掩盖失败。完整启动方式与允许差异见 [部署说明](../DEPLOYMENT.md)。
+
+后端与生产共用 Dockerfile 运行时、JVM 参数和 `2c2g` 应用配置：Tomcat 32 线程、256 个连接、64 个连接排队位、5 秒 keep-alive，数据库池最多 8 个连接。业务请求统一经过 Nginx；前端启动并计入资源预算，本轮不施加浏览器负载。
+
+指标每秒原子写入 `/evidence/metrics.json`，提交日志写入同一专属卷，发压端以只读方式读取。观测不经业务 HTTP 连接，避免 200 VU 占满连接时指标超时；准备和结束阶段等待新快照，过期、实例不符或提交日志末尾不完整仍判为无效并保留现场。具体异常写入 `measurement-error.json` 和 HTML，最后快照保留在 diagnostics。实验启用提交/SQL 观测，并关闭补偿、超时处理、对账和定时预热；这些差异明确写入报告，结论限定于此实验条件。
 
 实验设计和结论门槛见 [PLAN.md](PLAN.md)，迁移范围见 [GITHUB_ACTIONS_MIGRATION_PLAN.md](GITHUB_ACTIONS_MIGRATION_PLAN.md)，实现验证状态见 [VALIDATION.md](VALIDATION.md)。
 
@@ -56,13 +62,17 @@ B/C 的突发只引用本 job 刚完成的容量报告。B 基线必须样本充
 
 | 服务 | CPU 硬上限 | 内存硬上限 |
 |---|---:|---:|
-| backend | 0.8 | 512 MiB |
+| backend | 0.75 | 512 MiB |
 | MySQL | 0.5 | 384 MiB |
 | Redis | 0.1 | 96 MiB |
-| Kafka | 0.6 | 448 MiB |
+| Kafka | 0.4 | 384 MiB |
+| frontend | 0.15 | 192 MiB |
+| Nginx | 0.1 | 64 MiB |
 | 发压端 | 1 | 512 MiB |
 
-被测容器内存合计 1440 MiB，608 MiB 为原实验的系统预算说明，不是对宿主内存的硬预留。不能将容器配额解释为独立 2 核 / 2 GiB 服务器。环境不足时失败，不降低预算继续。
+被测容器内存合计 1632 MiB，416 MiB 为宿主余量预算，不是对宿主内存的硬预留。不能将容器配额解释为独立 2 核 / 2 GiB 服务器。环境不足时失败，不降低预算继续。前端和网关加入预算后，后端/Kafka 配额也随之调整，旧配置结果必须重测。
+
+运行时镜像固定 digest。checks 及执行前比较展开后的生产、待测和本地中间件配置，Docker inspect 核验 CPU、内存、swap、PID、CPU 集合和重启策略；后端快照记录实际 Tomcat、数据库池和 JVM 参数。配置指纹保存在 `target.configurationAlignment`，修改配置后禁止沿用旧容量基线。
 
 MySQL 固定为 8.0.46，在 384 MiB 配额内关闭未使用的 Performance Schema，并限制线程缓存和内部临时表内存；InnoDB 缓冲池仍为 128 MiB。每阶段开始前读取并核验实际数据库变量，保存到 `mysql-settings.json`，HTML 中可展开“MySQL 实际配置与版本”。配置不匹配时停止；配置变化会改变基线指纹。这是被测环境调整，结果限定于新配置，不能与旧配置的测量点混合得出收益结论。详见 [PLAN.md](PLAN.md)。
 
@@ -101,6 +111,7 @@ artifact 下载可能需要登录 GitHub。HTML 显示实验范围、commit、�
 离线单元测试和调度验证可以在开发环境执行；服务部署和发压入口会拒绝非 GitHub 托管 runner：
 
 ```bash
+python3 scripts/experiments/lib/runtime_alignment.py
 python3 -m unittest discover -s scripts/experiments/tests -v
 node scripts/experiments/tests/schedule.test.mjs
 ```

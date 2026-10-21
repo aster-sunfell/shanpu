@@ -23,7 +23,7 @@ bash scripts/db/seed-demo.sh
 
 通过 `bash scripts/dev/status.sh` 或“检查开发环境”任务验证启动结果。端口可在根目录 `.env` 中配置，默认后端 8081、前端 3000、网关 8089。
 
-前后端通过 VS Code“终止任务”或 Ctrl+C 停止。容器通过“停止中间件与网关”任务或 `bash scripts/dev/stop.sh` 停止，数据卷保留。所有容器设置 `restart: "no"`，需要手动再次启动。关闭 VS Code 不会停止后台容器。
+前后端通过 VS Code“终止任务”或 Ctrl+C 停止。本地容器通过 `bash scripts/dev/stop.sh` 停止，数据卷保留；本地使用 `restart: "no"`，按需手动启动。生产与压测待测端使用 `unless-stopped` 自动恢复，发压端不自动重启。关闭 VS Code 不会停止后台容器。
 
 Kafka 单节点使用 KRaft，broker 和 controller 位于同一个容器。详细网络配置、持久化与压测说明见 [本地开发与压测](./DEPLOYMENT.md)。
 
@@ -47,7 +47,7 @@ curl -s "$API/health" | jq
 
 验收点：
 
-- `docker compose ps` 中 mysql、redis、kafka、nginx 均为 healthy；Java 和 Next.js 由本机任务运行。
+- `docker compose ps` 中 mysql、redis、nginx 为 healthy，kafka 为 running；Java 和 Next.js 由本机任务运行。
 - `/api/health` 返回 `mysql=UP`、`redis=UP`、`kafka=UP`。
 
 ### 2. 三档抢购链路

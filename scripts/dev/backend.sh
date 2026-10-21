@@ -31,7 +31,6 @@ java -version
 
 export TZ=Asia/Shanghai
 export SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-dev}
-export SHANPU_EXPERIMENT_JOURNAL=${SHANPU_EXPERIMENT_JOURNAL:-$ROOT_DIR/.local/experiments/commits.jsonl}
 export SERVER_ADDRESS=127.0.0.1
 export SERVER_PORT="$BACKEND_PORT"
 export MYSQL_HOST=127.0.0.1 MYSQL_USERNAME=root MYSQL_PASSWORD="$MYSQL_ROOT_PASSWORD"
@@ -43,5 +42,5 @@ mvn -B -ntp -DskipTests clean package
 
 mkdir -p "$DEV_RUNTIME_DIR"
 printf '%s\n' "$$" > "$DEV_RUNTIME_DIR/backend.pid"
-read -r -a java_opts <<< "${JAVA_OPTS:--Xms256m -Xmx1g}"
-exec java "${java_opts[@]}" -Duser.timezone=Asia/Shanghai -jar target/shanpu-backend-1.0.0-exec.jar
+read -r -a java_opts <<< "${JAVA_OPTS:--XX:MaxRAM=536870912 -XX:ActiveProcessorCount=1}"
+exec java "@$ROOT_DIR/backend/docker/java.options" "${java_opts[@]}" -jar target/shanpu-backend-1.0.0-exec.jar

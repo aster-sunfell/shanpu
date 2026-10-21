@@ -4,6 +4,8 @@
 
 本地通过 Docker 运行 MySQL、Redis、Kafka 和 Nginx，Java 17 与 Next.js 在宿主机运行。安装前端依赖后，在 VS Code 执行“启动开发环境”任务，访问 `http://127.0.0.1:8089`。
 
+生产使用 `deploy/compose.2c2g.yml`，前后端和全部依赖均在 Docker 中；压测待测端继承完整生产配置，发压端单独容器化。本地按需手动启动，生产与待测服务自动恢复，发压任务不自动重启。
+
 ## 文档
 
 - [快速启动](./docs/QUICKSTART.md)

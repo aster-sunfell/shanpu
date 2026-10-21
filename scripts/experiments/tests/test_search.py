@@ -55,7 +55,7 @@ class CapacitySearchTest(unittest.TestCase):
                     patch.object(runner, 'create_users', return_value={}), patch.object(runner, 'credential', return_value={'token': 'private'}), \
                     patch.object(runner, 'require_idle', return_value=metrics), patch.object(runner, 'sql', return_value='7'), \
                     patch.object(runner, 'check_disk'), patch.object(runner, 'prepare', side_effect=prepare), \
-                    patch.object(runner, 'measure', side_effect=measure), patch.object(runner, 'release_redis'), \
+                    patch.object(runner, 'warm_runtime'), patch.object(runner, 'measure', side_effect=measure), patch.object(runner, 'release_redis'), \
                     patch.object(runner, 'report', side_effect=report), patch('builtins.print'):
                 if invalid:
                     with self.assertRaisesRegex(RuntimeError, 'Load generation invalid'):

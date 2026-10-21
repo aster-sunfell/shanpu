@@ -142,6 +142,23 @@ def stage_report(directory):
     for key in ('error', 'hostFailure'):
         if meta.get(key):
             body.append(f'<p class="failed">{text(meta[key])}</p>')
+    runtime = read_json(directory/'backend-settings.json', {}).get('settings')
+    if runtime:
+        body.append('<details><summary>业务共用运行基准与实际参数</summary><pre>'
+                    + text(json.dumps(runtime, ensure_ascii=False, indent=2)) + '</pre></details>')
+    if meta.get('observationChannel'):
+        body.append('<p>观测：只读证据卷；业务入口：Nginx；前端计入整机预算，本轮不施加浏览器负载。</p>')
+    if meta.get('experimentDifferences'):
+        body.append('<p class="warning">实验关闭定时补偿、超时处理、对账和定时预热任务，并启用提交/SQL 观测。'
+                    '结果仅代表此实验条件，不能直接等同于启用全部后台任务的生产容量。</p>')
+    warmup = read_json(directory/'warmup.json')
+    if warmup:
+        body.append('<details><summary>正式测量前的阶梯预热（validation，不计入容量）</summary><pre>'
+                    + text(json.dumps(warmup, ensure_ascii=False, indent=2)) + '</pre></details>')
+    for error_path in sorted(directory.glob('**/measurement-error.json')):
+        body.append('<details open><summary>'+text(str(error_path.parent.relative_to(directory)))
+                    +' · 测量或观测中断</summary><pre>'
+                    +text(json.dumps(read_json(error_path), ensure_ascii=False, indent=2))+'</pre></details>')
     if artifact.get('search'):
         body.append('<details><summary>容量搜索预算与停止原因</summary><pre>'
                     + text(json.dumps(artifact['search'], ensure_ascii=False, indent=2)) + '</pre></details>')

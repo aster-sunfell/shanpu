@@ -10,7 +10,11 @@
 | B | Redis 过滤后执行相同 DB 同步事务 | PAID |
 | C | Redis 预扣、Kafka ack 后受理，消费者执行 DB 事务 | PENDING |
 
-待测端固定 2 核 / 2 GiB 预算：backend 0.8 核 / 512 MiB、MySQL 0.5 核 / 384 MiB、Redis 0.1 核 / 96 MiB、Kafka 0.6 核 / 448 MiB，系统和 Docker 预留 608 MiB。服务不能借用其他服务的空闲 CPU quota，结果限定在这套配额与持久化配置下。
+待测端继承全容器生产部署，固定 2 核 / 2 GiB 预算：backend 0.75 核 / 512 MiB、MySQL 0.5 核 / 384 MiB、Redis 0.1 核 / 96 MiB、Kafka 0.4 核 / 384 MiB、frontend 0.15 核 / 192 MiB、Nginx 0.1 核 / 64 MiB，宿主余量预算 416 MiB。服务不能借用其他服务的空闲 CPU quota，结果限定在这套配额与持久化配置下。前端运行但没有浏览器负载，业务请求经过 Nginx；资源分配与旧实验不同，必须重测容量与基线。
+
+本地开发按需启动，容器使用 `restart: "no"`；生产和待测端使用 `unless-stopped`，发压端不自动重启。测量中的服务重启仍使该测量无效。应用性能参数、JVM 启动参数、运行时镜像和 API 代理配置共享来源；Compose 展开结果及 Docker 实际限制均在执行前核验。
+
+后端每秒原子发布指标，发压端只读挂载证据卷，不通过业务 HTTP 拉取指标或提交日志。关键核对等待新快照，观测过期、日志不完整或实例不符仍中止并保留证据。实验组件在原后端配额内运行；关闭定时补偿、超时处理、对账和定时预热，避免后台修正掩盖原始结果。这些差异写入报告，结论不等同于启用全部生产任务的容量。
 
 MySQL 固定 8.0.46，保留 InnoDB 缓冲池 128 MiB、日志缓冲 8 MiB、32 连接及原刷盘策略。针对 384 MiB 配额关闭 Performance Schema，线程缓存固定 4；TempTable 全局内存限额 16 MiB、单表及 MEMORY 表上限 4 MiB、关闭 TempTable mmap 回退，超额内部临时表使用磁盘。SHOW GLOBAL STATUS 计数、应用提交日志和业务数据核对继续保留。这属于被测环境配置变化，A/B、B/C 均采用同一配置，实际变量记录在 mysql-settings.json、HTML 与基线指纹中；旧配置结果不能直接拼接比较，也不能作为当前突发基线。上述设置不构成 MySQL 总内存的数学硬上限，仍以容器配额、OOM 判定和实测为准。
 

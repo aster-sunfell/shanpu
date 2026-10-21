@@ -165,14 +165,14 @@ def validate_deployment(args, target, load_host):
 
 
 def context_contract(target, settings, generator_hash=None, load_host=None, args=None, database_settings=None):
-    fields = ('service', 'imageId', 'cpuLimit', 'memoryLimitMiB', 'memorySwapMiB', 'cpuset')
+    fields = ('service', 'imageId', 'cpuLimit', 'memoryLimitMiB', 'memorySwapMiB', 'cpuset', 'pidsLimit', 'restartPolicy')
     context = {'instanceId': target['instanceId'], 'services': sorted([{k: s.get(k) for k in fields} for s in target['services']], key=lambda s: s['service']),
                'settings': settings, 'protocol': VERSION, 'generatorSource': generator_hash,
                'targetHost': {k: target.get(k) for k in ('machineId', 'environment', 'actions')}, 'loadHost': load_host}
     if args is not None:
         context['deployment'] = args.deployment
         context['generator'] = {'vus': args.vus, 'requestTimeout': args.request_timeout,
-                                'drainSeconds': args.drain_seconds, 'warmup': 'one-paid-order-per-point'}
+                                'drainSeconds': args.drain_seconds, 'warmup': 'capacity-stage-25-50-100rps-10s-plus-one-paid-order-per-point'}
     if database_settings is not None:
         context['databaseSettings'] = database_settings
     return hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()

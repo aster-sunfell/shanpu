@@ -59,7 +59,8 @@ class ExperimentOrderObserverTest {
     @Configuration(proxyBeanMethods = false)
     @EnableAspectJAutoProxy
     @EnableTransactionManagement
-    @Import({ExperimentJournal.class, ExperimentOrderObserver.class, ExperimentMetrics.class, ExperimentMetrics.Controller.class})
+    @Import({ExperimentJournal.class, ExperimentOrderObserver.class, ExperimentMetrics.class, ExperimentMetrics.Controller.class,
+             ExperimentEvidencePublisher.class})
     static class Config {
         @Bean Transactions transactionManager() { return new Transactions(); }
         @Bean TransactionTemplate transactionTemplate(Transactions manager) { return new TransactionTemplate(manager); }
@@ -110,6 +111,7 @@ class ExperimentOrderObserverTest {
             assertTrue(context.getBeansOfType(ExperimentOrderObserver.class).isEmpty());
             assertTrue(context.getBeansOfType(ExperimentMetrics.class).isEmpty());
             assertTrue(context.getBeansOfType(ExperimentMetrics.Controller.class).isEmpty());
+            assertTrue(context.getBeansOfType(ExperimentEvidencePublisher.class).isEmpty());
             assertFalse(Files.exists(file));
             verify(context.getBean(PointLogMapper.class)).insert(any());
         }

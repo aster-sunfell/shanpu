@@ -1,6 +1,9 @@
 spring:
   profiles:
     active: dev
+    group:
+      prod: [2c2g]
+      dev: [2c2g]
   application:
     name: shanpu-backend
   flyway:
@@ -38,9 +41,6 @@ spring:
 
 server:
   port: 8080
-  tomcat:
-    threads:
-      max: 100
 
 shanpu:
   jwt:
@@ -73,4 +73,4 @@ mybatis:
 
 logging:
   level:
-    com.shanpu: DEBUG
+    com.shanpu: ${SHANPU_LOG_LEVEL:INFO}
