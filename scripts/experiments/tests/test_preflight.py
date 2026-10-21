@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import time
@@ -194,6 +195,58 @@ class PreflightTest(unittest.TestCase):
                     actions.run_preflight('full', '25,50', 60, 3, 100, 4, 5)
             self.assertFalse((root/'preflight-ready.json').exists())
             self.assertEqual('failed', json.loads((directory/'manifest.json').read_text())['status'])
+
+    def test_reset_mysql_shell_selects_configured_database_and_requires_it(self):
+        # Execute the real sh command with a fake mysql binary, rather than
+        # returning table counts without checking how the CLI was invoked.
+        for database in ('shanpu_bench', 'database with spaces', None):
+            with self.subTest(database=database), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                executable = root/'mysql'
+                executable.write_text(f'#!{sys.executable}\n' + '''import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+database = next((arg.split('=', 1)[1] for arg in args if arg.startswith('--database=')), None)
+if database != os.environ['EXPECTED_DATABASE']:
+    sys.exit('ERROR 1046 (3D000): No database selected')
+Path(os.environ['MYSQL_CALL']).write_text(json.dumps({'args': args, 'passwordInEnv': bool(os.environ.get('MYSQL_PWD'))}))
+print(os.environ['EMPTY_TABLE_COUNTS'])
+''')
+                executable.chmod(0o700)
+                counts = '\n'.join(f'{name}\t0' for name in actions.BUSINESS_TABLES)
+                env = {**os.environ, 'PATH': str(root)+os.pathsep+os.environ['PATH'],
+                       'MYSQL_ROOT_PASSWORD': 'test-password-with-$-and-spaces',
+                       'EXPECTED_DATABASE': database or 'shanpu_bench',
+                       'MYSQL_CALL': str(root/'mysql-call.json'), 'EMPTY_TABLE_COUNTS': counts}
+                env.pop('MYSQL_DATABASE', None)
+                if database is not None: env['MYSQL_DATABASE'] = database
+
+                def command(args, **kwargs):
+                    if args[:4] == ['sut', 'exec', '-T', 'mysql']:
+                        return subprocess.run(args[4:], env=env, check=True, text=True,
+                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5).stdout
+                    if args[:4] == ['sut', 'exec', '-T', 'backend']: return ''
+                    if args[:4] == ['sut', 'exec', '-T', 'redis']: return '0'
+                    self.fail(f'Unexpected command: {args[:4]}')
+
+                previous = {'instanceId': 'old', 'services': []}
+                with patch.object(actions, 'ENV_FILE', root/'sut.env'), patch.object(actions, 'cleanup'), \
+                        patch.object(actions, 'start_services'), patch.object(actions, 'verify', return_value={**previous, 'instanceId': 'new'}), \
+                        patch.object(actions, 'initialize', return_value={'SUT_INSTANCE_ID': 'old'}), \
+                        patch.object(actions, 'compose', side_effect=lambda *a: list(a)), \
+                        patch.object(actions, 'command', side_effect=command), patch('builtins.print'):
+                    if database is None:
+                        with self.assertRaises(subprocess.CalledProcessError): actions.reset_after_preflight(previous)
+                        self.assertFalse((root/'mysql-call.json').exists())
+                    else:
+                        self.assertEqual(dict.fromkeys(actions.BUSINESS_TABLES, 0),
+                                         actions.reset_after_preflight(previous)['emptyTables'])
+                        call = json.loads((root/'mysql-call.json').read_text())
+                        self.assertIn('--database='+database, call['args'])
+                        self.assertTrue(call['passwordInEnv'])
+                        self.assertNotIn(env['MYSQL_ROOT_PASSWORD'], ' '.join(call['args']))
+                        query = call['args'][call['args'].index('--execute')+1]
+                        for table in actions.BUSINESS_TABLES: self.assertIn('FROM '+table, query)
 
     def test_success_archives_preflight_before_reset_and_issues_marker_for_new_environment(self):
         with tempfile.TemporaryDirectory() as temp:

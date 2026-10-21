@@ -418,7 +418,9 @@ def reset_after_preflight(previous):
     tables = BUSINESS_TABLES
     query = ' UNION ALL '.join(f"SELECT '{name}',COUNT(*) FROM {name}" for name in tables)
     result = command(compose('sut', 'exec', '-T', 'mysql', 'sh', '-c',
-                            'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --batch --skip-column-names --execute "$1"',
+                            'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot '
+                            '--database="${MYSQL_DATABASE:?MYSQL_DATABASE is required for reset verification}" '
+                            '--batch --skip-column-names --execute "$1"',
                             'sh', query), timeout=30)
     counts = {name: int(count) for name, count in (line.split('\t') for line in result.splitlines())}
     if set(counts) != set(tables) or any(counts.values()):
