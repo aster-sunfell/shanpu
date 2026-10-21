@@ -36,6 +36,7 @@ import java.util.concurrent.atomic.LongAdder;
 
 /** Counts mapper calls (including failed calls), not estimated database statement counts. */
 @Component
+@RequiredArgsConstructor
 @Profile("experiment")
 @Intercepts({
         @Signature(type = Executor.class, method = "update", args = {MappedStatement.class, Object.class}),
@@ -43,10 +44,12 @@ import java.util.concurrent.atomic.LongAdder;
                 MappedStatement.class, Object.class, RowBounds.class, ResultHandler.class})
 })
 public class ExperimentMetrics implements Interceptor {
+    private final ExperimentTransactionPressure pressure;
     private final Map<String, LongAdder> calls = new ConcurrentHashMap<>();
 
     @Override
     public Object intercept(Invocation invocation) throws Throwable {
+        pressure.beforeMapper();
         calls.computeIfAbsent(((MappedStatement) invocation.getArgs()[0]).getId(), k -> new LongAdder()).increment();
         return invocation.proceed();
     }
@@ -78,6 +81,7 @@ public class ExperimentMetrics implements Interceptor {
         public Result<Map<String, Object>> metrics() {
             Map<String, Object> result = new LinkedHashMap<>(journal.snapshot());
             result.put("sqlCalls", metrics.snapshot());
+            result.put("transactionPressure", metrics.pressure.snapshot());
             result.put("localCacheEnabled", cache.enabled());
             result.put("timeMs", System.currentTimeMillis());
             result.put("processStartedAtMs", ManagementFactory.getRuntimeMXBean().getStartTime());

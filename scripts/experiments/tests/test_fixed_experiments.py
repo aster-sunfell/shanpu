@@ -35,7 +35,9 @@ class FixedExperimentTest(unittest.TestCase):
                 calls.append(dict(config))
                 value = {'path': config['path'], 'rate': config['rate'], 'repeat': config['repeat'],
                         'workload': config['workload'], 'valid': True,
-                        'sloPassed': False, 'unresolvedCount': 0,
+                        'sloPassed': None, 'unresolvedCount': 0,
+                        'pressure':{'valid':True,'peakStartRps':600,'peakActive':8},
+                        'burst':{'completionMs':{'p99':8000}},
                         'classes': {'eligible': {'requests': config['scheduled'], 'errorRate': 0, 'responseMs': {'samples': config['scheduled'], 'p99': 100}}},
                         'completionMs': {'p99': 100}, 'completed': config['scheduled'], 'peakPendingAccepted': 1, 'drainMs': 0,
                         'completionWindowRps': config['rate'], 'correctnessErrors': [],
@@ -69,11 +71,16 @@ class FixedExperimentTest(unittest.TestCase):
             meta = json.loads((reports/'kafka-burst/run/manifest.json').read_text())
             return calls,meta
 
-    def test_all_slo_failures_are_results_and_do_not_change_fixed_rates(self):
+    def test_no_shaving_and_slow_orders_are_results_and_do_not_change_fixed_rates(self):
         calls,meta=self.run_experiment()
         self.assertEqual(6,len(calls))
         self.assertEqual('completed',meta['status'])
         self.assertTrue(all(p['rate']==600 for p in calls))
+
+    def test_missing_pressure_is_inconclusive_but_keeps_all_fixed_points(self):
+        calls,meta=self.run_experiment(response=lambda p: {'pressure':{'valid':False}})
+        self.assertEqual(6,len(calls))
+        self.assertEqual('inconclusive',meta['status'])
 
     def test_load_failure_retains_evidence_and_continues_after_idle_check(self):
         calls,meta=self.run_experiment(response=lambda p: {'valid':False,'loadErrors':['Offered load not achieved']} if p['path']=='B' else {})

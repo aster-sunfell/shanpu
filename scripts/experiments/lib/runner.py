@@ -18,6 +18,7 @@ import urllib.request
 
 import transport
 import observation
+from pressure import attach_pressure
 from analysis import Evidence, save_result, write_json
 from fixtures import PRICE, create_users, credential, prepare, snapshot, check_disk, release_redis
 from protocol import (VERSION, parse_args, matrix, budgeted_matrix, policy, context_contract,
@@ -132,6 +133,7 @@ class Sampler:
                 if sample_number % 2 == 0:
                     try:
                         sample["kafkaLag"] = lag()
+                        sample["kafkaLagTimeMs"] = int(time.time()*1000)
                     except Exception as error:
                         sample["kafkaLagError"] = str(error)
                 self.backend_failures = self.backend_failures + 1 if "backendError" in sample else 0
@@ -204,7 +206,7 @@ def verify_k6_load(result, log_path, return_code):
     if return_code:
         result['loadErrors'].append(f'k6 exit {return_code}')
     result['valid'] &= not result['loadErrors']
-    result['sloPassed'] &= result['valid']
+    if result.get('sloPassed') is not None: result['sloPassed'] &= result['valid']
 
 
 def safe_load_failure(value):
@@ -319,7 +321,9 @@ def measure(config, private, directory, token, args):
         if any(final_lag.values()): result['correctnessErrors'].append('Kafka did not drain by cutoff')
         if int(sql('SELECT COUNT(*) FROM t_order_dlq_log;').strip()): result['correctnessErrors'].append('DLQ evidence exists')
         result['valid'] &= not result['correctnessErrors'] and not result['loadErrors']
-        result['sloPassed'] &= result['valid']
+        if result.get('sloPassed') is not None: result['sloPassed'] &= result['valid']
+        if config['plan']=='kafka-burst' and config['workload']=='burst':
+            attach_pressure(result, config, before_metrics, after_metrics, directory)
         save_result(directory, result)
         return result
     except BaseException as error:
@@ -488,7 +492,7 @@ def main(argv=None):
                 value['evidenceDirectory'] = str(relative)
                 results.append((point_name, value))
                 write_json(point_dir/'result.json', value)
-                print(f"结果 {point_name}: phase={phase}, valid={value['valid']}, SLO={value['sloPassed']}, "
+                print(f"结果 {point_name}: phase={phase}, valid={value['valid']}, SLO={value['sloPassed'] if value['sloPassed'] is not None else 'not-configured'}, "
                       f"started={value['started']}/{value['scheduled']}, "
                       f"peakHttpInFlight={value.get('peakHttpInFlight')}, VUs={point['vus']}, "
                       f"responseP99Ms={value['classes'].get('eligible', {}).get('responseMs', {}).get('p99')}", flush=True)
@@ -529,7 +533,7 @@ def main(argv=None):
                 execute_point(point, 'measurement')
             meta['phaseTimings']={'measurementSeconds':round(time.monotonic()-measurement_started,3)}
             check_host_health()
-            qualified = args.validation_only or all(c['qualified'] for c in comparisons(args, results))
+            qualified = args.validation_only or all(c['qualified'] and (args.plan!='kafka-burst' or c.get('pressureQualified')) for c in comparisons(args, results))
             meta['status'] = 'completed' if len(results) == len(points) and all(r['valid'] for _, r in results) and qualified else 'inconclusive'
         except WarmupInconclusive as error:
             meta.update(status='inconclusive',error=str(error))

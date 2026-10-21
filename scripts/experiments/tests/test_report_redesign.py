@@ -37,14 +37,17 @@ class RedesignTest(unittest.TestCase):
             self.assertIn('时间线缺失',html)
             self.assertIn('数据与质量检查',html)
 
-    def test_bad_third_round_remains_visible_despite_perfect_median(self):
+    def test_slow_third_round_remains_visible_without_legacy_deadlines(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);directory=self.fixture(root,'kafka-burst')
             for path in directory.glob('*/result.json'):
-                row=json.loads(path.read_text());row['burst']['onTimeCompletedPct']=80.4 if row['path']=='C' and row['repeat']==3 else 100
+                row=json.loads(path.read_text());row['burst']['completionMs']['p99']=5310.02 if row['path']=='C' and row['repeat']==3 else 1000
                 path.write_text(json.dumps(row))
             render(root,root/'html');html=(root/'html/index.html').read_text()
-            self.assertIn('第 3 轮 Kafka 异步下单 80.4%',html)
+            self.assertIn('第 3 轮 · Kafka 异步下单: 5,310.02',html)
+            self.assertNotIn('突发请求按时受理率',html)
+            self.assertNotIn('突发请求按时完成率',html)
+            self.assertNotIn('期限 5,000',html)
             self.assertIn('data-round-select',html)
             for i in (1,2,3):self.assertIn(f'data-round="{i}"',html)
 

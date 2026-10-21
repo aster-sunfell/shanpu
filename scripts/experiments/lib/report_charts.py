@@ -1,5 +1,6 @@
 """Offline SVG views of measured summaries; no inference of performance gains."""
 import csv
+import json
 from html import escape
 import math
 from pathlib import Path
@@ -77,53 +78,77 @@ def rounds(rows, paths, label, threshold=None, percentage=False, names=None):
 
 
 def comparison_timeline(points, paths, names=None):
-    """Same scales across all rounds and paths; never select the best-looking run."""
+    """All rounds and both paths share scales. Missing DB evidence stays missing."""
     names=names or NAMES
     data=[]
     for directory,row in points:
-        file=directory/'timeline.csv'
-        if file.exists():
-            with file.open() as stream: rows=list(csv.DictReader(stream))
-            required=('second','started','completed','outstanding','pendingAccepted')
+        def csv_rows(filename, required):
+            file=directory/filename
+            if not file.exists(): return []
             try:
-                if rows and all(numeric(float(r[key])) and float(r[key])>=0 for r in rows for key in required):
-                    data.append((row,rows))
-            except (KeyError,ValueError):
-                pass  # Missing/corrupt time series is shown as unavailable, never zero.
-
+                with file.open() as stream: rows=list(csv.DictReader(stream))
+                if rows and all(numeric(float(r[k])) for r in rows for k in required): return rows
+            except (KeyError,ValueError): pass
+            return []
+        rows=csv_rows('timeline.csv',('second','started','completed','outstanding'))
+        if not rows: continue
+        database=csv_rows('database-timeline.csv',('second','transactionStarts','transactionActivePeak')) if row.get('pressure',{}).get('valid') else []
+        samples=[]
+        sample_file=directory/'pressure-samples.json'
+        if sample_file.exists():
+            try: samples=json.loads(sample_file.read_text())
+            except ValueError: pass
+        def values(source,key):
+            return [(max(0,float(r['second'])),float(r[key])) for r in source if r.get(key) is not None and numeric(float(r[key]))]
+        # label, color, values, sampled (true maxima must not be inferred from samples).
+        series=[[
+            ('请求到达','#6d7e96',values(rows,'started'),False),
+            ('下单事务开始','#b2781f',values(database,'transactionStarts'),False),
+            ('订单提交',COLORS[row['path']],values(rows,'completed'),False)], [
+            ('下单事务并发峰值',COLORS[row['path']],values(database,'transactionActivePeak'),False),
+            ('连接等待线程（采样）','#b2781f',values(samples,'poolWaitThreads'),True)], [
+            ('未完成订单',COLORS[row['path']],values(rows,'outstanding'),False)]]
+        if row['path']=='C': series[2].append(('Kafka lag（采样）','#b2781f',values(samples,'kafkaLag'),True))
+        data.append((row,series))
     if not data: return empty('时间线缺失','原始证据未包含时间线。')
-    duration=max(float(r['second']) for _,rows in data for r in rows) or 1
-    rate_top,rate_ticks=axis(max(float(r[k]) for _,rows in data for r in rows for k in ('started','completed'))*1.1)
-    pending_top,pending_ticks=axis(max(float(r['outstanding']) for _,rows in data for r in rows)*1.1)
+    duration=max(x for _,groups in data for group in groups for _,_,values,_ in group for x,_ in values) or 1
+    scales=[axis(max((v for _,groups in data for _,_,values,_ in groups[i] for _,v in values),default=1)*1.1) for i in range(3)]
     repeats=sorted({r['repeat'] for r,_ in data})
-    html='<div class="round-selector"><label>查看轮次 <select data-round-select>' + ''.join(f'<option value="{i}">第 {i} 轮</option>' for i in repeats)+'</select></label></div>'
+    html='<div class="round-selector"><label>查看轮次 <select data-round-select>'+''.join(f'<option value="{i}">第 {i} 轮</option>' for i in repeats)+'</select></label></div>'
     for repeat in repeats:
         html+=f'<div class="timeline-variant" data-round="{repeat}"><h3>第 {repeat} 轮</h3><div class="timeline-grid">'
-        selected=[(r,rows) for r,rows in data if r['repeat']==repeat]
-        for pending in (False,True):
-            top,ticks=(pending_top,pending_ticks) if pending else (rate_top,rate_ticks)
+        for group,title in enumerate(('到达、事务开始与提交 / 每秒','事务并发与连接等待 / 个','未完成订单与消息积压 / 个')):
+            top,ticks=scales[group]
             for path in paths:
-                entry=next(((r,rows) for r,rows in selected if r['path']==path),None)
+                entry=next(((r,groups[group]) for r,groups in data if r['repeat']==repeat and r['path']==path),None)
                 if not entry:
                     html+=empty(names[path]+'时间线缺失','不以其他轮次代替。');continue
-                row,rows=entry
+                row,fields=entry
+                if not any(values for _,_,values,_ in fields):
+                    html+='<div class="panel">'+empty(names[path]+' · '+title,'缺少相应时间线证据；不补零，也不从订单提交速度推算。')+'</div>'
+                    continue
                 x=lambda v:58+v/duration*490
                 y=lambda v:243-v/top*185
-                label=names[path]+(' · 未完成请求 / 个' if pending else ' · 到达与完成 / 每秒')
-                plot=txt(58,20,label,11)
+                plot=txt(58,20,names[path]+' · '+title,11)
                 for tick in ticks: plot+=line(58,y(tick),552,y(tick))+txt(46,y(tick)+4,fmt(tick),10,anchor='end')
                 for t,label in ((row.get('baseSeconds',0),'突发开始'),(row.get('baseSeconds',0)+row.get('seconds',0),'恢复低流量'),(row.get('baseSeconds',0)+row.get('seconds',0)+row.get('recoverySeconds',0),'停止注入')):
                     plot+=line(x(t),50,x(t),243,'#d4cde6','4 5')+txt(x(t),39,label,9,anchor='middle')
-                fields=[('outstanding','未完成请求',COLORS[path]),('pendingAccepted','已受理待完成','#b2781f')] if pending else [('started','请求到达','#6d7e96'),('completed','订单完成',COLORS[path])]
-                legend_items=[]
-                for i,(key,label,color) in enumerate(fields):
-                    dash='6 4' if i else ''
-                    width=2 if i else 3
-                    plot+=polyline([(x(float(r['second'])),y(float(r[key]))) for r in rows],color,dash,width)
+                items=[]
+                for i,(label,color,values,sampled) in enumerate(fields):
+                    dash=('', '6 4', '2 3')[i]
+                    width=3 if i==0 else 2
+                    segments=[[]]
+                    for t,v in values:
+                        # Gaps remain gaps: do not imply zero or a continuous sample.
+                        if sampled and segments[-1] and t-segments[-1][-1][0]>6: segments.append([])
+                        segments[-1].append((t,v))
+                    for segment in segments:
+                        plot+=polyline([(x(t),y(v)) for t,v in segment],color,dash,width)
+                    if sampled:
+                        for t,v in values: plot+=f'<circle cx="{x(t):g}" cy="{y(v):g}" r="2" fill="{color}"/>'
                     swatch=f'<svg viewBox="0 0 30 12" aria-hidden="true">{line(1,6,29,6,color,dash,width)}</svg>'
-                    legend_items.append('<span>'+swatch+escape(label)+'</span>')
-                chart_legend='<div class="timeline-legend" aria-label="图例">'+''.join(legend_items)+'</div>'
+                    items.append('<span>'+swatch+escape(label+(' · 无曲线证据' if not values else ''))+'</span>')
                 for t in range(0,int(duration)+1,10):plot+=txt(x(t),259,str(t)+'s',9,anchor='middle')
-                html+='<div class="panel timeline-panel">'+chart_legend+'<div class="chart">'+svg(plot,names[path]+(' 未完成请求' if pending else ' 到达与完成'),height=275)+'</div></div>'
+                html+='<div class="panel timeline-panel"><div class="timeline-legend" aria-label="图例">'+''.join(items)+'</div><div class="chart">'+svg(plot,names[path]+' '+title,height=275)+'</div></div>'
         html+='</div></div>'
     return html

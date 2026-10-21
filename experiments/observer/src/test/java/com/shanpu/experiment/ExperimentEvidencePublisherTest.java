@@ -54,7 +54,7 @@ class ExperimentEvidencePublisherTest {
         pool.setMaxActive(50);
         pool.setMaxWait(60000);
         try {
-            var controller = new ExperimentMetrics.Controller(new ExperimentMetrics(), journal, pool,
+            var controller = new ExperimentMetrics.Controller(new ExperimentMetrics(new ExperimentTransactionPressure(true)), journal, pool,
                     mock(ActivityLocalCache.class), new MockEnvironment().withProperty("server.tomcat.threads.max", "100"), context);
             var data = controller.metrics().getData();
             var settings = (Map<?, ?>) data.get("settings");

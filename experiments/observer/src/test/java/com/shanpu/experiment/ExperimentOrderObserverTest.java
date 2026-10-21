@@ -59,7 +59,7 @@ class ExperimentOrderObserverTest {
     @Configuration(proxyBeanMethods = false)
     @EnableAspectJAutoProxy
     @EnableTransactionManagement
-    @Import({ExperimentJournal.class, ExperimentOrderObserver.class, ExperimentMetrics.class, ExperimentMetrics.Controller.class,
+    @Import({ExperimentTransactionPressure.class, ExperimentJournal.class, ExperimentOrderObserver.class, ExperimentMetrics.class, ExperimentMetrics.Controller.class,
              ExperimentEvidencePublisher.class})
     static class Config {
         @Bean Transactions transactionManager() { return new Transactions(); }
@@ -128,6 +128,30 @@ class ExperimentOrderObserverTest {
             assertEquals(1L, context.getBean(ExperimentJournal.class).snapshot().get("syncAttempts"));
             assertEquals(1L, context.getBean(ExperimentJournal.class).snapshot().get("events"));
             assertNotNull(context.getBean(ExperimentMetrics.Controller.class));
+        }
+    }
+
+    @Test
+    void writerScopeReachesAcquiredTransactionAndSurvivesOuterRollback() {
+        try (var context = context("experiment", directory.resolve("pressure.jsonl"))) {
+            var pressure = context.getBean(ExperimentTransactionPressure.class);
+            when(context.getBean(SeckillActivityMapper.class).deductStock(12L)).thenAnswer(call -> {
+                pressure.beforeMapper();
+                assertEquals(1, pressure.snapshot().get("active"));
+                return 1;
+            });
+            assertThrows(IllegalStateException.class, () -> context.getBean(TransactionTemplate.class).executeWithoutResult(status -> {
+                sync(context);
+                assertEquals(1, pressure.snapshot().get("active"));
+                throw new IllegalStateException("outer rollback");
+            }));
+            assertEquals(1L, pressure.snapshot().get("started"));
+            assertEquals(1L, pressure.snapshot().get("ended"));
+            assertEquals(0, pressure.snapshot().get("active"));
+            // Async writer uses the same scope and transaction definition.
+            context.getBean(SeckillOrderWriter.class).createAsyncPaidOrder(message());
+            assertEquals(2L, pressure.snapshot().get("started"));
+            assertEquals(2L, pressure.snapshot().get("ended"));
         }
     }
 

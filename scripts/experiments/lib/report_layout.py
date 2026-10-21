@@ -79,21 +79,20 @@ from report_metrics import EXPERIMENTS, LABELS, paired_rows, summarize
 def metric_panel(e,key):
     rows=paired_rows(e.points,e.paths,key)
     summary=summarize(rows) if e.comparisons else None
-    threshold=(e.policy.get('responseP99Ms') if key=='burst.responseP99Ms' else
-               e.policy.get('completionP99Ms') if key=='burst.completionP99Ms' else None)
+    threshold=None
     note='尚无完整有效比较；逐轮观测仅供诊断。'
     if summary:
-        unit=' 个百分点' if key.endswith('Pct') else ' ms'
+        unit=(' 个百分点' if key.endswith('Pct') else ' ms' if key.endswith('Ms') else ' 次/秒' if key.endswith('Rps') else ' 个')
         note=f"{e.names[e.paths[1]]} − {e.names[e.paths[0]]}：配对差值中位数 {fmt(summary['difference'])}{unit}，范围 {fmt(summary['min'])} ～ {fmt(summary['max'])}{unit}。"
-        if key.endswith('Ms') and summary['reduction'] is not None:
+        if (key.endswith('Ms') or key.startswith('pressure.')) and summary['reduction'] is not None:
             note+=f"逐轮配对降幅中位数 {fmt(summary['reduction'])}%。"
     subtitle='每个点代表一轮观测，连线对应同一轮两种方案。'
-    if key in ('burst.onTimeAcceptedPct','burst.onTimeCompletedPct'):
-        limit=e.policy.get('responseP99Ms' if key.endswith('AcceptedPct') else 'completionP99Ms')
-        subtitle=f'期限 {fmt(limit)} ms；以全部突发请求为分母，不隐藏未达期限的轮次。'
-    if key in ('burst.onTimeAcceptedPct','burst.onTimeCompletedPct'):
-        below=[f'第 {i} 轮 {e.names[path]} {fmt(v)}%' for i,a,b in rows for path,v in zip(e.paths,(a,b)) if numeric(v) and v<100]
-        if below: note+=' 未全部按时'+('受理' if key.endswith('AcceptedPct') else '完成')+'：'+'；'.join(below)+'。'
+    if key.startswith('pressure.'):
+        subtitle='全测量窗口，包含突发、恢复低流量和排空；事务从已获取连接后的首条 SQL 计至结束，含重试及回滚。'
+    elif key.startswith('burst.completionP') and key.endswith('Ms'):
+        subtitle='请求发出至订单提交；仅已完成订单的分位数，须结合最终完成率，不设固定完成时限。'
+    elif key=='burst.completionPct':
+        subtitle='全部突发请求为分母；统计至观察截止，超时响应后实际提交也计入完成。'
     return panel(LABELS[key],subtitle,charts.rounds(rows,e.paths,LABELS[key],threshold,key.endswith('Pct'),e.names),text(note),e.paths,e.names)
 
 
@@ -103,21 +102,23 @@ def experiment_report(e):
     profile=(f"{p.get('rate','—')} RPS × {p.get('seconds','—')} 秒；90% 重复 / 10% 有效购买"
              if e.plan=='redis-filtering' else
              f"{p.get('base_rate','—')} RPS × {p.get('base_seconds','—')} 秒 → {p.get('burst_rate','—')} RPS × {p.get('burst_seconds','—')} 秒 → {p.get('recovery_rate','—')} RPS × {p.get('recovery_seconds','—')} 秒；全部有效购买")
-    body=['<section id="performance">'+heading('性能对照',profile)]
+    body=['<section id="performance">'+heading('数据库削峰对照' if e.plan=='kafka-burst' else '性能对照',profile)]
     body.append(f'<p>{text(e.names[e.paths[0]])} 与 {text(e.names[e.paths[1]])}，每路径 {text(p.get("repeats","—"))} 轮交替配对。</p>')
     if not e.comparisons:
         body.append('<p class="warning">尚无完整有效比较。保留观测，不输出收益结论。</p>')
+    if e.plan=='kafka-burst' and any(not r.get('pressure',{}).get('valid') for _,r in e.points):
+        body.append('<p class="warning">缺少完整有效的下单事务压力证据，不能量化削峰收益；不会用完成速率或旧响应指标代替。</p>')
     body.append('<div class="metrics-grid">')
     for key in specification['primary']: body.append(metric_panel(e,key))
     body.append('</div></section>')
     if e.plan=='kafka-burst':
-        body.append('<section id="cost">'+heading('完成等待与恢复','只计算突发批次；限时完成不等于最终完成，快速受理不等于吞吐提升。')+'<div class="metrics-grid">')
+        body.append('<section id="cost">'+heading('完成等待与恢复','完成耗时统计突发批次；最大未完成数统计全程。降低峰值必须同时评估完成量与等待代价。')+'<div class="metrics-grid">')
         for key in specification['cost']:body.append(metric_panel(e,key))
         body.append('</div><p>恢复时间从突发结束算到突发批次最后一个订单提交，早于突发结束则为 0；未全部完成或证据缺失显示为 —。它不等于停止全部注入后的排空时间。</p></section>')
         body.append('<section id="timeline">'+heading('突发过程','所有轮次、两种方案使用相同时间轴与纵轴尺度；默认第 1 轮。'))
         body.append(charts.comparison_timeline(e.points,e.paths,e.names))
-        body.append('<p>未完成请求包含已发出但尚未提交的请求，可比较同步与异步方案。已受理待完成仅表示回复后仍未提交的订单，不代表 Kafka 消息队列长度。实线为未完成请求，虚线为已受理待完成；数值接近时两条线会重合。速率单位为每秒订单数，积压单位为订单数。</p></section>')
-    body.append('<section id="validity">'+heading('数据与质量检查','有效性与服务达标分开判定；未达服务目标仍是实验结果。'))
+        body.append('<p>事务速率按固定 1 秒墙钟桶计数，首尾不足 1 秒不外推；并发峰值由每次事务进入和退出更新，排除等待连接阶段。连接等待为采样值；Kafka lag 为 broker offset 采样（可能包含尚未提交 offset 的在途消息），不等于未完成订单数。缺失采样不补零，未完成订单包含截至观察点尚未提交的请求，不能将提交变慢单独解释为削峰。</p></section>')
+    body.append('<section id="validity">'+heading('数据与质量检查','核对输入、订单守恒与事务证据；无削峰或完成较慢仍是实验结果。' if e.plan=='kafka-burst' else '有效性与服务达标分开判定；未达服务目标仍是实验结果。'))
     for path in e.paths:
         rows=[r for _,r in e.points if r['path']==path]
         if rows:
@@ -135,6 +136,9 @@ def experiment_report(e):
             value=read_json(path,{})
             if pattern.endswith('preparation.json') and value.get('status')=='completed':continue
             body.append('<p class="warning">'+text(value.get('error') or value.get('errors') or '准备或测量失败，请查看证据包。')+'</p>')
+    for _,r in e.points:
+        for error in r.get('pressure',{}).get('errors',[]):
+            body.append('<p class="warning">事务压力证据：'+text(error)+'</p>')
     if e.meta.get('error'):body.append('<p class="warning">'+text(e.meta['error'])+'</p>')
     body.append('</section><section id="observations">'+heading('详细数据与统计口径'))
     body.append('<p>方案列为各轮指标的中位数；配对差值先逐轮相减再取中位数，可能不等于两列中位数相减。比例差值用百分点。缺失数据不补零；无效点不计算收益。</p>')
@@ -143,8 +147,11 @@ def experiment_report(e):
         summaries=[(key,summarize(paired_rows(e.points,e.paths,key))) for key in keys]
         body.append(table(['指标',e.names[e.paths[0]],e.names[e.paths[1]],'配对差值中位数','配对差值范围'],[
             [LABELS[key],fmt(v['before']),fmt(v['after']),fmt(v['difference']),fmt(v['min'])+' ～ '+fmt(v['max'])] for key,v in summaries if v]))
-    body.append(table(['轮次','方案','输入有效','服务目标','发出 / 计划','最终完成 / 有效购买','错误数'],[
-        [r.get('repeat'),e.names[r['path']],'是' if r.get('valid') else '否','达标' if r.get('sloPassed') else '未达标',f"{r.get('started')}/{r.get('scheduled')}",f"{r.get('completed')}/{r.get('eligible')}",sum(c.get('failed',0) for c in r.get('classes',{}).values())] for _,r in e.points]))
+    headers=['轮次','方案','输入有效']+(['服务目标'] if e.plan=='redis-filtering' else [])+['发出 / 计划','最终完成 / 有效购买','接口异常数']
+    body.append(table(headers,[
+        [r.get('repeat'),e.names[r['path']],'是' if r.get('valid') else '否']+
+        (['达标' if r.get('sloPassed') else '未达标'] if e.plan=='redis-filtering' else [])+
+        [f"{r.get('started')}/{r.get('scheduled')}",f"{r.get('completed')}/{r.get('eligible')}",sum(c.get('failed',0) for c in r.get('classes',{}).values())] for _,r in e.points]))
     for _,r in e.points:
         errors=r.get('loadErrors',[])+r.get('correctnessErrors',[])
         if errors:body.append('<p class="warning">'+text(f"第 {r.get('repeat')} 轮 {e.names[r['path']]}："+'; '.join(errors))+'</p>')

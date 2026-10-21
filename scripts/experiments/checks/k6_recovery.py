@@ -105,7 +105,7 @@ def check(output, experiment, short=False):
         try:
             evidence.load_snapshot('before'); evidence.load_snapshot('after'); evidence.load_requests()
             evidence.add_commits(server.ledger.values())
-            value = evidence.analyze(config, {}, int(time.time()*1000), policy(args))
+            value = evidence.analyze(config, {}, int(time.time()*1000), policy(parse_args([config['plan']])))
         finally: evidence.close()
         verify_k6_load(value, directory/'k6.out', completed.returncode)
         value.update(phase=phase, scope='validation', repeat=config['repeat'], evidenceDirectory=directory.name)

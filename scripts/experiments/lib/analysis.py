@@ -208,8 +208,8 @@ class Evidence:
         if unmatched: outcomes['interrupted'] = unmatched
         response = {outcome: self.quantiles('ms', 'finishes', f"outcome='{outcome}'") for outcome in outcomes if outcome != 'interrupted'}
         classes = {}
-        completion_limit = policy['completionP99Ms']
-        response_limit = policy['responseP99Ms']
+        completion_limit = policy.get('completionP99Ms')
+        response_limit = policy.get('responseP99Ms')
         for kind in ('eligible', 'duplicate'):
             count = self.scalar('SELECT COUNT(*) FROM starts WHERE kind=?', (kind,))
             if not count: continue
@@ -300,17 +300,23 @@ class Evidence:
         growth_limit, slope_limit = max(2, offered_eligible * policy.get('backlogGrowthSeconds', .25)), max(.05, offered_eligible * policy.get('backlogSlopeFraction', .005))
         stable = growth <= growth_limit and slope <= slope_limit
         slo = bool(classes) and all(c['errorRate'] <= policy['maxErrorRate'] and c['responseMs']['p99'] is not None
-                                    and c['responseMs']['p99'] <= response_limit for c in classes.values())
-        slo = slo and completion_q['p99'] is not None and completion_q['p99'] <= completion_limit and completed == eligible
+                                    and (response_limit is None or c['responseMs']['p99'] <= response_limit) for c in classes.values())
+        slo = slo and completion_q['p99'] is not None and (completion_limit is None or completion_q['p99'] <= completion_limit) and completed == eligible
         if config['workload'] != 'burst': slo = slo and stable
         last_commit = self.scalar('SELECT MAX(ct) FROM joined WHERE ct<=?', (cutoff_ms,)) or end
         window_complete = self.scalar('SELECT COUNT(*) FROM joined WHERE ct>=? AND ct<?', (origin, end))
         health = bool(not errors and not unresolved)
+        peak_outstanding = self.scalar("""SELECT COALESCE(MAX(n),0) FROM
+            (SELECT SUM(delta) OVER (ORDER BY stamp) n FROM
+                (SELECT stamp,SUM(delta) delta FROM
+                    (SELECT t stamp,1 delta FROM joined WHERE kind='eligible'
+                     UNION ALL SELECT ct,-1 FROM joined WHERE kind='eligible' AND ct<=?) GROUP BY stamp))""", (cutoff_ms,))
         peak_http = self.scalar('''SELECT COALESCE(MAX(n),0) FROM
             (SELECT SUM(delta) OVER (ORDER BY t) n FROM
                 (SELECT t,SUM(delta) delta FROM
                     (SELECT t,1 delta FROM starts UNION ALL SELECT f,-1 FROM finishes) GROUP BY t))''')
-        return {'path': config['path'], 'workload': config['workload'], 'rate': config['rate'],
+        result = {'path': config['path'], 'workload': config['workload'], 'rate': config['rate'],
+                'originMs': origin, 'peakOutstanding':peak_outstanding,
                 'peakHttpInFlight': peak_http,
                 'scheduled': config['scheduled'], 'started': started, 'generatorLagMs': generator_lag,
                 'injectionTiming': injection_timing, 'outcomes': outcomes, 'classes': classes,
@@ -324,7 +330,15 @@ class Evidence:
                 'peakPendingAccepted': peak, 'drainMs': max(0, last_commit-end) if not unresolved else None,
                 'backlog': {'growth': growth, 'tailSlopePerSecond': slope, 'growthLimit': growth_limit, 'slopeLimit': slope_limit, 'stable': stable},
                 'correctnessErrors': errors, 'loadErrors': load_errors, 'dropped': dropped, 'missingRequests': max(0,config['scheduled']-started), 'cutoffMs': cutoff_ms,
-                'valid': health and not load_errors, 'sloPassed': bool(slo and health and not load_errors), 'timeline': buckets}
+                'valid': health and not load_errors, 'sloPassed': None if config.get('plan')=='kafka-burst' else bool(slo and health and not load_errors), 'timeline': buckets}
+        if config.get('plan')=='kafka-burst':
+            for key in ('acceptedWithinResponseDeadline','completedWithinDeadline','eligibleOnTimeSuccessPct'):
+                result.pop(key,None)
+            if burst:
+                for key in ('acceptedWithinResponseDeadline','completedWithinDeadline','onTimeAcceptedPct','onTimeCompletedPct'):
+                    burst.pop(key,None)
+        return result
+
 
 
 def save_result(directory, result):
@@ -339,8 +353,8 @@ def save_result(directory, result):
         writer.writerows(result['timeline'])
     save_curves(directory, result['timeline'])
     lines = [f"# {result['path']} / {result['workload']} / {result['rate']} RPS", '',
-             f"数据与输入有效：{result['valid']}；SLO 通过：{result['sloPassed']}。", '',
-             f"受理 {result['accepted']}，按响应期限受理 {result['acceptedWithinResponseDeadline']}，完成 {result['completed']}，按完成期限完成 {result['completedWithinDeadline']}。", '',
+             f"数据与输入有效：{result['valid']}；SLO：{result['sloPassed'] if result['sloPassed'] is not None else '未设置业务时限'}。", '',
+             f"最终完成 {result['completed']}/{result['eligible']}；接口返回与订单提交分别记录，不比较不同响应语义的成功率。", '',
              f"完成覆盖率：{result['completionCoverage']}；截止未完成受理数：{result['unresolvedCount']}。", '',
              '![请求、完成与积压曲线](curves.svg)', '',
              '分类延迟、错误率及积压判定见 [result.json](result.json)，每秒曲线数据见 [timeline.csv](timeline.csv)。', '',

@@ -18,7 +18,9 @@ def rows(plan='redis-filtering'):
                       'duplicate':{'responseMs':{'p99':30 if second else 80}}},
            'backendDelta':{'sqlCalls':{'mapper':1200 if second else 12000},'syncAttempts':1200 if second else 12000},
            'completionMs':{'p99':100},'peakPendingAccepted':10,'drainMs':20,
-           'burst':{'acceptedWithinResponseDeadline':3900 if second else 3000,'completedWithinDeadline':3800 if second else 3900,'completed':4000,'onTimeAcceptedPct':97.5 if second else 75,'onTimeCompletedPct':95 if second else 97.5}}
+           'peakOutstanding':20 if second else 10,
+           'pressure':{'valid':True,'peakStartRps':500 if second else 600,'peakActive':3 if second else 8},
+           'burst':{'completionMs':{'p50':100,'p95':200,'p99':6000 if second else 2000},'completionPct':97.5 if second else 100,'recoveryMs':4000 if second else 2000,'acceptedWithinResponseDeadline':3900 if second else 3000,'completedWithinDeadline':3800 if second else 3900,'completed':4000,'onTimeAcceptedPct':97.5 if second else 75,'onTimeCompletedPct':95 if second else 97.5}}
         result.append((str(len(result)),r))
     return args,result
 
@@ -44,8 +46,21 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(-300,item['metrics']['businessSqlPer1000Requests']['afterMinusBefore']['p50'])
         args,result=rows('kafka-burst')
         metrics=comparisons(args,result)[0]['metrics']
-        self.assertEqual(900,metrics['burst.acceptedWithinResponseDeadline']['afterMinusBefore']['p50'])
-        self.assertEqual(-100,metrics['burst.completedWithinDeadline']['afterMinusBefore']['p50'])
+        self.assertEqual(-100,metrics['pressure.peakStartRps']['afterMinusBefore']['p50'])
+        self.assertEqual(4000,metrics['burst.completionP99Ms']['afterMinusBefore']['p50'])
+        self.assertNotIn('burst.acceptedWithinResponseDeadline',metrics)
+        self.assertNotIn('eligibleResponseP99Ms',metrics)
+
+    def test_kafka_has_no_arbitrary_deadline_and_missing_pressure_cannot_claim_shaving(self):
+        args,result=rows('kafka-burst')
+        from protocol import policy
+        self.assertIsNone(policy(args)['completionP99Ms'])
+        self.assertIsNone(policy(args)['responseP99Ms'])
+        result[0][1].pop('pressure')
+        item=comparisons(args,result)[0]
+        self.assertFalse(item['pressureQualified'])
+        self.assertNotIn('pressure.peakActive',item['metrics'])
+        self.assertIn('burst.completionP99Ms',item['metrics'])
 
     def test_missing_invalid_small_sample_and_validation_cannot_claim_benefits(self):
         args,result=rows()

@@ -51,7 +51,7 @@ def render(reports, output, *, summary_path=None):
     measured_at=next((e.meta.get('startedAtMs') for e in stages if e.meta.get('startedAtMs')),None)
     renderer_hash=hashlib.sha256(b''.join(p.read_bytes() for p in sorted(Path(__file__).parent.glob('*')) if p.is_file() and p.suffix in ('.py','.css','.js'))).hexdigest()
     body.append('<p class="site-meta">原始测量时间：'+text(datetime.fromtimestamp(measured_at/1000,timezone.utc).isoformat() if measured_at else '未采集')+' · 报告生成器版本：'+renderer_hash[:12]+'。重新生成页面不会重跑或改写原始实验。</p>')
-    sections=[('performance','性能对照')]+([('cost','完成代价'),('timeline','突发过程')] if mode=='kafka-burst' else [])+[('validity','数据检查'),('observations','详细数据'),('environment','实验环境')]
+    sections=[('performance','数据库削峰' if mode=='kafka-burst' else '性能对照')]+([('cost','完成代价'),('timeline','突发过程')] if mode=='kafka-burst' else [])+[('validity','数据检查'),('observations','详细数据'),('environment','实验环境')]
     document=page('闪铺实验报告', ''.join(body), sidebar([(key,label,f'{i:02d}') for i,(key,label) in enumerate(sections,1)], actions.get('runUrl')))
     private=Path(os.environ.get('BENCH_RUNTIME','/bench/runtime'))/'sut.env'
     if private.exists():

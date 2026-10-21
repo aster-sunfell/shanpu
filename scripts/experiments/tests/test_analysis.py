@@ -166,6 +166,19 @@ class EvidenceTest(unittest.TestCase):
         self.assertEqual(0, r['completedWithinDeadline'])
         self.assertFalse(r['sloPassed'])
 
+    def test_kafka_long_completion_is_observed_without_deadline_or_response_gain(self):
+        self.config['plan']='kafka-burst'
+        self.commit['commitObservedAtMs']=6100
+        self.finish.update(outcome='timeout',orderId=None)
+        r=self.run_evidence(cutoff=7000)
+        self.assertTrue(r['valid'])
+        self.assertEqual(5100,r['completionMs']['p99'])
+        self.assertEqual(1,r['completed'])
+        self.assertEqual(1,r['committedAfterResponseFailure'])
+        self.assertIsNone(r['sloPassed'])
+        self.assertNotIn('completedWithinDeadline',r)
+        self.assertNotIn('acceptedWithinResponseDeadline',r)
+
     def test_growing_backlog_cannot_be_hidden_by_successful_drain(self):
         count=600
         config={**self.config,'seconds':60,'scheduled':count,'rate':10}

@@ -6,7 +6,7 @@ from pathlib import Path
 from analysis import percentiles, write_json
 from host import validate_affinity
 
-VERSION = 7
+VERSION = 8
 DEFAULT_VUS = 1200
 # Fixed experimental conditions; never adapted to observed results.
 REDIS_RATE = 600
@@ -26,7 +26,7 @@ def positive(value):
 
 
 def policy(args):
-    return {'responseP99Ms': args.response_p99_ms, 'completionP99Ms': args.completion_p99_ms,
+    return {'responseP99Ms': args.response_p99_ms if args.plan=='redis-filtering' else None, 'completionP99Ms': args.completion_p99_ms if args.plan=='redis-filtering' else None,
             'maxErrorRate': args.max_error_rate, 'minSamples': args.min_samples,
             'generatorLagP99Ms': 100, 'tailToleranceMs': 20, 'tailFraction': .0001,
             'backlogGrowthSeconds': .25, 'backlogSlopeFraction': .005}
@@ -45,6 +45,8 @@ def parse_args(argv=None):
     parser.add_argument('--validation-only', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
+    if args.plan=='kafka-burst':
+        args.response_p99_ms = args.completion_p99_ms = None
     args.deployment = 'github-actions'
     if not 0 <= args.max_error_rate <= 1: parser.error('--max-error-rate must be in [0,1]')
     if max(args.rate, args.burst_rate, args.base_rate, args.recovery_rate) > 800:
@@ -142,31 +144,30 @@ def comparisons(args, results):
                 metrics[name] = {'before': spread(a for a,b in values), 'after': spread(b for a,b in values),
                                  'afterMinusBefore': spread(b-a for a,b in values),
                                  'pairedReductionPct': spread((1-b/a)*100 for a,b in values) if all(a > 0 for a,b in values) else None}
-        difference('eligibleResponseP95Ms', lambda r: r['classes']['eligible']['responseMs'].get('p95'))
-        difference('eligibleSuccessfulResponseP99Ms', lambda r: r['classes']['eligible'].get('successfulResponseMs',{}).get('p99'))
-        difference('eligibleOnTimeSuccessPct', lambda r: r.get('eligibleOnTimeSuccessPct'))
-        difference('eligibleCompletionPct', lambda r: r.get('completionCoverage')*100 if r.get('completionCoverage') is not None else None)
-        difference('eligibleResponseP99Ms', lambda r: r['classes']['eligible']['responseMs']['p99'])
-        difference('completionP99Ms', lambda r: r['completionMs']['p99'])
-        difference('completed', lambda r: r['completed'])
-        difference('eligibleErrorRate', lambda r: r['classes']['eligible']['errorRate'])
         if args.plan == 'redis-filtering':
+            difference('eligibleResponseP95Ms', lambda r: r['classes']['eligible']['responseMs'].get('p95'))
+            difference('eligibleSuccessfulResponseP99Ms', lambda r: r['classes']['eligible'].get('successfulResponseMs',{}).get('p99'))
+            difference('eligibleOnTimeSuccessPct', lambda r: r.get('eligibleOnTimeSuccessPct'))
+            difference('eligibleCompletionPct', lambda r: r.get('completionCoverage')*100 if r.get('completionCoverage') is not None else None)
+            difference('eligibleResponseP99Ms', lambda r: r['classes']['eligible']['responseMs']['p99'])
+            difference('completionP99Ms', lambda r: r['completionMs']['p99'])
+            difference('completed', lambda r: r['completed'])
+            difference('eligibleErrorRate', lambda r: r['classes']['eligible']['errorRate'])
             difference('duplicateResponseP99Ms', lambda r: r['classes'].get('duplicate', {}).get('responseMs', {}).get('p99'))
             difference('businessSqlPer1000Requests', lambda r: sum(r['backendDelta']['sqlCalls'].values())*1000/r['started']
                        if 'sqlCalls' in r.get('backendDelta', {}) and r['started'] else None)
             difference('syncAttemptsPer1000Requests', lambda r: r['backendDelta']['syncAttempts']*1000/r['started']
                        if 'syncAttempts' in r.get('backendDelta', {}) and r['started'] else None)
         else:
-            difference('burst.responseP99Ms', lambda r: (r.get('burst') or {}).get('responseMs',{}).get('p99'))
-            difference('burst.completionP99Ms', lambda r: (r.get('burst') or {}).get('completionMs',{}).get('p99'))
-            difference('burst.recoveryMs', lambda r: (r.get('burst') or {}).get('recoveryMs'))
-            difference('burst.onTimeAcceptedPct', lambda r: (r.get('burst') or {}).get('onTimeAcceptedPct'))
-            difference('burst.onTimeCompletedPct', lambda r: (r.get('burst') or {}).get('onTimeCompletedPct'))
-            difference('burst.completionPct', lambda r: (r.get('burst') or {}).get('completionPct'))
-            for field in ('acceptedWithinResponseDeadline', 'completedWithinDeadline', 'completed'):
+            for key, field in (('completionP50Ms','p50'),('completionP95Ms','p95'),('completionP99Ms','p99')):
+                difference('burst.'+key, lambda r, f=field: (r.get('burst') or {}).get('completionMs',{}).get(f))
+            for field in ('recoveryMs','completionPct','completed'):
                 difference('burst.'+field, lambda r, f=field: (r.get('burst') or {}).get(f))
-            difference('peakPendingAccepted', lambda r: r['peakPendingAccepted'])
-            difference('drainMs', lambda r: r['drainMs'])
+            difference('peakOutstanding', lambda r: r.get('peakOutstanding'))
+            item['pressureQualified'] = all(r.get('pressure',{}).get('valid') for pair in valid for r in pair)
+            if item['pressureQualified']:
+                for field in ('peakStartRps','peakActive','poolWaitMs','sampledPoolWaitThreadsPeak'):
+                    difference('pressure.'+field, lambda r, f=field: r['pressure'].get(f))
     return [item]
 
 
@@ -177,15 +178,20 @@ def report(directory, meta, results, args):
                 'comparisons': paired, 'parameters': vars(args), 'points': [name for name, _ in results],
                 'environment': {'target': meta.get('target'), 'loadHost': meta.get('loadHost')}}
     write_json(directory/'experiment.json', artifact)
+    kafka=args.plan=='kafka-burst'
     lines = [f"# {args.plan}", '', f"状态：{meta['status']}；用途：{meta['scope']}。", '',
-             '固定同压配对；SLO 不达标也是测量结果，发压无效不生成收益结论。', '',
-             '| 点 | 发出/计划 | 有效 | SLO | 完成/有效请求 | 有效响应 p99 ms |',
+             '固定同压配对；无削峰收益不影响实验完成，发压或事务证据无效不生成削峰比较。' if kafka else '固定同压配对；SLO 不达标也是测量结果，发压无效不生成收益结论。', '',
+             '| 点 | 发出/计划 | 输入有效 | 完成/有效请求 | 事务开始峰值 次/秒 | 事务并发峰值 |' if kafka else '| 点 | 发出/计划 | 有效 | SLO | 完成/有效请求 | 有效响应 p99 ms |',
              '|---|---|---|---|---|---|']
     for name,r in results:
-        lines.append(f"| [{name}]({name}/report.md) | {r['started']}/{r['scheduled']} | {r['valid']} | {r['sloPassed']} | {r['completed']}/{r['eligible']} | {r['classes'].get('eligible',{}).get('responseMs',{}).get('p99')} |")
+        if kafka:
+            pressure=r.get('pressure',{})
+            lines.append(f"| [{name}]({name}/report.md) | {r['started']}/{r['scheduled']} | {r['valid']} | {r['completed']}/{r['eligible']} | {pressure.get('peakStartRps','—')} | {pressure.get('peakActive','—')} |")
+        else:
+            lines.append(f"| [{name}]({name}/report.md) | {r['started']}/{r['scheduled']} | {r['valid']} | {r['sloPassed']} | {r['completed']}/{r['eligible']} | {r['classes'].get('eligible',{}).get('responseMs',{}).get('p99')} |")
     lines += ['', '配对指标的 before/after 为每轮值的分布，afterMinusBefore 为每轮差值的分布；不将多个 p99 合并成总体 p99。',
               'Redis 主指标：有效购买响应 p95/p99、按时成功比例、最终完成比例及错误率；SQL/事务尝试仅解释机制。',
-              f'Kafka 主指标：突发请求在 {args.response_p99_ms}ms 内受理及 {args.completion_p99_ms}ms 内完成的数量；PENDING 不等于订单完成。',
+              'Kafka 主指标：覆盖突发及恢复全程的下单事务速率/并发峰值；代价为订单完成分位数、最终完成率、最大积压和恢复时间。不设置任意的完成时限，不比较 PAID/PENDING 返回耗时。',
               '完整比较见 experiment.json；每点保留逐笔请求、提交、快照、资源采样及 timeline.csv。',
               'GitHub-hosted runner 共享宿主机资源；结论限于本次机器、配额和负载，不推断最大容量。']
     (directory/'report.md').write_text('\n'.join(lines)+'\n')
