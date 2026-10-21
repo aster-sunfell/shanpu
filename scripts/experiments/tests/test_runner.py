@@ -10,7 +10,7 @@ from runner import MYSQL_MEMORY_SETTINGS, mysql_settings, verify_k6_load, runner
 
 
 class LoadEvidenceTest(unittest.TestCase):
-    def test_load_container_records_its_own_resource_counters_for_200_vu_calibration(self):
+    def test_load_container_records_its_own_resource_counters(self):
         counters = {'memory.current': '123456', 'cpu.stat': 'usage_usec 123'}
         with patch('runner.container_resources', return_value=counters):
             sample = runner_usage()

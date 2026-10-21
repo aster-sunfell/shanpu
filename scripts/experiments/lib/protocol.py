@@ -6,10 +6,9 @@ from pathlib import Path
 from analysis import percentiles, write_json
 from host import validate_affinity
 
-VERSION = 5
+VERSION = 6
 DEFAULT_VUS = 1200
-CALIBRATION_RATES = (400, 600, 800)
-# Candidate until a calibration run is reviewed; formal runs never change this rate.
+# Fixed experimental conditions; never adapted to observed results.
 REDIS_RATE = 600
 KAFKA_BURST_RATE = 600
 PLANS = ('redis-filtering', 'kafka-burst')
@@ -36,7 +35,6 @@ def policy(args):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('plan', choices=PLANS)
-    parser.add_argument('--run-type', choices=['measurement', 'calibration'], default='measurement')
     for name, default in (('rate', REDIS_RATE), ('seconds', 60), ('repeats', 3), ('vus', DEFAULT_VUS),
                           ('base-rate', 100), ('base-seconds', 20), ('burst-rate', KAFKA_BURST_RATE), ('burst-seconds', 10),
                           ('recovery-rate', 100), ('recovery-seconds', 30), ('request-timeout', 10),
@@ -50,8 +48,8 @@ def parse_args(argv=None):
     args.deployment = 'github-actions'
     if not 0 <= args.max_error_rate <= 1: parser.error('--max-error-rate must be in [0,1]')
     if max(args.rate, args.burst_rate, args.base_rate, args.recovery_rate) > 800:
-        parser.error('Rates above the 800 RPS generator verification envelope require explicit recalibration')
-    if args.vus > DEFAULT_VUS: parser.error('At most 1200 VUs in the calibrated load-runner budget')
+        parser.error('Rates above the 800 RPS generator verification envelope require new generator verification')
+    if args.vus > DEFAULT_VUS: parser.error('At most 1200 VUs in the verified load-runner budget')
     if args.repeats > 10: parser.error('At most 10 repetitions')
     if max(args.seconds, args.base_seconds, args.burst_seconds, args.recovery_seconds,
            args.drain_seconds, args.request_timeout) > 600: parser.error('Durations limited to 600 seconds')
@@ -64,9 +62,6 @@ def parse_args(argv=None):
 
 
 def matrix(args):
-    if args.run_type == 'calibration':
-        yield from calibration_matrix(args)
-        return
     burst = args.plan == 'kafka-burst'
     paths = ('B', 'C') if burst else ('A', 'B')
     for repeat in range(1, args.repeats+1):
@@ -81,34 +76,17 @@ def matrix(args):
                    'requestTimeout': args.request_timeout, 'points': 10_000_000, 'scheduled': scheduled}
 
 
-def calibration_matrix(args):
-    # Baseline only, exactly three predeclared candidates; no adaptive search.
-    import copy
-    selected = copy.copy(args)
-    selected.run_type, selected.repeats, selected.seconds = 'measurement', 1, 20
-    baseline = 'A' if args.plan == 'redis-filtering' else 'B'
-    for rate in CALIBRATION_RATES:
-        selected.rate = selected.burst_rate = rate
-        yield next(p for p in matrix(selected) if p['path'] == baseline)
-
-
-def calibration_summary(args, results):
-    rows = []
-    for name,r in results:
-        response = (r.get('burst') or {}).get('responseMs') if args.plan == 'kafka-burst' else r.get('classes',{}).get('eligible',{}).get('responseMs')
-        p99 = (response or {}).get('p99')
-        network_errors = sum(r.get('outcomes',{}).get(k,0) for k in ('network_error','timeout','internal_error'))
-        response_errors = sum(c.get('failed',0) for c in r.get('classes',{}).values())
-        waits = r.get('backendDelta',{}).get('poolWaitCount',0)
-        # Selection uses baseline pressure, never the treatment's improvement.
-        pressure = bool(waits > 0 or r.get('peakPendingAccepted',0) > 0)
-        candidate = bool(r.get('valid') and not network_errors and not response_errors and p99 is not None and 300 <= p99 <= 1000 and pressure)
-        rows.append({'point':name,'rate':r['rate'],'valid':r['valid'],'p99Ms':p99,
-                     'networkErrors':network_errors,'responseErrors':response_errors,'poolWaitCount':waits,'eligibleCandidate':candidate})
-    selected = next((r['rate'] for r in sorted(rows,key=lambda r:r['rate']) if r['eligibleCandidate']),None)
-    return {'candidates':rows,'recommendedRate':selected,'automaticallyApplied':False,
-            'rule':'Lowest predeclared baseline rate with valid load, no network/timeout/internal errors, p99 300–1000ms, and DB waiting or pending backlog',
-            'nextStep':'Review evidence, freeze the chosen rate in protocol.py and run fresh measurement; no candidate is not a capacity failure'}
+def warmup_matrix(args):
+    """Fixed equal warmup: 30s at 100 RPS, then two 30s blocks at 200 RPS."""
+    paths = ('A','B') if args.plan == 'redis-filtering' else ('B','C')
+    ceiling = args.rate if args.plan == 'redis-filtering' else args.burst_rate
+    for block, nominal_rate in enumerate((100,200,200),1):
+        for path in paths if block%2 else paths[::-1]:
+            rate = min(ceiling,nominal_rate)
+            yield {'plan':args.plan,'path':path,'workload':'mixed' if args.plan=='redis-filtering' else 'steady',
+                   'repeat':block,'rate':rate,'seconds':30,'baseSeconds':0,'baseRate':1,
+                   'vus':args.vus,'requestTimeout':args.request_timeout,'points':10_000_000,
+                   'scheduled':rate*30,'phase':'warmup'}
 
 
 def budgeted_matrix(args):
@@ -131,14 +109,14 @@ def validate_deployment(args, target, load_host):
 
 
 def context_contract(target, settings, generator_hash=None, load_host=None, args=None, database_settings=None):
-    fields = ('service', 'imageId', 'cpuLimit', 'memoryLimitMiB', 'memorySwapMiB', 'cpuset', 'pidsLimit', 'restartPolicy')
+    fields = ('service', 'imageId', 'cpuLimit', 'cpuModel', 'memoryLimitMiB', 'memorySwapMiB', 'cpuset', 'pidsLimit', 'restartPolicy')
     context = {'instanceId': target['instanceId'], 'services': sorted([{k: s.get(k) for k in fields} for s in target['services']], key=lambda s: s['service']),
                'settings': settings, 'protocol': VERSION, 'generatorSource': generator_hash,
                'targetHost': {k: target.get(k) for k in ('machineId', 'environment', 'actions')}, 'loadHost': load_host}
     if args is not None:
         context['deployment'] = args.deployment
         context['generator'] = {'vus': args.vus, 'requestTimeout': args.request_timeout,
-                                'drainSeconds': args.drain_seconds, 'warmup': 'equal-200rps-60-to-90s-three-window-stability-v1',
+                                'drainSeconds': args.drain_seconds, 'warmup': list(warmup_matrix(args)),
                                 'experiment': args.plan, 'matrix': list(matrix(args))}
     if database_settings is not None:
         context['databaseSettings'] = database_settings
@@ -146,7 +124,7 @@ def context_contract(target, settings, generator_hash=None, load_host=None, args
 
 
 def comparisons(args, results):
-    if args.validation_only or args.run_type == 'calibration': return []
+    if args.validation_only: return []
     paths = ('A', 'B') if args.plan == 'redis-filtering' else ('B', 'C')
     indexed = {(r['path'], r['repeat']): r for _, r in results}
     pairs = [(indexed.get((paths[0], i)), indexed.get((paths[1], i))) for i in range(1, args.repeats+1)]
@@ -192,13 +170,9 @@ def comparisons(args, results):
 
 def report(directory, meta, results, args):
     paired = comparisons(args, results) if meta['status'] not in ('failed', 'running') else []
-    calibration = calibration_summary(args, results) if args.run_type == 'calibration' else None
-    if calibration and meta['status'] in ('running','failed'):
-        calibration['recommendedRate'] = None
-        calibration['nextStep'] = 'Calibration did not complete safely; inspect retained evidence before choosing a load'
     artifact = {'schemaVersion': VERSION, 'plan': args.plan, 'status': meta['status'], 'scope': meta['scope'],
                 'deployment': args.deployment, 'policy': policy(args), 'contract': meta.get('contract'),
-                'comparisons': paired, 'calibration': calibration, 'parameters': vars(args), 'points': [name for name, _ in results],
+                'comparisons': paired, 'parameters': vars(args), 'points': [name for name, _ in results],
                 'environment': {'target': meta.get('target'), 'loadHost': meta.get('loadHost')}}
     write_json(directory/'experiment.json', artifact)
     lines = [f"# {args.plan}", '', f"状态：{meta['status']}；用途：{meta['scope']}。", '',

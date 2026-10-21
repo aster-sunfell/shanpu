@@ -18,11 +18,10 @@ import urllib.request
 
 import transport
 import observation
-from readiness import assess
 from analysis import Evidence, save_result, write_json
 from fixtures import POINTS, PRICE, create_users, credential, prepare, snapshot, check_disk, release_redis
 from protocol import (VERSION, parse_args, matrix, budgeted_matrix, policy, context_contract,
-                      report, validate_deployment, comparisons)
+                      report, validate_deployment, comparisons, warmup_matrix)
 from host import check_host_health, container_resources
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -304,7 +303,7 @@ def measure(config, private, directory, token, args):
         write_json(directory / 'load.json', {'planned':config['scheduled'], 'started':result['started'],
                    'missing':max(0,config['scheduled']-result['started']), 'vus':config['vus'],
                    'vuExhausted':result['vuExhausted'], 'metricsAggregation':'disabled; disk evidence and k6 warnings are authoritative'})
-        result.update(phase=config.get('phase', 'confirmation'), scope='validation' if args.validation_only else 'calibration' if args.run_type == 'calibration' else 'performance',
+        result.update(phase=config.get('phase', 'confirmation'), scope='validation' if args.validation_only else 'performance',
                       repeat=config['repeat'], seconds=config['seconds'], baseRate=config['baseRate'], baseSeconds=config['baseSeconds'], recoveryRate=config.get('recoveryRate', 0), recoverySeconds=config.get('recoverySeconds', 0), k6ExitCode=process.returncode,
                       wallSeconds=round(time.monotonic()-started, 3), backendDelta=delta(before_metrics, after_metrics))
         if abs(drift)>50 or abs(after_metrics['runnerClock']['offsetEstimateMs'])>50+after_metrics['runnerClock']['uncertaintyMs']:
@@ -335,7 +334,7 @@ def manifest(args, target, load_host):
     source = json.loads((RUNTIME / 'source.json').read_text())
     parameters = {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items()}
     return {'schemaVersion': VERSION, 'plan': args.plan, 'stage': 'experiment',
-            'scope': 'validation' if args.validation_only else 'calibration' if args.run_type == 'calibration' else 'performance', 'status': 'running', 'deployment': args.deployment,
+            'scope': 'validation' if args.validation_only else 'performance', 'status': 'running', 'deployment': args.deployment,
             'startedAtMs': int(time.time()*1000), 'parameters': parameters, 'policy': policy(args),
             'target': target, 'loadHost': load_host, 'source': source,
             'database': os.environ['MYSQL_DATABASE'], 'platform': platform.platform(), 'points': [],
@@ -348,7 +347,7 @@ def manifest(args, target, load_host):
                                      'Frontend is running without browser workload'],
             'limitations': ['GitHub-hosted vCPUs share storage, caches, kernel and host scheduling; quotas do not emulate dedicated physical cores'] + ['Single-broker results have no availability/durability claim',
                            'After-commit observation includes callback delay and residual clock error',
-                           'Resource quotas are per service; idle quota is not borrowed by other services',
+                           'All SUT containers share two logical CPUs; memory limits remain per service',
                            'SUT Redis memory bounds fixture working sets; fixture failures are not service performance results',
                            'After-commit journal flushes, mapper/AOP counters and sampling add measurement overhead',
                            'Global MySQL counters include observer queries; results describe this instrumented deployment']}
@@ -359,44 +358,46 @@ class WarmupInconclusive(RuntimeError):
 
 
 def warm_runtime(args, product_id, private, directory, token):
-    """Both paths receive equal 60–90s warmup; only the last 30s determine stability."""
+    """Fixed equal warmup; timing trends are diagnostic, not a stability gate."""
     selected = copy.copy(args)
     selected.validation_only = True
-    rate = min(args.rate if args.plan == 'redis-filtering' else args.burst_rate, 200)
-    paths = ('A', 'B') if args.plan == 'redis-filtering' else ('B', 'C')
-    summary = {'scope':'validation','status':'running','points':[]}
+    summary = {'scope':'validation','status':'running','points':[],
+               'policy':'equal fixed 90s per path; final block must have valid load and healthy responses'}
+    final_health = {}
     try:
-        for block in range(1,4):
-            stable = []
-            for path in paths if block%2 else paths[::-1]:
-                check_host_health()
-                if time.monotonic()+30+args.request_timeout+selected.drain_seconds+30 >= float(os.environ.get('BENCH_STAGE_DEADLINE','inf')):
-                    require_idle(token)
-                    raise WarmupInconclusive('Insufficient budget for warmup; no formal comparison')
-                name = f'{path}-{rate}-block{block}'
-                output, secret = directory/'warmup'/name, private/'warmup'/name
-                output.mkdir(parents=True)
-                point = {'plan':args.plan,'path':path,'workload':'mixed' if args.plan=='redis-filtering' else 'steady',
-                         'repeat':block,'rate':rate,'seconds':30,'baseSeconds':0,'baseRate':1,
-                         'vus':args.vus,'requestTimeout':args.request_timeout,'points':POINTS,
-                         'scheduled':rate*30,'userPrefix':'x'+secrets.token_hex(6),'phase':'warmup'}
-                print(f'Runtime warmup {name}: {rate} RPS, 30s (validation; excluded from comparisons)',flush=True)
-                prepare(point,product_id,secret,output,token,api,require_idle)
-                value = measure(point,secret,output,token,selected)
-                readiness = assess(value,output/'samples.jsonl')
-                summary['points'].append({'path':path,'block':block,**readiness})
-                write_json(directory/'warmup.json',summary)
-                if value['correctnessErrors'] or value['unresolvedCount']:
-                    raise RuntimeError('Warmup data invalid or unresolved; preserve evidence')
-                if value['loadErrors'] and not safe_load_failure(value):
-                    raise RuntimeError('Warmup evidence invalid: '+'; '.join(value['loadErrors']))
+        for point in warmup_matrix(args):
+            check_host_health()
+            if time.monotonic()+point['seconds']+args.request_timeout+selected.drain_seconds+30 >= float(os.environ.get('BENCH_STAGE_DEADLINE','inf')):
                 require_idle(token)
-                release_redis(secret,point)
-                stable.append(readiness['stable'])
-            if block >= 2 and all(stable):
-                summary['status']='completed'
-                return
-        raise WarmupInconclusive('Warmup did not stabilize within equal 90s per path; see warmup.json')
+                raise WarmupInconclusive('Insufficient budget for warmup; no formal comparison')
+            name = f"{point['path']}-{point['rate']}-block{point['repeat']}"
+            output, secret = directory/'warmup'/name, private/'warmup'/name
+            output.mkdir(parents=True)
+            point['userPrefix']='x'+secrets.token_hex(6)
+            print(f"Runtime warmup {name}: {point['rate']} RPS, {point['seconds']}s (validation; excluded from comparisons)",flush=True)
+            prepare(point,product_id,secret,output,token,api,require_idle)
+            value = measure(point,secret,output,token,selected)
+            healthy = bool(value['valid'] and not value['unresolvedCount']
+                           and not any(c['failed'] for c in value['classes'].values())
+                           and value['completed']==value['eligible'])
+            row={'path':point['path'],'block':point['repeat'],'rate':point['rate'],'healthy':healthy,
+                 'started':value['started'],'scheduled':point['scheduled'],'outcomes':value.get('outcomes',{}),
+                 'loadErrors':value['loadErrors'],'correctnessErrors':value['correctnessErrors'],
+                 'windows':value.get('warmupWindows',[]),'backendDelta':value.get('backendDelta',{})}
+            summary['points'].append(row)
+            write_json(directory/'warmup.json',summary)
+            if value['correctnessErrors'] or value['unresolvedCount']:
+                raise RuntimeError('Warmup data invalid or unresolved; preserve evidence')
+            if value['loadErrors'] and not safe_load_failure(value):
+                raise RuntimeError('Warmup evidence invalid: '+'; '.join(value['loadErrors']))
+            # Retire an early failed point only after conservation/commit checks and an idle SUT.
+            require_idle(token)
+            row['recoveryVerified']=True
+            release_redis(secret,point)
+            final_health[point['path']]=healthy
+        if not all(final_health.values()):
+            raise WarmupInconclusive('Final warmup block has invalid load or unhealthy responses; no formal comparison')
+        summary['status']='completed'
     except WarmupInconclusive as error:
         summary.update(status='inconclusive',error=str(error))
         raise
@@ -411,12 +412,12 @@ def main(argv=None):
     args = parse_args(argv)
     points = budgeted_matrix(args)
     if args.dry_run:
-        print(json.dumps({'scope': 'validation' if args.validation_only else 'calibration' if args.run_type == 'calibration' else 'performance', 'policy': policy(args), 'measurements': points}, ensure_ascii=False, indent=2))
+        print(json.dumps({'scope': 'validation' if args.validation_only else 'performance', 'policy': policy(args), 'measurements': points}, ensure_ascii=False, indent=2))
         return 0
     if os.environ.get('BENCH_CONTAINER') != '1' or os.environ.get('GITHUB_ACTIONS') != 'true': raise RuntimeError('Use the resource-limited load-runner container')
     target = json.loads((RUNTIME / 'target.json').read_text())
     load_host = json.loads((RUNTIME / 'load-host.json').read_text())
-    if target['instanceId'] != os.environ['SUT_INSTANCE_ID'] or target['machineMemoryMiB'] != 2048 or target['cpuLimit'] != 2:
+    if target['instanceId'] != os.environ['SUT_INSTANCE_ID'] or target['machineMemoryMiB'] != 2048 or target['cpuLimit'] != 2 or target.get('cpuModel') != 'shared-cpuset':
         raise RuntimeError('Target resource verification is missing or belongs to another SUT')
     validate_deployment(args, target, load_host)
     if not os.environ.get('BENCH_HOST_STATUS'):
@@ -522,7 +523,7 @@ def main(argv=None):
                 return value
 
             for point in points:
-                execute_point(point, args.run_type)
+                execute_point(point, 'measurement')
             check_host_health()
             qualified = args.validation_only or all(c['qualified'] for c in comparisons(args, results))
             meta['status'] = 'completed' if len(results) == len(points) and all(r['valid'] for _, r in results) and qualified else 'inconclusive'

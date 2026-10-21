@@ -22,7 +22,7 @@ class PreflightTest(unittest.TestCase):
         for plan,total,batch in [('redis-filtering',216000,36000), ('kafka-burst',66000,11000)]:
             value=preflight.dataset_plan(parse_args([plan]))
             self.assertEqual(total,value['formalRequests'])
-            self.assertEqual(int((total+36000)*1.2),value['seedUsers'])
+            self.assertEqual(int((total+30000)*1.2),value['seedUsers'])
             self.assertEqual(batch,value['batchUsers'])
             self.assertEqual(5,value['probeRate'])
         self.assertNotEqual(actions.experiment_parameters('redis-filtering'),actions.experiment_parameters('kafka-burst'))
@@ -30,7 +30,7 @@ class PreflightTest(unittest.TestCase):
     def resources(self, current=300, inactive=0, events='max 0\noom 0\noom_kill 0'):
         return [{'service': 'mysql', 'memoryLimitMiB': 384, 'resources': {
             'memory.current': str(current*1048576), 'memory.stat': f'inactive_file {inactive*1048576}',
-            'memory.events': events}}]
+            'memory.events': events, 'cpu.max':'max 100000', 'cpuset.cpus.effective':'0-1'}}]
 
     def test_mysql_startup_near_limit_is_rejected_and_file_cache_is_reported_separately(self):
         self.assertIn('error', preflight_memory(self.resources(current=369), 64))
@@ -49,14 +49,14 @@ class PreflightTest(unittest.TestCase):
             root = Path(temp)
             (root/'source.json').write_text(json.dumps({'sourceSha256': 'source'}))
             target = {'source': {'sourceSha256': 'source'},
-                      'services': [{'service': name, 'startedAt': 'before'} for name in actions.LIMITS]}
+                      'services': [{'service': name, 'startedAt': 'before'} for name in actions.MEMORY_LIMITS]}
             calls, overrides = [], []
             container = {'Image': 'image', 'State': {'Running': True, 'OOMKilled': False, 'StartedAt': 'before'}}
 
             def command(args, **kwargs):
                 calls.append(args)
                 if args[:2] == ['compose', 'sut']:
-                    if 'config' in args: return json.dumps({'services': {n: {'cpuset': '0,1', 'pids_limit': 128} for n in actions.LIMITS}})
+                    if 'config' in args: return json.dumps({'services': {n: {'cpuset': '0,1', 'pids_limit': 128} for n in actions.MEMORY_LIMITS}})
                     return args[-1]+'-id'
                 if args[:2] == ['compose', 'runner']:
                     if '--file' in args:
@@ -68,7 +68,7 @@ class PreflightTest(unittest.TestCase):
                 return ''
 
             def validate(name, value, cpuset, pids):
-                return {'service': name, 'startedAt': 'before', 'memoryLimitMiB': actions.LIMITS[name][1]}
+                return {'service': name, 'startedAt': 'before', 'memoryLimitMiB': actions.MEMORY_LIMITS[name]}
 
             with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
                     patch.dict(os.environ, {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}), \

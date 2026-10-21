@@ -109,7 +109,7 @@ def container_resources(container):
                      if line.startswith('0::'))
         root = Path('/sys/fs/cgroup')/entry.lstrip('/')
         values = {name: (root/name).read_text().strip()
-                  for name in ('memory.current', 'memory.events', 'cpu.stat', 'io.stat')}
+                  for name in ('memory.current', 'memory.events', 'cpu.stat', 'cpu.max', 'cpuset.cpus.effective', 'io.stat')}
         values['memory.stat'] = '\n'.join(line for line in (root/'memory.stat').read_text().splitlines()
                                          if line.split()[0] in ('anon', 'file', 'kernel', 'inactive_file'))
         if any(int(row.split()[1]) for row in values['memory.events'].splitlines() if row.startswith('oom_kill ')):
@@ -117,6 +117,14 @@ def container_resources(container):
         return values
     except (OSError, KeyError, StopIteration):
         return {'unavailable': 'Host cgroup v2 counters are unavailable; use external container resource sampling'}
+
+
+def validate_shared_cpu_resources(resources, expected_cpuset):
+    """Verify effective kernel settings, not just the Docker request."""
+    maximum = resources.get('cpu.max','').split()
+    cpus = cpu_list(resources.get('cpuset.cpus.effective','').strip())
+    if len(maximum)!=2 or maximum[0]!='max' or len(cpus)!=2 or cpus!=cpu_list(expected_cpuset):
+        raise RuntimeError('Kernel did not apply the shared CPU set without a per-service quota')
 
 
 def preflight_memory(containers, reserve_mib):

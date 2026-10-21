@@ -12,8 +12,8 @@ import subprocess
 import sys
 import time
 from host import (atomic_json, HostMonitor, cpu_list, cpu_string, environment, require_start_memory,
-                  select_affinity, container_resources, finalize_host_evidence, preflight_memory)
-from runtime_alignment import check_alignment
+                  select_affinity, container_resources, finalize_host_evidence, preflight_memory, validate_shared_cpu_resources)
+from runtime_alignment import check_alignment, validate_shared_cpu_config
 
 
 def require_actions():
@@ -41,8 +41,7 @@ RUNTIME = Path(os.environ.get('BENCH_RUNTIME', '/bench/runtime'))
 REPORTS = Path(os.environ.get('BENCH_REPORTS', '/bench/reports'))
 ENV_FILE = RUNTIME / "sut.env"
 MIB = 1024 * 1024
-LIMITS = {"backend": (.75, 512), "mysql": (.5, 384), "redis": (.1, 96), "kafka": (.4, 384),
-          "frontend": (.15, 192), "nginx": (.1, 64)}
+MEMORY_LIMITS = {"backend":512,"mysql":384,"redis":96,"kafka":384,"frontend":192,"nginx":64}
 BUSINESS_TABLES = ('t_user', 't_product', 't_seckill_activity', 't_order', 't_point_log', 't_order_dlq_log')
 
 
@@ -110,33 +109,38 @@ def validate_config(config):
     budget = config.get("x-test-machine", {})
     if budget != {"cpus": 2, "memory_mib": 2048, "host_reserve_mib": 416}:
         raise RuntimeError("Target-machine budget must remain exactly 2 CPUs / 2048 MiB")
-    if set(config["services"]) != set(LIMITS):
+    if set(config["services"]) != set(MEMORY_LIMITS):
         raise RuntimeError("Unexpected services in the target-machine budget")
-    total_cpu, total_memory = 0, 0
-    for name, (cpus, mib) in LIMITS.items():
+    cpu_budget = validate_shared_cpu_config(config['services'])
+    total_memory = 0
+    for name, mib in MEMORY_LIMITS.items():
         service = config["services"][name]
-        if (float(service.get("cpus", 0)) != cpus or int(service.get("mem_limit", 0)) != mib * MIB
+        if (int(service.get("mem_limit", 0)) != mib * MIB
                 or int(service.get("memswap_limit", 0)) != mib * MIB
                 or service.get("restart") != "unless-stopped" or not 0 < service.get("pids_limit", 0) <= 192):
             raise RuntimeError(f"Invalid hard resource limits for {name}")
-        total_cpu += cpus
         total_memory += mib
-    if abs(total_cpu - 2) > 1e-9 or total_memory + budget["host_reserve_mib"] != 2048:
+    if total_memory + budget["host_reserve_mib"] != 2048:
         raise RuntimeError("Target budget sum is inconsistent")
-    return {"cpuLimit": total_cpu, "containerMemoryMiB": total_memory,
+    return {**cpu_budget, "containerMemoryMiB": total_memory,
             "hostReserveMiB": 416, "machineMemoryMiB": 2048}
 
 
 def validate_container(name, container, expected_cpuset=None, expected_pids=None):
-    cpus, mib = LIMITS[name]
+    mib = MEMORY_LIMITS[name]
     actual = container["HostConfig"]
-    if (actual.get("NanoCpus") != round(cpus * 1e9) or actual.get("Memory") != mib * MIB
+    if (actual.get("NanoCpus",0) != 0 or actual.get('CpuQuota',0) not in (0,-1)
+            or actual.get('CpuPeriod',0) not in (0,100000) or actual.get('CpuShares',0) not in (0,1024)
+            or actual.get('CpuRealtimeRuntime',0) or actual.get('CpuRealtimePeriod',0)
+            or actual.get("Memory") != mib * MIB
             or actual.get("MemorySwap") != mib * MIB or not 0 < actual.get("PidsLimit", 0) <= 192
             or actual.get("Privileged") or actual.get("NetworkMode") == "host"
             or actual.get("RestartPolicy", {}).get("Name") != "unless-stopped"):
         raise RuntimeError(f"Docker did not apply the required CPU/memory/swap limits to {name}")
     if name in ('backend','nginx'): validate_nofile(actual)
     actual_cpuset = actual.get('CpusetCpus', '')
+    if len(cpu_list(actual_cpuset))!=2:
+        raise RuntimeError('Docker must bind each SUT container to two shared logical CPUs')
     if expected_pids is not None and actual.get('PidsLimit') != expected_pids:
         raise RuntimeError(f'Docker did not apply the required PID limit to {name}')
     if expected_cpuset is not None and cpu_list(actual_cpuset or '') != cpu_list(expected_cpuset or ''):
@@ -144,7 +148,7 @@ def validate_container(name, container, expected_cpuset=None, expected_pids=None
     if (container["State"].get("OOMKilled") or not container["State"].get("Running")
             or container["State"].get("Health", {}).get("Status", "healthy") != "healthy"):
         raise RuntimeError(f"Target service {name} has stopped or was OOM-killed")
-    return {"service": name, "imageId": container["Image"], "cpuLimit": cpus,
+    return {"service": name, "imageId": container["Image"], "cpuLimit": None, "cpuModel":"shared-cpuset",
             "memoryLimitMiB": mib, "memorySwapMiB": mib, "oomKilled": False,
             'pidsLimit': actual['PidsLimit'],
             'restartPolicy': actual['RestartPolicy']['Name'],
@@ -184,13 +188,16 @@ def verify():
     config = json.loads(command(compose("sut", "config", "--format", "json")))
     result = validate_config(config)
     services = []
-    for name in LIMITS:
+    for name in MEMORY_LIMITS:
         identifier = command(compose("sut", "ps", "-a", "-q", name)).strip()
         if not identifier:
             raise RuntimeError(f"Missing target container: {name}")
         container = json.loads(command(["docker", "inspect", identifier]))[0]
-        services.append(validate_container(name, container, config['services'][name].get('cpuset', ''),
-                                           config['services'][name]['pids_limit']))
+        row=validate_container(name, container, config['services'][name].get('cpuset', ''),
+                               config['services'][name]['pids_limit'])
+        row['cpuResources'] = container_resources(container)
+        validate_shared_cpu_resources(row['cpuResources'],row['cpuset'])
+        services.append(row)
     result.update(instanceId=initialize()["SUT_INSTANCE_ID"], services=services, machineId=machine_id(),
                   actions=actions_context(),
                   source=json.loads((RUNTIME / "sut-source.json").read_text()),
@@ -309,7 +316,7 @@ def start_services():
     config = json.loads(command(compose('sut', 'config', '--format', 'json')))
     validate_config(config)
     command(compose('sut', 'create'), capture=False)
-    for name in LIMITS:
+    for name in MEMORY_LIMITS:
         identifier = command(compose('sut', 'ps', '-a', '-q', name)).strip()
         value = json.loads(command(['docker', 'inspect', identifier]))[0]
         value['State'] = {'Running': True, 'OOMKilled': False}
@@ -354,7 +361,7 @@ def run_stage(arguments, deadline, *, preflight=False):
     if target['source']['sourceSha256'] != source_metadata('sut')['sourceSha256']:
         raise RuntimeError('SUT sources changed after build')
     config = json.loads(command(compose('sut', 'config', '--format', 'json')))
-    identifier_list = [command(compose('sut', 'ps', '-q', name)).strip() for name in LIMITS]
+    identifier_list = [command(compose('sut', 'ps', '-q', name)).strip() for name in MEMORY_LIMITS]
     run_id = (f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-preflight" if preflight else
               f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-{args.plan}-{secrets.token_hex(3)}")
     watch = RUNTIME / 'host-watch' / run_id
@@ -369,7 +376,7 @@ def run_stage(arguments, deadline, *, preflight=False):
     # Create evidence location before startup, so even a failed container launch is reported.
     result_dir.mkdir(parents=True)
     atomic_json(result_dir / 'manifest.json', {'schemaVersion': VERSION, 'plan': args.plan, 'stage': 'preflight' if preflight else 'experiment',
-                'scope': 'validation' if preflight or args.validation_only else 'calibration' if args.run_type == 'calibration' else 'performance', 'status': 'running',
+                'scope': 'validation' if preflight or args.validation_only else 'performance', 'status': 'running',
                 'deployment': 'github-actions', 'source': source, 'actions': actions_context()})
     identifier, watchdog, failure = None, None, None
     try:
@@ -394,11 +401,12 @@ def run_stage(arguments, deadline, *, preflight=False):
                 nonlocal memory_observations
                 values = json.loads(command(['docker', 'inspect', *identifier_list, identifier], timeout=5))
                 rows = []
-                for name, value in zip(LIMITS, values[:-1]):
+                for name, value in zip(MEMORY_LIMITS, values[:-1]):
                     row = validate_container(name, value, config['services'][name]['cpuset'], config['services'][name]['pids_limit'])
                     if row['startedAt'] != expected[name]:
                         raise RuntimeError('SUT container restarted: ' + name)
                     row['resources'] = container_resources(value)
+                    validate_shared_cpu_resources(row['resources'],config['services'][name]['cpuset'])
                     rows.append(row)
                 validate_runner_container(values[-1], service['cpuset'])
                 if values[-1]['State'].get('OOMKilled'):
@@ -419,7 +427,7 @@ def run_stage(arguments, deadline, *, preflight=False):
             watchdog = HostMonitor(watch, observe, lambda: stop([identifier, *identifier_list]),
                                    lambda: stop([identifier]), (min(args.drain_seconds, 30) if preflight else args.drain_seconds) + args.request_timeout + 30,
                                    deadline=deadline)
-            with gateway_capture(dict(zip(LIMITS,identifier_list))['nginx'],result_dir), watchdog:
+            with gateway_capture(dict(zip(MEMORY_LIMITS,identifier_list))['nginx'],result_dir), watchdog:
                 command(['docker', 'start', '--attach', identifier], capture=False)
                 container_state = json.loads(command(['docker', 'inspect', identifier]))[0]['State']
             watchdog.last_observation = 0
@@ -431,7 +439,7 @@ def run_stage(arguments, deadline, *, preflight=False):
         raise
     finally:
         try:
-            capture_final_containers({**dict(zip(LIMITS, identifier_list)), 'load-runner': identifier},
+            capture_final_containers({**dict(zip(MEMORY_LIMITS, identifier_list)), 'load-runner': identifier},
                                      result_dir / 'containers-final.json')
         except Exception as error:
             # Never hide the runner error if diagnostic collection itself fails.
@@ -443,9 +451,9 @@ def run_stage(arguments, deadline, *, preflight=False):
     return result_dir
 
 
-def experiment_parameters(experiment, run_type='measurement'):
+def experiment_parameters(experiment):
     from protocol import parse_args, VERSION
-    return {'protocol': VERSION, **vars(parse_args([experiment, '--run-type', run_type]))}
+    return {'protocol': VERSION, **vars(parse_args([experiment]))}
 
 
 def reset_after_preflight(previous):
@@ -459,7 +467,7 @@ def reset_after_preflight(previous):
     current = verify()
     if current['instanceId'] == previous['instanceId']:
         raise RuntimeError('Preflight reset did not replace the SUT instance')
-    fields = ('service', 'imageId', 'cpuLimit', 'memoryLimitMiB', 'cpuset')
+    fields = ('service', 'imageId', 'cpuLimit', 'cpuModel', 'memoryLimitMiB', 'cpuset')
     before = [{key: row.get(key) for key in fields} for row in previous['services']]
     after = [{key: row.get(key) for key in fields} for row in current['services']]
     if before != after:
@@ -483,18 +491,18 @@ def reset_after_preflight(previous):
             'emptyJournal': True, 'emptyRedis': True}
 
 
-def run_preflight(experiment, minutes, run_type='measurement'):
-    parameters = experiment_parameters(experiment, run_type)
+def run_preflight(experiment, minutes):
+    parameters = experiment_parameters(experiment)
     if not 1 <= minutes <= 12:
         raise RuntimeError('Preflight requires a 1–12 minute budget')
     marker = RUNTIME/'preflight-ready.json'
     marker.unlink(missing_ok=True)
     previous = verify()
     directory = REPORTS/'preflight'/f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT','1')}-preflight"
-    arguments = [experiment, '--run-type', run_type]
+    arguments = [experiment]
     deadline = min(time.monotonic()+minutes*60, json.loads((RUNTIME/'deadline.json').read_text())['monotonic'])
     suite = json.loads((REPORTS/'suite.json').read_text())
-    suite.update(mode=experiment, runType=run_type, scope='validation', phase='preflight')
+    suite.update(mode=experiment, scope='validation', phase='preflight')
     try:
         run_stage(arguments, deadline, preflight=True)
         collect(directory/'diagnostics')
@@ -533,17 +541,17 @@ def require_preflight(parameters):
         raise RuntimeError('Successful preflight and verified clean reset are required before measurement: '+str(error)) from error
 
 
-def run_experiment(experiment, minutes, run_type='measurement'):
-    parameters = experiment_parameters(experiment, run_type)
+def run_experiment(experiment, minutes):
+    parameters = experiment_parameters(experiment)
     if not 1 <= minutes <= 45:
         raise RuntimeError('Measurement deadline must be between 1 and 45 minutes')
     deadline = min(time.monotonic()+minutes*60, json.loads((RUNTIME/'deadline.json').read_text())['monotonic'])
     suite = json.loads((REPORTS/'suite.json').read_text())
-    suite.update(mode=experiment, runType=run_type, scope='calibration' if run_type == 'calibration' else 'performance', phase=run_type)
+    suite.update(mode=experiment, scope='performance', phase='measurement')
     atomic_json(REPORTS/'suite.json', suite)
     try:
         require_preflight(parameters)
-        directory = run_stage([experiment, '--run-type', run_type], deadline)
+        directory = run_stage([experiment], deadline)
         suite['stages'] = [str(directory.relative_to(REPORTS))]
         value = json.loads((directory/'experiment.json').read_text())
         suite['status'] = value['status']
@@ -606,7 +614,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['prepare', 'build', 'up', 'preflight', 'run', 'collect', 'cleanup'])
     parser.add_argument('--experiment', choices=['redis-filtering', 'kafka-burst'], default='redis-filtering')
-    parser.add_argument('--run-type', choices=['measurement','calibration'], default='measurement')
     parser.add_argument('--minutes', type=int, default=30)
     args = parser.parse_args()
     require_actions()
@@ -620,9 +627,9 @@ def main():
     elif args.action == 'up':
         start_services()
     elif args.action == 'preflight':
-        run_preflight(args.experiment, args.minutes, args.run_type)
+        run_preflight(args.experiment, args.minutes)
     elif args.action == 'run':
-        run_experiment(args.experiment, args.minutes, args.run_type)
+        run_experiment(args.experiment, args.minutes)
     elif args.action == 'collect':
         collect()
     elif args.action == 'cleanup':

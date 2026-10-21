@@ -66,7 +66,7 @@ class HttpQueue:
         self.loop.close()
 
 
-def check(output, experiment, run_type='measurement'):
+def check(output, experiment):
     output.mkdir(parents=True, exist_ok=True)
     args = parse_args(['kafka-burst'])
     server = HttpQueue()
@@ -124,7 +124,7 @@ def check(output, experiment, run_type='measurement'):
     try:
         # Actual default counts, durations and fixed VU allocation; only HTTP business
         # behavior is controlled. This validates the generator, not service performance.
-        selected = list(matrix(parse_args([experiment,'--run-type',run_type])))[-1]
+        selected = list(matrix(parse_args([experiment])))[-1]
         measured = execute(selected, 'fixed-profile')
         assert measured['valid'], measured['loadErrors']
         if experiment == 'kafka-burst': assert measured['burst']['requests'] == selected['rate']*selected['seconds']
@@ -141,7 +141,7 @@ def check(output, experiment, run_type='measurement'):
         assert recovered['valid'], recovered['loadErrors']
         write_json(output/'check.json', {'status': 'passed', 'scope': 'validation',
                    'description': 'Real default k6 profiles and production evidence; controlled HTTP queue, no business performance claims',
-                   'experiment': experiment, 'runType':run_type, 'verifiedEnvelope':{'rps':800,'responseDelayMs':1000,'vus':1200}, 'observedPoints': len(observed), 'resources': runner_usage()})
+                   'experiment': experiment, 'verifiedEnvelope':{'rps':800,'responseDelayMs':1000,'vus':1200}, 'observedPoints': len(observed), 'resources': runner_usage()})
     finally: server.close()
 
 
@@ -149,10 +149,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--experiment', choices=['redis-filtering','kafka-burst'], default='redis-filtering')
-    parser.add_argument('--run-type',choices=['calibration','measurement'],default='measurement')
     options = parser.parse_args()
     try:
-        check(options.output.resolve(), options.experiment, options.run_type)
+        check(options.output.resolve(), options.experiment)
     except Exception as error:
         options.output.mkdir(parents=True, exist_ok=True)
         write_json(options.output/'check.json', {'status': 'failed', 'scope': 'validation', 'error': str(error)})

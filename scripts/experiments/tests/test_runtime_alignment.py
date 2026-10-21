@@ -73,7 +73,7 @@ class RuntimeAlignmentTest(unittest.TestCase):
                                     ('redis', 'image', 'redis:other')]:
             configs = copy.deepcopy(self.configs)
             configs[1]['services'][service][key] = value
-            with self.subTest(service=service, key=key), self.assertRaisesRegex(RuntimeError, 'drift'):
+            with self.subTest(service=service, key=key), self.assertRaisesRegex(RuntimeError, 'drift|Shared CPU'):
                 validate_alignment(*configs)
 
     def test_local_middleware_cannot_override_production_limits(self):

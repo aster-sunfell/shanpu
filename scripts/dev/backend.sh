@@ -42,5 +42,5 @@ mvn -B -ntp -DskipTests clean package
 
 mkdir -p "$DEV_RUNTIME_DIR"
 printf '%s\n' "$$" > "$DEV_RUNTIME_DIR/backend.pid"
-read -r -a java_opts <<< "${JAVA_OPTS:--XX:MaxRAM=536870912 -XX:ActiveProcessorCount=1}"
+read -r -a java_opts <<< "${JAVA_OPTS:--XX:MaxRAM=536870912 -XX:ActiveProcessorCount=2}"
 exec java "@$ROOT_DIR/backend/docker/java.options" "${java_opts[@]}" -jar target/shanpu-backend-1.0.0-exec.jar

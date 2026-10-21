@@ -56,7 +56,7 @@ class ActionsTest(unittest.TestCase):
                             patch.object(actions,'require_preflight') as gate, patch.object(actions,'run_stage',return_value=root) as stage:
                         actions.run_experiment(plan,30)
                     self.assertEqual(1, stage.call_count)
-                    self.assertEqual([plan,'--run-type','measurement'], stage.call_args.args[0])
+                    self.assertEqual([plan], stage.call_args.args[0])
                     gate.assert_called_once_with(actions.experiment_parameters(plan))
                     self.assertEqual(status,json.loads((root/'suite.json').read_text())['status'])
 

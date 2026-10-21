@@ -19,6 +19,7 @@ services:
     ulimits: {nofile: {soft: 8192, hard: 8192}}
     restart: "no"
     network_mode: host
+    cpuset: ${SUT_CPUSET:-0,1}
     environment:
       BACKEND_PORT: ${BACKEND_PORT:-8081}
       FRONTEND_PORT: ${FRONTEND_PORT:-3000}
@@ -32,7 +33,6 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.1"
           memory: 64m
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$$GATEWAY_PORT/gateway-health"]

@@ -13,7 +13,7 @@ from analysis import LATE_START_ERROR
 
 
 class FixedExperimentTest(unittest.TestCase):
-    def run_experiment(self, *, response=None, expected_error=None, run_type='measurement', warm_error=None):
+    def run_experiment(self, *, response=None, expected_error=None, warm_error=None):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             runtime, reports = root/'runtime', root/'reports'
@@ -22,7 +22,7 @@ class FixedExperimentTest(unittest.TestCase):
             watch.mkdir()
             (watch/'status.json').write_text('{}')
             (watch/'samples.jsonl').write_text('')
-            target = {'instanceId': 'instance', 'machineMemoryMiB': 2048, 'cpuLimit': 2, 'services': []}
+            target = {'instanceId': 'instance', 'machineMemoryMiB': 2048, 'cpuLimit': 2, 'cpuModel': 'shared-cpuset', 'services': []}
             for name, value in [('target.json', target), ('load-host.json', {}),
                                 ('source.json', {'sourceSha256': 'source'})]:
                 (runtime/name).write_text(json.dumps(value))
@@ -60,7 +60,7 @@ class FixedExperimentTest(unittest.TestCase):
                     patch.object(runner, 'check_disk'), patch.object(runner, 'prepare', side_effect=prepare), \
                     patch.object(runner, 'warm_runtime',side_effect=warm_error), patch.object(runner, 'measure', side_effect=measure), patch.object(runner, 'release_redis'), \
                     patch.object(runner, 'report', side_effect=report), patch('builtins.print'):
-                arguments = ['kafka-burst','--run-type',run_type]
+                arguments = ['kafka-burst']
                 if expected_error:
                     with self.assertRaisesRegex(RuntimeError, expected_error):
                         runner.main(arguments)
@@ -80,15 +80,8 @@ class FixedExperimentTest(unittest.TestCase):
         self.assertEqual(6,len(calls))
         self.assertEqual('inconclusive',meta['status'])
 
-    def test_calibration_is_one_baseline_run_and_never_repeats_or_changes_candidates(self):
-        calls,meta=self.run_experiment(run_type='calibration')
-        self.assertEqual([400,600,800],[p['rate'] for p in calls])
-        self.assertEqual({'B'},{p['path'] for p in calls})
-        self.assertEqual('calibration',meta['scope'])
-        self.assertEqual('completed',meta['status'])
-
-    def test_unstable_warmup_is_inconclusive_without_formal_points(self):
-        calls,meta=self.run_experiment(warm_error=runner.WarmupInconclusive('unstable'))
+    def test_unhealthy_warmup_is_inconclusive_without_formal_points(self):
+        calls,meta=self.run_experiment(warm_error=runner.WarmupInconclusive('unhealthy'))
         self.assertEqual([],calls)
         self.assertEqual('inconclusive',meta['status'])
 

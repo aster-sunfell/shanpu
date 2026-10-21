@@ -15,4 +15,4 @@ for runtime_memory_file in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memor
     fi
 done
 # JAVA_OPTS retains the business image's explicit operator override mechanism.
-exec java -XX:ActiveProcessorCount=1 "-XX:MaxRAM=$runtime_memory_limit" @/app/java.options ${JAVA_OPTS:-} -jar /app/app.jar
+exec java -XX:ActiveProcessorCount=2 "-XX:MaxRAM=$runtime_memory_limit" @/app/java.options ${JAVA_OPTS:-} -jar /app/app.jar

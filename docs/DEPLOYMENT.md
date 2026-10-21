@@ -12,7 +12,7 @@
 | Nginx 1.28 | Docker，host 网络 | `127.0.0.1:8089` | 浏览器统一入口 |
 | Spring Boot | 宿主机 Java 17 | `127.0.0.1:8081` | 后端 API |
 | Next.js | 宿主机 Node.js 22 / pnpm 10 | `127.0.0.1:3000` | SSR、前端开发与热更新 |
-| 压测端 | 独立 `experiments/compose.runner.yml` | 访问独立待测端 | 1 核 / 512 MiB |
+| 压测端 | 独立 `experiments/compose.runner.yml` | 访问独立待测端 | 1 核 / 2 GiB |
 
 `docker-compose.yml` 固定项目名为 `shanpu`，使用 `shanpu_mysql-data`、`shanpu_redis-data`、`shanpu_kafka-data` 三个数据卷。Nginx 和 k6 使用 Linux host 网络，直接访问宿主机回环地址；Nginx 不配置 `ports`。
 
@@ -45,7 +45,7 @@
 
 `scripts/lib/dev-common.sh` 统一加载环境变量，并固定 Compose 文件和项目名，使启动脚本可从任意目录调用。
 
-后端脚本先加载 SDKMAN，在仓库根目录执行 `sdk env`，校验 `.sdkmanrc` 指定的 `17.0.18-tem` 后才运行 Maven clean 打包。默认使用 `dev -> 2c2g` profile、东八区时区与回环监听，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。JVM 参数读取共用的 `backend/docker/java.options`，默认按 512 MiB 内存预算和一个可见处理器启动；可用 `JAVA_OPTS` 覆盖。宿主进程没有容器的 CPU/PID/内存硬隔离，不能将本地运行解释为等价压测。默认日志为 INFO，调试时可设置 `SHANPU_LOG_LEVEL=DEBUG`。PID 写入 `.local/run/backend.pid`。
+后端脚本先加载 SDKMAN，在仓库根目录执行 `sdk env`，校验 `.sdkmanrc` 指定的 `17.0.18-tem` 后才运行 Maven clean 打包。默认使用 `dev -> 2c2g` profile、东八区时区与回环监听，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。JVM 参数读取共用的 `backend/docker/java.options`，默认按 512 MiB 内存预算和两个可见处理器启动；可用 `JAVA_OPTS` 覆盖。宿主进程没有容器的 CPU/PID/内存硬隔离，不能将本地运行解释为等价压测。默认日志为 INFO，调试时可设置 `SHANPU_LOG_LEVEL=DEBUG`。PID 写入 `.local/run/backend.pid`。
 
 前端脚本通过 `pnpm dev` 启动，注入：
 
@@ -140,13 +140,13 @@ docker compose --env-file .env.production -f deploy/compose.2c2g.yml up -d --wai
 docker compose --env-file .env.production -f deploy/compose.2c2g.yml ps
 ```
 
-入口为 `http://服务器地址:8089`；前后端通过容器网络通信，MySQL/Redis/Kafka/后端宿主端口仅绑定回环。项目名为 `shanpu-production`，数据卷与本地开发隔离。六个服务合计 CPU 配额为 2，容器内存为 1632 MiB，预算另计宿主余量 416 MiB；宿主余量是预算说明，并非 Docker 硬预留。
+入口为 `http://服务器地址:8089`；前后端通过容器网络通信，MySQL/Redis/Kafka/后端宿主端口仅绑定回环。项目名为 `shanpu-production`，数据卷与本地开发隔离。六个服务共享同一组两个逻辑 CPU（`SUT_CPUSET`，默认 `0,1`），无单独 CPU 配额，容器内存为 1632 MiB，预算另计宿主余量 416 MiB；宿主余量是预算说明，并非 Docker 硬预留。
 
 ## 8. 性能实验
 
 性能实验仅在 GitHub 托管的 Linux Actions runner 执行。在 Actions → Performance experiments 中选择 main，手动 Run workflow，执行 A/B 和 B/C 完整实验并发布 HTML；推送与 PR 不会自动发压。
 
-被测服务合计 2 vCPU 配额，发压容器另占 1 vCPU；两端使用互斥 CPU 集合。B/C 容量和突发在同一 job 内引用刚测得的合格基线。每次使用独立临时数据库和凭证，归档后销毁容器和数据卷，不使用开发环境。
+被测服务共享两个逻辑 CPU，发压容器另限 1 vCPU / 2 GiB；两端使用互斥且避免跨物理核 SMT 争用的 CPU 集合。每个 run 只运行一个固定负载实验，在同一机器内进行三轮交替配对，不进行校准或容量搜索。逻辑 CPU 不等于物理核，绑定 CPU 集合不等于独占宿主 CPU。每次使用独立临时数据库和凭证，归档后销毁容器和数据卷，不使用开发环境。
 
 业务请求经过 Nginx，前端容器计入预算但不施加浏览器负载。指标每秒原子写入证据卷，发压端只读采集，避免与业务争抢 Tomcat 连接；关键核对等待新快照，过期或不完整证据仍使测量无效。实验关闭定时补偿、超时处理、对账与定时预热，启用提交/SQL 观测；这些差异会写入报告，结果不等同于启用全部后台任务的生产容量。
 

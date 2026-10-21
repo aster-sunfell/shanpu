@@ -21,7 +21,7 @@ def page(title,body,sidebar=None):
             f'<title>{text(title)}</title><style>{STYLE}</style></head>'
             f'<body class="{"report" if sidebar else "archive"}">{sidebar or ""}<main>{body}'
             '<footer><span>闪铺 · GitHub Actions 单机受限资源测量</span>'
-            '<span>vCPU 配额不等同于独占物理核或线上容量。</span></footer>'
+            '<span>CPU 资源设置不等同于独占物理核或线上容量。</span></footer>'
             f'</main><script>{SCRIPT}</script></body></html>')
 
 
@@ -48,7 +48,7 @@ def sidebar(sections,run_url=None):
     evidence=f'<a class="switch" href="{text(run_url)}">Actions 与完整证据 ↗</a>' if valid_run_url(run_url) else ''
     return ('<aside><a href="../../index.html" class="brand"><i></i>闪铺</a><div class="brand-sub">PERFORMANCE LAB</div>'
             f'<nav aria-label="报告导航">{links}</nav><div class="aside-bottom"><strong>性能实验报告</strong>'
-            f'本次测量 · 独立资源配额{evidence}</div></aside>')
+            f'本次测量 · 固定资源预算{evidence}</div></aside>')
 
 
 def valid_run_url(url):
@@ -98,13 +98,13 @@ def environment_report(environment):
     fields=[('CPU 型号',host.get('cpuModel') or '未采集'),
             ('Runner 可用逻辑 CPU',quantity(len(available) if isinstance(available,list) else None,'vCPU')),
             ('Runner 可见内存',quantity(round(memory/1024**3,2) if numeric(memory) else None,'GiB')),
-            ('被测端 CPU 配额合计',quantity(budget.get('cpuLimit'),'vCPU')),
-            ('被测端 CPU 集合',allocation.get('sut') or '未采集'),('发压端 CPU 集合',allocation.get('runner') or '未采集'),
+            ('被测端共享逻辑 CPU 数' if budget.get('cpuModel')=='shared-cpuset' else '被测端 CPU 配额合计',quantity(budget.get('cpuLimit'),'vCPU')),
+            ('CPU 分配模式',budget.get('cpuModel') or '历史逐服务配额'),('被测端 CPU 集合',allocation.get('sut') or '未采集'),('发压端 CPU 集合',allocation.get('runner') or '未采集'),
             ('被测容器内存配额合计',quantity(budget.get('containerMemoryMiB'),'MiB')),
             ('被测端总内存预算',quantity(budget.get('machineMemoryMiB'),'MiB')),
             ('宿主余量预算',quantity(budget.get('hostReserveMiB'),'MiB')),
             ('Runner 镜像 / 版本',image or '未采集'),('运行平台',host.get('platform') or '未采集'),('内核版本',host.get('kernel') or '未采集')]
-    return '<section id="environment">'+heading('实验环境','本次 Runner 采集值与被测端资源预算','03')+'<div class="environment"><dl class="environment-grid">'+''.join(f'<div><dt>{text(k)}</dt><dd>{text(v)}</dd></div>' for k,v in fields)+'</dl><p class="env-note">CPU 型号中的核心数不代表实验分配的核心数；Runner 可见内存不等于被测容器配额。宿主余量为预算，不是硬预留。</p></div></section>'
+    return '<section id="environment">'+heading('实验环境','本次 Runner 采集值与被测端资源预算','03')+'<div class="environment"><dl class="environment-grid">'+''.join(f'<div><dt>{text(k)}</dt><dd>{text(v)}</dd></div>' for k,v in fields)+'</dl><p class="env-note">逻辑 CPU 可能是同一核心的 SMT 线程，不代表独占物理核。CPU 型号中的核心数不代表实验分配的核心数；Runner 可见内存不等于被测容器配额。宿主余量为预算，不是硬预留。</p></div></section>'
 
 
 METRICS = {
@@ -131,37 +131,27 @@ METRICS = {
 
 def experiment_report(experiment):
     e = experiment
-    body = [schemes(e.paths), '<section id="results">'+heading('负载校准' if e.artifact.get('calibration') else '固定负载配对结果', '仅用于人工选择负载，不计算方案收益。' if e.artifact.get('calibration') else '各轮交替对照；保留零收益和负收益，不要求双方 SLO 均达标。')]
+    body = [schemes(e.paths), '<section id="results">'+heading('固定负载配对结果', '各轮交替对照；保留零收益和负收益，不要求双方 SLO 均达标。')]
     parameters=e.parameters
     profile=(f"{parameters.get('rate', '—')} RPS × {parameters.get('seconds', '—')} 秒；90% 重复 / 10% 有效购买"
              if e.plan == 'redis-filtering' else
              f"{parameters.get('base_rate', '—')} RPS × {parameters.get('base_seconds', '—')} 秒 → "
              f"{parameters.get('burst_rate', '—')} RPS × {parameters.get('burst_seconds', '—')} 秒 → "
              f"{parameters.get('recovery_rate', '—')} RPS × {parameters.get('recovery_seconds', '—')} 秒；全部有效购买")
-    calibration = e.artifact.get('calibration')
-    if calibration:
-        body.append('<p>负载校准：只测基线路径的三个预设档位，不计算方案收益。</p>')
-        body.append(table(['基线 RPS','输入有效','响应 p99 ms','网络/超时/内部错误','非预期响应','池等待次数','候选'],[
-            [r['rate'],r['valid'],fmt(r['p99Ms']),r['networkErrors'],r['responseErrors'],r['poolWaitCount'],r['eligibleCandidate']]
-            for r in calibration['candidates']]))
-        body.append('<p>建议负载：'+text(calibration['recommendedRate'] or '暂无合适候选')+
-                    '。规则：选择输入有效、无非预期响应、p99 在 300–1000ms 且有数据库等待或积压的最低档位。'
-                    '人工审查后在源码中冻结负载，再发起新的 measurement；不会自动采用建议，也不读取历史结果。</p>')
-    else:
-        body.append('<p>'+text(profile)+'</p>')
-    if not calibration: body.append(table(['每路径重复次数','固定 VU 数','排空上限 / 秒'], [[parameters.get('repeats'),parameters.get('vus'),parameters.get('drain_seconds')]]))
+    body.append('<p>'+text(profile)+'</p>')
+    body.append(table(['每路径重复次数','固定 VU 数','排空上限 / 秒'], [[parameters.get('repeats'),parameters.get('vus'),parameters.get('drain_seconds')]]))
     body.append('<p>服务质量目标：响应 p99 ≤ '+fmt(e.policy.get('responseP99Ms'))+' ms，完成 p99 ≤ '
                 +fmt(e.policy.get('completionP99Ms'))+' ms，分类错误比例 ≤ '+fmt(e.policy.get('maxErrorRate'))+'。</p>')
     metrics = e.comparisons[0]['metrics'] if e.comparisons else {}
     primary = ('eligibleResponseP99Ms', 'eligibleOnTimeSuccessPct') if e.plan == 'redis-filtering' else (
         'burst.onTimeAcceptedPct', 'burst.onTimeCompletedPct')
-    for key in (() if calibration else primary):
+    for key in primary:
         value = metrics.get(key)
         body.append(panel(METRICS[key], '柱为每轮值的中位数，线为最小至最大值',
                           charts.paired([value['before'], value['after']] if value else [], e.paths, METRICS[key]),
                           ('后方案减前方案：'+fmt(value['afterMinusBefore']['p50'])+(' 个百分点' if key.endswith('Pct') else '')+
                            ('；配对降幅中位数 '+fmt(value['pairedReductionPct']['p50'])+'%' if key.endswith('Ms') and value.get('pairedReductionPct') else '')) if value else '尚无完整有效比较。', e.paths))
-    if not calibration: body.append(table(['指标','前方案中位数','后方案中位数','配对差值中位数','配对差值范围'], [
+    body.append(table(['指标','前方案中位数','后方案中位数','配对差值中位数','配对差值范围'], [
         [METRICS.get(k,k), fmt(v['before']['p50']),fmt(v['after']['p50']),fmt(v['afterMinusBefore']['p50']),
          fmt(v['afterMinusBefore']['min'])+' ～ '+fmt(v['afterMinusBefore']['max'])] for k,v in metrics.items()]))
     body.append('<p>按时成功率以所有有效购买请求为分母，同时要求响应成功且满足响应期限、订单满足完成期限。百分比指标差值用百分点表示。SQL/事务尝试只用于解释机制。每轮 p99 单独计算；不把多个 p99 平均成总体分位数。业务 SQL 来自 mapper 计数，事务尝试不等于提交。'

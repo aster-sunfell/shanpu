@@ -1,6 +1,6 @@
 name: shanpu-sut
 
-# Every service inherits the actual deployment configuration and hard limits.
+# Every service inherits the actual deployment configuration, shared CPU set and memory limits.
 x-test-machine:
   cpus: 2
   memory_mib: 2048

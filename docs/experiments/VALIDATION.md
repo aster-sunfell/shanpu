@@ -12,7 +12,7 @@ python3 scripts/experiments/lib/runner.py kafka-burst --dry-run
 
 工作流会在启动业务容器之前，用实际 runner 镜像、1 CPU / 2 GiB / 128 PIDs / 8192 文件描述符 执行 `checks/k6_recovery.py`：
 
-1. 只校验本次所选实验的完整默认形状：measurement 的 Redis 600 RPS、60 秒、1200 VU，或 Kafka 三段 60 秒、1200 VU；calibration 校验最高预设档位 800 RPS。
+1. 只校验本次所选实验的完整默认形状：Redis 600 RPS、60 秒、1200 VU，或 Kafka 三段 60 秒、1200 VU。
 2. 额外验证 800 RPS、固定 1 秒响应延迟、15 秒的发压形状。替身与 k6 共用单 CPU，使用 `GOMAXPROCS=1`；之后人为限制并发验证丢请求确实归类为发压无效，排空后下一个固定点仍可正常执行。
 3. 使用生产请求脚本、逐笔 JSONL、SQLite 核对与延迟分析，不模拟或补写 k6 到达时间戳。
 
@@ -24,4 +24,8 @@ Kafka 使用单一 constant-arrival-rate 调度时钟，时钟频率为三段最
 
 本地校验只能验证执行机制；真实 Redis 减负和 Kafka 削峰收益需要在 Actions 上分别运行两项实验确认。
 
-2026-10-21 本地验证：106 项 Python 回归、3 项 Node 调度测试、2 项 Java 运行配置/1200 连接验证、配置对齐和 actionlint 通过。实际 1 CPU / 2 GiB / GOMAXPROCS=1 容器中，Redis 正式形状发出 36000/36000，Kafka 最高校准形状发出 13000/13000；两次 800 RPS、1 秒延迟校验均发出 12000/12000。人为 VU 不足被判为发压无效，排空后的 100 请求恢复点通过。完整 Python 测试继承模拟 `GITHUB_STEP_SUMMARY` 时也未污染摘要。需在 Actions 先做一次所选实验的 calibration，审查并冻结负载后再运行 measurement；本地 HTTP 替身通过不能替代实际业务收益测量。新增回归覆盖摘要隔离、固定校准候选、不自动采用建议、等量且有界的热身、缺失样本和漂移拒绝、按时成功分母与连接/描述符预算。
+不需要先校准：在 Actions 选择一个实验直接运行。固定热身、正式对照与诊断均在同一次 run 内完成。本地 HTTP 替身通过不能替代实际业务收益测量。
+
+资源回归要求六个服务拥有相同的两个逻辑 CPU、无服务级 CPU 配额或自定义权重；Docker inspect 和 cgroup 实际设置都必须符合。内存、PID、文件描述符、重启策略及生成器隔离仍单独检查。热身回归覆盖固定等量执行、延迟趋势不阻断、早期无效点排空后继续、任一路径最终块不健康不能进入正式测量、数据损坏立即停止。报告函数在单测中不写 Actions summary。
+
+2026-10-22 验证：109 项 Python 回归、3 项 Node 调度测试、Docker 配置对齐和 actionlint 通过。采用 Actions 相同的 Maven 容器资源与测试选择完成 package（排除依赖独立数据库的 DatabaseMigrationTest / OrderConcurrencyTest）。两个真实容器验证 cpu.max 为 max、有效 CPU 集合相同；实际后端入口确认可见处理器数为 2。1 CPU / 2 GiB / GOMAXPROCS=1 的真实 k6 完整 Kafka 形状发出 11000/11000；800 RPS、1 秒延迟验证发出 12000/12000。人为 VU 不足正确标记为发压无效，随后恢复点发出 100/100。

@@ -26,9 +26,8 @@ def render(reports, output, *, summary_path=None):
             '<p>运行状态：'+text(status)+'；用途：'+text(scope)+'</p></header>']
     body.append(table(['Actions run','Attempt','Commit'], [[run_id,attempt,actions.get('commit') or '未采集']]))
     if suite.get('error'): body.append('<p class="warning">'+text(suite['error'])+'</p>')
-    if scope == 'calibration': body.append('<p>负载校准报告：用于人工选定负载，不输出性能收益，也不覆盖最新正式报告。</p>')
     if scope == 'validation': body.append('<p>流程验证，不输出性能收益结论。</p>')
-    if status == 'inconclusive': body.append('<p>有效配对或样本不足，保留证据，不生成完整收益比较。</p>')
+    if status == 'inconclusive': body.append('<p>本次未形成完整有效对照，请查看预热或测量诊断；不输出完整收益结论。</p>')
     stages = [Experiment(p.parent, scope) for p in sorted(reports.glob('*/*/manifest.json')) if p.parent.parent.name == mode]
     for experiment in stages: body.append(experiment_report(experiment))
     if not stages: body.append('<p>尚无正式测量证据。</p>')

@@ -6,6 +6,7 @@ import os
 import re
 from pathlib import Path
 import subprocess
+from host import cpu_list, cpu_string
 
 ROOT = Path(__file__).resolve().parents[3]
 MIDDLEWARE = ('mysql', 'redis', 'kafka')
@@ -44,6 +45,23 @@ def validate_backend_keepalive(development, production, shared, application):
     return {'idleConnections': int(pool[0]), 'upstreamTimeoutMs': upstream_ms, 'tomcatTimeoutMs': backend_ms}
 
 
+def validate_shared_cpu_config(services):
+    """A common cpuset bounds aggregate execution without fragmenting CPU time."""
+    sets = set()
+    for name, service in services.items():
+        for key in ('cpus','cpu_quota','cpu_period','cpu_shares','cpu_count','cpu_percent','cpu_rt_runtime','cpu_rt_period'):
+            if service.get(key) not in (None,0,0.0,'0'):
+                raise RuntimeError('Shared CPU services must not set local CPU quotas/weights: '+name)
+        resources = service.get('deploy',{}).get('resources',{})
+        if any(resources.get(kind,{}).get('cpus') not in (None,0,0.0,'0') for kind in ('limits','reservations')):
+            raise RuntimeError('Shared CPU services must not set deployment CPU quotas: '+name)
+        cpus = cpu_list(service.get('cpuset',''))
+        if len(cpus)!=2: raise RuntimeError('Each SUT service must share exactly two logical CPUs: '+name)
+        sets.add(cpu_string(cpus))
+    if len(sets)!=1: raise RuntimeError('All services must use the same shared CPU set')
+    return {'cpuModel':'shared-cpuset','cpuLimit':2,'cpuset':sets.pop()}
+
+
 def validate_connection_budget(services, development, vus=1200):
     """Proxy connections include both downstream clients and upstream sockets."""
     def integer(pattern, text):
@@ -78,6 +96,9 @@ def _equal(expected, actual, label):
 
 def validate_alignment(production, sut, development):
     baseline = production['services']
+    cpu_budget = validate_shared_cpu_config(baseline)
+    validate_shared_cpu_config(sut['services'])
+    validate_shared_cpu_config(development['services'])
     if set(sut['services']) != set(baseline):
         raise RuntimeError('SUT must run every production service')
     _equal(production.get('x-test-machine', {}), sut.get('x-test-machine', {}), 'machine budget')
@@ -139,7 +160,7 @@ def validate_alignment(production, sut, development):
                  'backend/src/main/resources/application-2c2g.yml', 'frontend/Dockerfile'):
         digest.update(name.encode()+b'\0'+(ROOT/name).read_bytes()+b'\0')
     return {'status': 'aligned', 'services': sorted(baseline),
-            'backendKeepalive': keepalive, 'connectionBudget': connection_budget,
+            'sharedCpu':cpu_budget, 'backendKeepalive': keepalive, 'connectionBudget': connection_budget,
             'developmentMiddleware': list(MIDDLEWARE),
             'sharedConfigurationSha256': digest.hexdigest(),
             'baselineSha256': hashlib.sha256((ROOT/'deploy/compose.2c2g.yml').read_bytes()).hexdigest()}

@@ -41,6 +41,20 @@ class ReportTest(unittest.TestCase):
             self.assertNotIn('<script src=',html)
             self.assertNotIn('容量基线',html)
 
+    def test_shared_cpu_budget_is_reported_without_dedicated_core_claim(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            self.fixture(root)
+            (root/'environment.json').write_text(json.dumps({
+                'targetBudget':{'cpuModel':'shared-cpuset','cpuLimit':2},
+                'cpuAllocation':{'sut':'0,1','runner':'2'}}))
+            render(root,root/'html')
+            html=(root/'html/index.html').read_text()
+            self.assertIn('被测端共享逻辑 CPU 数',html)
+            self.assertIn('shared-cpuset',html)
+            self.assertIn('不代表独占物理核',html)
+            self.assertNotIn('被测端 CPU 配额合计',html)
+
     def test_library_render_never_pollutes_unit_job_summary(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
@@ -62,24 +76,6 @@ class ReportTest(unittest.TestCase):
                 self.assertNotIn('后方案减前方案：-900',html)
                 self.assertIn('尚无完整有效比较',html)
                 self.assertIn('错误数',html)
-
-    def test_calibration_report_cannot_claim_gains_or_replace_formal_archive(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp)
-            directory=self.fixture(root,scope='calibration')
-            args=parse_args(['redis-filtering','--run-type','calibration'])
-            report(directory,{'status':'completed','scope':'calibration'},[],args)
-            rendered=render(root,root/'html')
-            html=(root/'html/index.html').read_text()
-            self.assertIn('暂无合适候选',html)
-            self.assertNotIn('后方案减前方案：',html)
-            archive=root/'archive'
-            formal=root/'formal';formal.mkdir()
-            (formal/'index.html').write_text('formal')
-            (formal/'report.json').write_text(json.dumps({**rendered,'id':'122-1','runId':'122','scope':'performance'}))
-            merge_report(formal,archive,keep=1)
-            retained=merge_report(root/'html',archive,keep=1)
-            self.assertEqual({'122-1','123-1'},{r['id'] for r in retained})
 
     def test_failure_diagnostics_escape_html_and_redact_runtime_secrets(self):
         with tempfile.TemporaryDirectory() as temp:

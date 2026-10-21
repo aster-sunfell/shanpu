@@ -10,17 +10,18 @@ import time
 from analysis import Evidence, write_json
 from fixtures import POINTS, PRICE, create_users, credential, prepare, release_redis
 from host import check_host_health
-from protocol import budgeted_matrix, parse_args, validate_deployment
+from protocol import budgeted_matrix, parse_args, validate_deployment, warmup_matrix
 from runner import RUNTIME, REPORTS, api, measure, mysql_settings, require_idle, sql
 
 
 def dataset_plan(args):
     points = budgeted_matrix(args)
     total = sum(p['scheduled'] for p in points)
-    return {'formalRequests': total, 'warmupRequests':36000, 'seedUsers': math.ceil((total+36000)*1.2),
+    warmup = sum(p['scheduled'] for p in warmup_matrix(args))
+    return {'formalRequests': total, 'warmupRequests':warmup, 'seedUsers': math.ceil((total+warmup)*1.2),
             'batchUsers': max(p['scheduled'] for p in points),
             'probeRate': 5, 'warmupSeconds': 5, 'probeSeconds': 10,
-            'coverage': 'Fixed experiment plus maximum equal warmup request count plus 20%'}
+            'coverage': 'Fixed experiment plus fixed equal warmup request count plus 20%'}
 
 
 def verify_fixture(directory, config):

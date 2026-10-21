@@ -1,6 +1,7 @@
 name: shanpu-production
 
-# Fixed target-machine budget. The verifier checks both this sum and Docker HostConfig.
+# All six services share the same two logical CPUs; no per-service CPU quota.
+# The verifier checks the common cpuset and actual Docker/cgroup configuration.
 # Compose has no project-wide cap: 1632 MiB for containers + 416 MiB host reserve = 2 GiB.
 x-test-machine:
   cpus: 2
@@ -19,7 +20,6 @@ services:
   mysql:
     <<: *common
     image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
-    cpus: 0.5
     mem_limit: 384m
     memswap_limit: 384m
     pids_limit: 128
@@ -52,7 +52,6 @@ services:
   redis:
     <<: *common
     image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-    cpus: 0.1
     mem_limit: 96m
     memswap_limit: 96m
     pids_limit: 32
@@ -70,7 +69,6 @@ services:
   kafka:
     <<: *common
     image: apache/kafka:3.7.2@sha256:8bd63e1bd445e5e19427a4bdbcc3d23bf6efd774b058a41b36ba87fda7623e34
-    cpus: 0.4
     mem_limit: 384m
     memswap_limit: 384m
     pids_limit: 192
@@ -111,7 +109,6 @@ services:
     build:
       context: ../backend
       target: production
-    cpus: 0.75
     mem_limit: 512m
     memswap_limit: 512m
     pids_limit: 128
@@ -144,7 +141,6 @@ services:
     image: shanpu-frontend:2c2g
     build:
       context: ../frontend
-    cpus: 0.15
     mem_limit: 192m
     memswap_limit: 192m
     pids_limit: 64
@@ -163,7 +159,6 @@ services:
     <<: *common
     ulimits: {nofile: {soft: 8192, hard: 8192}}
     image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
-    cpus: 0.1
     mem_limit: 64m
     memswap_limit: 64m
     pids_limit: 32

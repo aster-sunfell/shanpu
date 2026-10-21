@@ -1,5 +1,5 @@
 name: Performance experiments
-run-name: Performance · ${{ inputs.experiment }} · ${{ inputs.run_type }} · ${{ github.ref_name }}
+run-name: Performance · ${{ inputs.experiment }} · ${{ github.ref_name }}
 
 # Start explicitly from the Actions page; commits never launch a pressure test.
 # Only manual runs against main may execute the experiment and publish reports.
@@ -11,11 +11,6 @@ on:
         type: choice
         default: redis-filtering
         options: [redis-filtering, kafka-burst]
-      run_type:
-        description: Calibration recommends a baseline load; measurement uses the frozen source configuration
-        type: choice
-        default: calibration
-        options: [calibration, measurement]
 
 permissions:
   contents: read
@@ -53,7 +48,6 @@ jobs:
       BENCH_ROOT: ${{ github.workspace }}
       BENCH_REPORTS: ${{ github.workspace }}/artifacts/performance
       BENCH_EXPERIMENT: ${{ inputs.experiment }}
-      BENCH_RUN_TYPE: ${{ inputs.run_type }}
     outputs:
       html: ${{ steps.html.outputs.ready }}
     steps:
@@ -67,14 +61,14 @@ jobs:
       - name: Build all images before measurement
         timeout-minutes: 25
         run: python3 scripts/experiments/lib/actions.py build
-      - name: Calibrate fixed k6 profiles and verify overload classification
+      - name: Verify fixed k6 profiles and overload classification
         timeout-minutes: 5
         run: |
           mkdir -p artifacts/runner-recovery
           docker run --rm --network none --cpus 1 --memory 2g --memory-swap 2g --ulimit nofile=8192:8192 --pids-limit 128 \
             -v "$GITHUB_WORKSPACE/artifacts/runner-recovery:/check" \
             --entrypoint python3 shanpu-experiment-runner:ci \
-            /workspace/scripts/experiments/checks/k6_recovery.py --output /check --experiment "$BENCH_EXPERIMENT" --run-type "$BENCH_RUN_TYPE"
+            /workspace/scripts/experiments/checks/k6_recovery.py --output /check --experiment "$BENCH_EXPERIMENT"
       - name: Preserve load recovery check evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,12 +84,12 @@ jobs:
         timeout-minutes: 20
         run: |
           python3 scripts/experiments/lib/actions.py preflight \
-            --experiment "$BENCH_EXPERIMENT" --run-type "$BENCH_RUN_TYPE" --minutes 12
+            --experiment "$BENCH_EXPERIMENT" --minutes 12
       - name: Execute measured experiments and verify evidence
         timeout-minutes: 35
         run: |
           python3 scripts/experiments/lib/actions.py run \
-            --experiment "$BENCH_EXPERIMENT" --run-type "$BENCH_RUN_TYPE" --minutes 30
+            --experiment "$BENCH_EXPERIMENT" --minutes 30
       - name: Preserve diagnostics before deleting ephemeral services
         if: always()
         timeout-minutes: 3
