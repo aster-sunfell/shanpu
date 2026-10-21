@@ -18,6 +18,7 @@ import urllib.request
 
 import transport
 import observation
+from readiness import assess
 from analysis import Evidence, save_result, write_json
 from fixtures import POINTS, PRICE, create_users, credential, prepare, snapshot, check_disk, release_redis
 from protocol import (VERSION, parse_args, matrix, budgeted_matrix, policy, context_contract,
@@ -303,7 +304,7 @@ def measure(config, private, directory, token, args):
         write_json(directory / 'load.json', {'planned':config['scheduled'], 'started':result['started'],
                    'missing':max(0,config['scheduled']-result['started']), 'vus':config['vus'],
                    'vuExhausted':result['vuExhausted'], 'metricsAggregation':'disabled; disk evidence and k6 warnings are authoritative'})
-        result.update(phase=config.get('phase', 'confirmation'), scope='validation' if args.validation_only else 'performance',
+        result.update(phase=config.get('phase', 'confirmation'), scope='validation' if args.validation_only else 'calibration' if args.run_type == 'calibration' else 'performance',
                       repeat=config['repeat'], seconds=config['seconds'], baseRate=config['baseRate'], baseSeconds=config['baseSeconds'], recoveryRate=config.get('recoveryRate', 0), recoverySeconds=config.get('recoverySeconds', 0), k6ExitCode=process.returncode,
                       wallSeconds=round(time.monotonic()-started, 3), backendDelta=delta(before_metrics, after_metrics))
         if abs(drift)>50 or abs(after_metrics['runnerClock']['offsetEstimateMs'])>50+after_metrics['runnerClock']['uncertaintyMs']:
@@ -334,7 +335,7 @@ def manifest(args, target, load_host):
     source = json.loads((RUNTIME / 'source.json').read_text())
     parameters = {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items()}
     return {'schemaVersion': VERSION, 'plan': args.plan, 'stage': 'experiment',
-            'scope': 'validation' if args.validation_only else 'performance', 'status': 'running', 'deployment': args.deployment,
+            'scope': 'validation' if args.validation_only else 'calibration' if args.run_type == 'calibration' else 'performance', 'status': 'running', 'deployment': args.deployment,
             'startedAtMs': int(time.time()*1000), 'parameters': parameters, 'policy': policy(args),
             'target': target, 'loadHost': load_host, 'source': source,
             'database': os.environ['MYSQL_DATABASE'], 'platform': platform.platform(), 'points': [],
@@ -353,54 +354,64 @@ def manifest(args, target, load_host):
                            'Global MySQL counters include observer queries; results describe this instrumented deployment']}
 
 
+class WarmupInconclusive(RuntimeError):
+    pass
+
+
 def warm_runtime(args, product_id, private, directory, token):
-    """Warm the retained process after reset; these points never enter measured comparisons."""
+    """Both paths receive equal 60–90s warmup; only the last 30s determine stability."""
     selected = copy.copy(args)
     selected.validation_only = True
-    selected.drain_seconds = min(args.drain_seconds, 30)
-    rates = [min(args.rate if args.plan == 'redis-filtering' else args.base_rate, 50)]
+    rate = min(args.rate if args.plan == 'redis-filtering' else args.burst_rate, 200)
     paths = ('A', 'B') if args.plan == 'redis-filtering' else ('B', 'C')
-    summary = {'scope': 'validation', 'status': 'running', 'points': []}
-    write_json(directory/'warmup.json', summary)
+    summary = {'scope':'validation','status':'running','points':[]}
     try:
-        for rate in rates:
-            for path in paths:
+        for block in range(1,4):
+            stable = []
+            for path in paths if block%2 else paths[::-1]:
                 check_host_health()
-                if time.monotonic()+10+args.request_timeout+selected.drain_seconds+30 >= float(os.environ.get('BENCH_STAGE_DEADLINE', 'inf')):
-                    raise RuntimeError('Insufficient stage budget for runtime warmup and drain')
-                name = f'{path}-{rate}'
-                output = directory/'warmup'/name
+                if time.monotonic()+30+args.request_timeout+selected.drain_seconds+30 >= float(os.environ.get('BENCH_STAGE_DEADLINE','inf')):
+                    require_idle(token)
+                    raise WarmupInconclusive('Insufficient budget for warmup; no formal comparison')
+                name = f'{path}-{rate}-block{block}'
+                output, secret = directory/'warmup'/name, private/'warmup'/name
                 output.mkdir(parents=True)
-                point = {'plan': args.plan, 'path': path, 'workload': 'mixed' if args.plan=='redis-filtering' else 'steady',
-                         'repeat': 1, 'rate': rate, 'seconds': 10, 'baseSeconds': 0, 'baseRate': 1,
-                         'vus': args.vus, 'requestTimeout': args.request_timeout, 'points': POINTS,
-                         'scheduled': rate*10, 'userPrefix': 'x'+secrets.token_hex(6)}
-                print(f'Runtime warmup {name}: {rate} RPS, 10s (validation; excluded from comparisons)', flush=True)
-                prepare(point, product_id, private/'warmup'/name, output, token, api, require_idle)
-                value = measure(point, private/'warmup'/name, output, token, selected)
-                errors = list(value['loadErrors'])+list(value['correctnessErrors'])
-                if value['unresolvedCount']: errors.append('Unresolved accepted orders')
-                if any(c['failed'] for c in value['classes'].values()): errors.append('Unexpected warmup responses')
-                if value['completed'] != value['eligible']: errors.append('Eligible warmup orders incomplete')
-                passed = value['valid'] and not errors
-                summary['points'].append({'path': path, 'rate': rate, 'status': 'completed' if passed else 'failed',
-                                          'started': value['started'], 'scheduled': point['scheduled'], 'errors': errors})
-                write_json(directory/'warmup.json', summary)
-                if not passed: raise RuntimeError(f'Runtime warmup {name} invalid: '+ '; '.join(errors))
-                release_redis(private/'warmup'/name, point)
-        summary['status'] = 'completed'
+                point = {'plan':args.plan,'path':path,'workload':'mixed' if args.plan=='redis-filtering' else 'steady',
+                         'repeat':block,'rate':rate,'seconds':30,'baseSeconds':0,'baseRate':1,
+                         'vus':args.vus,'requestTimeout':args.request_timeout,'points':POINTS,
+                         'scheduled':rate*30,'userPrefix':'x'+secrets.token_hex(6),'phase':'warmup'}
+                print(f'Runtime warmup {name}: {rate} RPS, 30s (validation; excluded from comparisons)',flush=True)
+                prepare(point,product_id,secret,output,token,api,require_idle)
+                value = measure(point,secret,output,token,selected)
+                readiness = assess(value,output/'samples.jsonl')
+                summary['points'].append({'path':path,'block':block,**readiness})
+                write_json(directory/'warmup.json',summary)
+                if value['correctnessErrors'] or value['unresolvedCount']:
+                    raise RuntimeError('Warmup data invalid or unresolved; preserve evidence')
+                if value['loadErrors'] and not safe_load_failure(value):
+                    raise RuntimeError('Warmup evidence invalid: '+'; '.join(value['loadErrors']))
+                require_idle(token)
+                release_redis(secret,point)
+                stable.append(readiness['stable'])
+            if block >= 2 and all(stable):
+                summary['status']='completed'
+                return
+        raise WarmupInconclusive('Warmup did not stabilize within equal 90s per path; see warmup.json')
+    except WarmupInconclusive as error:
+        summary.update(status='inconclusive',error=str(error))
+        raise
     except BaseException as error:
-        summary.update(status='failed', error=str(error))
+        summary.update(status='failed',error=str(error))
         raise
     finally:
-        write_json(directory/'warmup.json', summary)
+        write_json(directory/'warmup.json',summary)
 
 
 def main(argv=None):
     args = parse_args(argv)
     points = budgeted_matrix(args)
     if args.dry_run:
-        print(json.dumps({'scope': 'validation' if args.validation_only else 'performance', 'policy': policy(args), 'measurements': points}, ensure_ascii=False, indent=2))
+        print(json.dumps({'scope': 'validation' if args.validation_only else 'calibration' if args.run_type == 'calibration' else 'performance', 'policy': policy(args), 'measurements': points}, ensure_ascii=False, indent=2))
         return 0
     if os.environ.get('BENCH_CONTAINER') != '1' or os.environ.get('GITHUB_ACTIONS') != 'true': raise RuntimeError('Use the resource-limited load-runner container')
     target = json.loads((RUNTIME / 'target.json').read_text())
@@ -511,10 +522,12 @@ def main(argv=None):
                 return value
 
             for point in points:
-                execute_point(point, 'measurement')
+                execute_point(point, args.run_type)
             check_host_health()
             qualified = args.validation_only or all(c['qualified'] for c in comparisons(args, results))
             meta['status'] = 'completed' if len(results) == len(points) and all(r['valid'] for _, r in results) and qualified else 'inconclusive'
+        except WarmupInconclusive as error:
+            meta.update(status='inconclusive',error=str(error))
         except BaseException as error:
             meta.update(status='failed', error=str(error))
             raise

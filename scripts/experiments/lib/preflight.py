@@ -17,10 +17,10 @@ from runner import RUNTIME, REPORTS, api, measure, mysql_settings, require_idle,
 def dataset_plan(args):
     points = budgeted_matrix(args)
     total = sum(p['scheduled'] for p in points)
-    return {'formalRequests': total, 'seedUsers': math.ceil(total*1.2),
+    return {'formalRequests': total, 'warmupRequests':36000, 'seedUsers': math.ceil((total+36000)*1.2),
             'batchUsers': max(p['scheduled'] for p in points),
             'probeRate': 5, 'warmupSeconds': 5, 'probeSeconds': 10,
-            'coverage': 'Complete fixed experiment request count plus 20%'}
+            'coverage': 'Fixed experiment plus maximum equal warmup request count plus 20%'}
 
 
 def verify_fixture(directory, config):

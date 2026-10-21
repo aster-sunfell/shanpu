@@ -18,7 +18,7 @@ class ResourceTest(unittest.TestCase):
     def container(self, cpu=.75, memory=512, restart='unless-stopped'):
         return {'Image': 'sha256:fixture', 'State': {'Running': True, 'OOMKilled': False},
                 'HostConfig': {'NanoCpus': round(cpu * 1e9), 'Memory': memory * MIB,
-                               'MemorySwap': memory * MIB, 'PidsLimit': 128,
+                               'Ulimits':[{'Name':'nofile','Soft':8192,'Hard':8192}], 'MemorySwap': memory * MIB, 'PidsLimit': 128,
                                'RestartPolicy': {'Name': restart}}}
 
     def test_engine_without_resource_support_is_rejected(self):
@@ -69,25 +69,34 @@ class ResourceTest(unittest.TestCase):
         container['HostConfig']['CpusetCpus']='0,2'
         validate_container('backend',container,'0,2')
         with self.assertRaisesRegex(RuntimeError,'affinity'):validate_container('backend',container,'0,4')
-        container=self.container(cpu=1,memory=1024,restart='no')
+        container=self.container(cpu=1,memory=2048,restart='no')
         container['HostConfig']['CpusetCpus']='4'
         validate_runner_container(container,'4')
         with self.assertRaisesRegex(RuntimeError,'affinity'):validate_runner_container(container,'2')
 
     def test_runner_is_bounded_and_cannot_spawn_other_containers(self):
-        validate_runner_container(self.container(cpu=1,memory=1024,restart='no'))
-        validate_runner_config({'cpus': 1, 'mem_limit': str(1024 * MIB), 'memswap_limit': str(1024 * MIB),
-                                'pids_limit': 128, 'restart': 'no'})
-        container = self.container(cpu=1,memory=1024,restart='no')
+        validate_runner_container(self.container(cpu=1,memory=2048,restart='no'))
+        validate_runner_config({'cpus': 1, 'mem_limit': str(2048 * MIB), 'memswap_limit': str(2048 * MIB),
+                                'pids_limit': 128, 'restart': 'no','ulimits':{'nofile':{'soft':8192,'hard':8192}}})
+        container = self.container(cpu=1,memory=2048,restart='no')
         container['Mounts'] = [{'Source': '/var/run/docker.sock'}]
         with self.assertRaises(RuntimeError): validate_runner_container(container)
 
+    def test_descriptor_budget_is_enforced_on_backend_gateway_and_generator(self):
+        for service in ('backend','nginx','load-runner'):
+            cpu,memory=(1,2048) if service=='load-runner' else LIMITS[service]
+            value=self.container(cpu=cpu,memory=memory,restart='no' if service=='load-runner' else 'unless-stopped')
+            value['HostConfig']['Ulimits'][0]['Soft']=1024
+            with self.assertRaisesRegex(RuntimeError,'descriptor'):
+                if service=='load-runner': validate_runner_container(value)
+                else: validate_container(service,value)
+
     def test_safe_default_vus_and_duration_remain_bounded(self):
         points = budgeted_matrix(parse_args(['redis-filtering']))
-        self.assertTrue(all(p['vus'] == 400 for p in points))
+        self.assertTrue(all(p['vus'] == 1200 for p in points))
         self.assertTrue(all(60 <= p['seconds'] <= 600 for p in points))
         with patch('sys.stderr'), self.assertRaises(SystemExit):
-            parse_args(['redis-filtering', '--vus', '401'])
+            parse_args(['redis-filtering', '--vus', '1201'])
 
 
 if __name__ == '__main__':

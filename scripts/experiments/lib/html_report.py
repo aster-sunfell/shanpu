@@ -8,7 +8,7 @@ from report_data import Experiment, read_json
 from report_layout import page, heading, sidebar, text, table, experiment_report, environment_report
 
 
-def render(reports, output):
+def render(reports, output, *, summary_path=None):
     reports, output = Path(reports), Path(output)
     output.mkdir(parents=True, exist_ok=True)
     suite = read_json(reports/'suite.json', {})
@@ -26,7 +26,8 @@ def render(reports, output):
             '<p>运行状态：'+text(status)+'；用途：'+text(scope)+'</p></header>']
     body.append(table(['Actions run','Attempt','Commit'], [[run_id,attempt,actions.get('commit') or '未采集']]))
     if suite.get('error'): body.append('<p class="warning">'+text(suite['error'])+'</p>')
-    if scope != 'performance': body.append('<p>流程验证，不输出性能收益结论。</p>')
+    if scope == 'calibration': body.append('<p>负载校准报告：用于人工选定负载，不输出性能收益，也不覆盖最新正式报告。</p>')
+    if scope == 'validation': body.append('<p>流程验证，不输出性能收益结论。</p>')
     if status == 'inconclusive': body.append('<p>有效配对或样本不足，保留证据，不生成完整收益比较。</p>')
     stages = [Experiment(p.parent, scope) for p in sorted(reports.glob('*/*/manifest.json')) if p.parent.parent.name == mode]
     for experiment in stages: body.append(experiment_report(experiment))
@@ -50,8 +51,8 @@ def render(reports, output):
     summary={'id':f'{run_id}-{attempt}','runId':run_id,'attempt':attempt,'status':status,'scope':scope,'mode':mode,
              'commit':actions.get('commit'),'runUrl':actions.get('runUrl'),'createdAt':datetime.now(timezone.utc).isoformat()}
     (output/'report.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2)+'\n')
-    if os.environ.get('GITHUB_STEP_SUMMARY'):
-        with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as file:
+    if summary_path is not None:
+        with Path(summary_path).open('a') as file:
             file.write(f'## {mode}\n\n状态：{status}；用途：{scope}。下载 performance-html 的 index.html 查看报告，performance-evidence 查看原始证据。\n')
     return summary
 
@@ -60,5 +61,6 @@ if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reports',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--summary',type=Path,help='Explicit Actions step summary destination; library calls never write job summaries')
     args=parser.parse_args()
-    render(args.reports,args.output)
+    render(args.reports,args.output,summary_path=args.summary)

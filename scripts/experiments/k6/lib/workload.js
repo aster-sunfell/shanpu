@@ -59,6 +59,8 @@ export function request() {
   console.log(JSON.stringify({
     type: 'finish', requestId, index, startedAtMs, finishedAtMs, outcome,
     responseMs: response.timings.duration, httpStatus: response.status,
+    errorCode: response.error_code || null, error: response.error || null,
+    connectingMs: response.timings.connecting, blockedMs: response.timings.blocked,
     code: body ? body.code : null, state: state || null,
     orderId: body && body.data && body.data.orderId ? String(body.data.orderId) : null,
   }));

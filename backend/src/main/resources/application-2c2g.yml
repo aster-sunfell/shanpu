@@ -5,10 +5,10 @@ server:
     threads:
       max: 32
       min-spare: 4
-    # 200 fixed load VUs plus idle upstream connections and health requests.
+    # 1200 fixed load VUs plus idle upstream connections and health requests.
     # Socket capacity is independent of the 32 processing threads / PID budget.
-    max-connections: 256
-    accept-count: 64
+    max-connections: 2048
+    accept-count: 512
     connection-timeout: 5s
     keep-alive-timeout: 5s
 spring:

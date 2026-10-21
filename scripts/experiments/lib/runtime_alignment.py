@@ -44,6 +44,31 @@ def validate_backend_keepalive(development, production, shared, application):
     return {'idleConnections': int(pool[0]), 'upstreamTimeoutMs': upstream_ms, 'tomcatTimeoutMs': backend_ms}
 
 
+def validate_connection_budget(services, development, vus=1200):
+    """Proxy connections include both downstream clients and upstream sockets."""
+    def integer(pattern, text):
+        match = re.search(pattern,text,re.M)
+        if not match: raise RuntimeError('Missing explicit connection/descriptor setting')
+        return int(match[1])
+    values = {}
+    for name in ('deploy/nginx.2c2g.conf', 'deploy/nginx.conf.template'):
+        text = re.sub(r'#[^\n]*', '', (ROOT/name).read_text())
+        connections = integer(r'worker_connections\s+(\d+)',text)
+        descriptors = integer(r'worker_rlimit_nofile\s+(\d+)',text)
+        if connections < 2*vus+128 or descriptors < connections+128:
+            raise RuntimeError('Nginx connection/file budget cannot cover client and upstream VUs')
+        values[name] = connections
+    if len(set(values.values())) != 1: raise RuntimeError('Development and production Nginx connection budgets differ')
+    text = (ROOT/'backend/src/main/resources/application-2c2g.yml').read_text()
+    connections = integer(r'^    max-connections: (\d+)',text)
+    if connections < vus+128: raise RuntimeError('Tomcat socket budget cannot cover VUs plus headroom')
+    for service in (services['backend'],services['nginx'],development['services']['nginx']):
+        limits = service.get('ulimits',{}).get('nofile',{})
+        if any(limits.get(k,0) < 8192 for k in ('soft','hard')):
+            raise RuntimeError('Backend and gateway require explicit 8192 descriptor limits')
+    return {'vus':vus,'nginxConnections':next(iter(values.values())), 'tomcatConnections':connections,'nofile':8192}
+
+
 def _equal(expected, actual, label):
     if expected != actual:
         # Do not print values: resolved environment and commands contain credentials.
@@ -104,6 +129,8 @@ def validate_alignment(production, sut, development):
     keepalive = validate_backend_keepalive(*((ROOT/name).read_text() for name in
         ('deploy/nginx.conf.template', 'deploy/nginx.2c2g.conf', 'deploy/nginx.backend-keepalive.conf',
          'backend/src/main/resources/application-2c2g.yml')))
+    from protocol import DEFAULT_VUS
+    connection_budget = validate_connection_budget(baseline, development, DEFAULT_VUS)
     digest = hashlib.sha256()
     for name in ('deploy/compose.2c2g.yml', 'deploy/nginx.2c2g.conf', 'deploy/nginx.api.conf',
                  'deploy/nginx.backend-keepalive.conf',
@@ -112,7 +139,7 @@ def validate_alignment(production, sut, development):
                  'backend/src/main/resources/application-2c2g.yml', 'frontend/Dockerfile'):
         digest.update(name.encode()+b'\0'+(ROOT/name).read_bytes()+b'\0')
     return {'status': 'aligned', 'services': sorted(baseline),
-            'backendKeepalive': keepalive,
+            'backendKeepalive': keepalive, 'connectionBudget': connection_budget,
             'developmentMiddleware': list(MIDDLEWARE),
             'sharedConfigurationSha256': digest.hexdigest(),
             'baselineSha256': hashlib.sha256((ROOT/'deploy/compose.2c2g.yml').read_bytes()).hexdigest()}

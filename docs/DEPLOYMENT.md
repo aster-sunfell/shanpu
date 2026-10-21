@@ -18,7 +18,7 @@
 
 生产基线为 `deploy/compose.2c2g.yml`，包含 backend、frontend、Nginx、MySQL、Redis、Kafka 六个容器。本地 Compose 继承其中的中间件，保留宿主机前后端；压测待测端 `experiments/compose.sut.yml` 继承全部六个服务，发压端另用 `experiments/compose.runner.yml`，不占用待测端预算。
 
-应用性能参数统一在 `backend/src/main/resources/application-2c2g.yml`；`dev` 和 `prod` profile 都自动加载。Tomcat 使用 32 个处理线程、256 个连接、64 个连接排队位，连接及 keep-alive 超时均为 5 秒；数据库池最多 8 个连接、等待上限 3 秒。本地调试可显式覆盖参数，但其结果不作为容量证据。运行时镜像固定 digest，后端 JRE 版本与 `.sdkmanrc` 的 Java 17.0.18+8 对齐；生产和压测共用同一份 Dockerfile、JVM 参数及启动脚本。
+应用性能参数统一在 `backend/src/main/resources/application-2c2g.yml`；`dev` 和 `prod` profile 都自动加载。Tomcat 使用 32 个处理线程、2048 个连接、512 个连接排队位，连接及 keep-alive 超时均为 5 秒；数据库池最多 8 个连接、等待上限 3 秒。本地调试可显式覆盖参数，但其结果不作为容量证据。运行时镜像固定 digest，后端 JRE 版本与 `.sdkmanrc` 的 Java 17.0.18+8 对齐；生产和压测共用同一份 Dockerfile、JVM 参数及启动脚本。
 
 执行 `python3 scripts/experiments/lib/runtime_alignment.py` 可比较展开后的三套 Compose，不启动服务；Actions checks 和正式执行前都会核验。仅允许本地手动重启策略、宿主地址/端口，以及压测观测组件、专属数据和凭据等明确差异。
 
@@ -59,7 +59,7 @@
 
 `deploy/nginx.conf.template` 由 Nginx 官方镜像在启动时按环境变量生成配置。模板替换仅处理三个端口变量，保留 `$http_host` 等 Nginx 变量。
 
-本地、生产和待测端共用 `deploy/nginx.api.conf`，统一 API 请求头、上游连接复用和超时。网关使用一个 worker、512 个连接位；本地仅页面代理保留 WebSocket、关闭缓冲和热更新需要的长超时。
+本地、生产和待测端共用 `deploy/nginx.api.conf`，统一 API 请求头、上游连接复用和超时。网关使用一个 worker、4096 个连接位（包含客户端和上游），nofile 8192；本地仅页面代理保留 WebSocket、关闭缓冲和热更新需要的长超时。
 
 后端上游连接池共用 `deploy/nginx.backend-keepalive.conf`，由本地和生产的 `upstream backend` 引用，压测继承生产挂载。池内最多保留 16 条空闲连接，空闲超时为 3 秒，必须小于 Tomcat 的 5 秒，避免复用正在被后端关闭的连接。`http` 中的 `keepalive_timeout 15s` 控制客户端连接，不控制这个上游连接池；`nginx.api.conf` 在 `location` 中加载，也不能放置上游连接池指令。配置一致性检查会核验共享文件引用、只读挂载和超时关系，并将共享文件纳入报告配置指纹。
 

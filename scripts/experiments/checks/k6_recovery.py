@@ -27,9 +27,9 @@ class HttpQueue:
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
         self.active, self.ledger, self.config = 0, {}, {}
-        self.gate = asyncio.Semaphore(16)
+        self.gate = asyncio.Semaphore(2048)
         self.server = asyncio.run_coroutine_threadsafe(
-            asyncio.start_server(self.handle, '127.0.0.1', 0), self.loop).result()
+            asyncio.start_server(self.handle, '127.0.0.1', 0, backlog=2048), self.loop).result()
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def handle(self, reader, writer):
@@ -42,7 +42,7 @@ class HttpQueue:
             uid = json.loads(base64.urlsafe_b64decode(token+'='*(-len(token) % 4)))['uid']
             duplicate = self.config['workload'] == 'mixed' and (uid-1)%10 != 9
             async with self.gate:
-                await asyncio.sleep(.04 if self.config['path'] == 'B' else .001)
+                await asyncio.sleep(self.config.get('fixtureDelaySeconds',.001))
                 oid = str(uid)
                 if not duplicate: self.ledger[uid] = {'orderId': oid, 'userId': uid, 'activityId': self.config['activityId'],
                                     'commitObservedAtMs': int(time.time()*1000)}
@@ -66,7 +66,7 @@ class HttpQueue:
         self.loop.close()
 
 
-def check(output, experiment):
+def check(output, experiment, run_type='measurement'):
     output.mkdir(parents=True, exist_ok=True)
     args = parse_args(['kafka-burst'])
     server = HttpQueue()
@@ -76,7 +76,7 @@ def check(output, experiment):
         assert server.active == 0, 'Previous HTTP work did not drain'
         directory = output/f'{len(observed)+1:02d}-{phase}-{point["path"]}-{point["rate"]}'
         directory.mkdir()
-        config = {**point, 'activityId': len(observed)+1, 'points': 1000, 'requestTimeout': 5}
+        config = {**point, 'activityId': len(observed)+1, 'points': 1000, 'requestTimeout': 10}
         server.config, server.ledger = config, {}
         pool = {'count': config['scheduled']+1, 'prefix': 'recovery', 'issuedAt': int(time.time()),
                 'segments': [{'index': 0, 'userId': 1, 'count': config['scheduled']+1}]}
@@ -124,21 +124,24 @@ def check(output, experiment):
     try:
         # Actual default counts, durations and fixed VU allocation; only HTTP business
         # behavior is controlled. This validates the generator, not service performance.
-        selected = next(p for p in matrix(parse_args([experiment])) if p['path'] == ('B' if experiment == 'redis-filtering' else 'C'))
+        selected = list(matrix(parse_args([experiment,'--run-type',run_type])))[-1]
         measured = execute(selected, 'fixed-profile')
         assert measured['valid'], measured['loadErrors']
-        if experiment == 'kafka-burst': assert measured['burst']['requests'] == 4000
+        if experiment == 'kafka-burst': assert measured['burst']['requests'] == selected['rate']*selected['seconds']
+        delayed = execute({**selected,'workload':'steady','baseSeconds':0,'recoverySeconds':0,
+                           'seconds':15,'rate':800,'scheduled':12000,'fixtureDelaySeconds':1}, 'delayed-800rps')
+        assert delayed['valid'], delayed['loadErrors']
         burst = next(p for p in matrix(args) if p['path'] == 'C')
         limited = execute({'plan': 'kafka-burst', 'path': 'B', 'rate': 800, 'seconds': 3,
                            'baseSeconds': 0, 'baseRate': 0, 'recoverySeconds': 0,
-                           'workload': 'steady', 'repeat': 1, 'vus': 20, 'scheduled': 2400}, 'overload')
+                           'workload': 'steady', 'repeat': 1, 'vus': 20, 'scheduled': 2400, 'fixtureDelaySeconds':.1}, 'overload')
         assert limited['vuExhausted'] and safe_load_failure(limited), limited['loadErrors']
         recovered = execute({**burst, 'workload': 'steady', 'baseSeconds': 0, 'seconds': 2,
                              'recoverySeconds': 0, 'rate': 50, 'scheduled': 100}, 'after-overload')
         assert recovered['valid'], recovered['loadErrors']
         write_json(output/'check.json', {'status': 'passed', 'scope': 'validation',
                    'description': 'Real default k6 profiles and production evidence; controlled HTTP queue, no business performance claims',
-                   'experiment': experiment, 'observedPoints': len(observed), 'resources': runner_usage()})
+                   'experiment': experiment, 'runType':run_type, 'verifiedEnvelope':{'rps':800,'responseDelayMs':1000,'vus':1200}, 'observedPoints': len(observed), 'resources': runner_usage()})
     finally: server.close()
 
 
@@ -146,9 +149,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--experiment', choices=['redis-filtering','kafka-burst'], default='redis-filtering')
+    parser.add_argument('--run-type',choices=['calibration','measurement'],default='measurement')
     options = parser.parse_args()
     try:
-        check(options.output.resolve(), options.experiment)
+        check(options.output.resolve(), options.experiment, options.run_type)
     except Exception as error:
         options.output.mkdir(parents=True, exist_ok=True)
         write_json(options.output/'check.json', {'status': 'failed', 'scope': 'validation', 'error': str(error)})

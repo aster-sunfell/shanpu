@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import actions
@@ -56,9 +56,26 @@ class ActionsTest(unittest.TestCase):
                             patch.object(actions,'require_preflight') as gate, patch.object(actions,'run_stage',return_value=root) as stage:
                         actions.run_experiment(plan,30)
                     self.assertEqual(1, stage.call_count)
-                    self.assertEqual([plan], stage.call_args.args[0])
+                    self.assertEqual([plan,'--run-type','measurement'], stage.call_args.args[0])
                     gate.assert_called_once_with(actions.experiment_parameters(plan))
                     self.assertEqual(status,json.loads((root/'suite.json').read_text())['status'])
+
+    def test_gateway_errors_are_retained_and_redacted_even_when_stage_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);directory=root/'run';directory.mkdir()
+            env=root/'sut.env';env.write_text('PASSWORD=private-secret\n')
+            process=MagicMock();process.poll.return_value=None
+            def start(*args,**kwargs):
+                kwargs['stderr'].write('early error private-secret\n')
+                return process
+            with patch.object(actions,'RUNTIME',root),patch.object(actions,'ENV_FILE',env), \
+                 patch.object(actions,'initialize',return_value={'PASSWORD':'private-secret'}), \
+                 patch.object(actions.subprocess,'Popen',side_effect=start):
+                with self.assertRaisesRegex(RuntimeError,'business failure'):
+                    with actions.gateway_capture('nginx',directory):
+                        raise RuntimeError('business failure')
+            self.assertEqual('early error [REDACTED]\n',(directory/'nginx-error.log').read_text())
+            process.terminate.assert_called_once()
 
     def test_internal_deadline_stops_injection_before_job_timeout(self):
         with tempfile.TemporaryDirectory() as temp, patch('host.memory', return_value={'MemAvailable': 4000 * MIB}):

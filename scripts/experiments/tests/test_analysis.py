@@ -62,7 +62,7 @@ class EvidenceTest(unittest.TestCase):
         self.assertFalse(result['valid'])
 
     def test_timeout_can_commit_but_fails_eligible_slo(self):
-        self.finish.update(outcome='timeout', orderId=None)
+        self.finish.update(outcome='timeout', orderId=None,httpStatus=0,errorCode=1050,error='request timeout',connectingMs=2,blockedMs=3)
         r = self.run_evidence()
         self.assertEqual(0, r['accepted'])
         self.assertEqual(1, r['completed'])
@@ -70,6 +70,16 @@ class EvidenceTest(unittest.TestCase):
         self.assertEqual(1, r['classes']['eligible']['errorRate'])
         self.assertTrue(r['valid'])
         self.assertFalse(r['sloPassed'])
+
+    def test_network_diagnostics_and_timely_success_do_not_count_failed_responses(self):
+        self.finish.update(outcome='network_error',orderId=None,httpStatus=0,errorCode=1040,error='reset',connectingMs=2,blockedMs=3)
+        result=self.run_evidence()
+        self.assertEqual(0,result['eligibleOnTimeSuccessPct'])
+        self.assertEqual(1,result['committedAfterResponseFailure'])
+        self.assertEqual(100,result['completionCoverage']*100)
+        group=result['networkErrors']['groups'][0]
+        self.assertEqual((0,'1040','reset',1),(group['status'],group['errorCode'],group['error'],group['count']))
+        self.assertEqual(2,result['networkErrors']['examples'][0]['connectingMs'])
 
     def test_duplicate_point_log_is_detected(self):
         self.rows['after-logs'] *= 2
@@ -212,9 +222,10 @@ class EvidenceTest(unittest.TestCase):
             result=evidence.analyze(config,{},9000,POLICY)
             self.assertTrue(result['valid'])
             self.assertEqual(3,result['completedWithinDeadline'])
+            self.assertEqual(75,result['eligibleOnTimeSuccessPct'])
             self.assertEqual(3600,result['drainMs'])
             self.assertEqual({'scope':'burst-requests','requests':2,'acceptedWithinResponseDeadline':2,
-                              'completedWithinDeadline':1,'completed':2},{k:v for k,v in result['burst'].items() if k not in ('responseMs','completionMs','failed')})
+                              'completedWithinDeadline':1,'completed':2,'onTimeAcceptedPct':100,'onTimeCompletedPct':50,'completionPct':100},{k:v for k,v in result['burst'].items() if k not in ('responseMs','completionMs','failed')})
         finally:evidence.close()
 
 

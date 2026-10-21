@@ -18,7 +18,7 @@ def rows(plan='redis-filtering'):
                       'duplicate':{'responseMs':{'p99':30 if second else 80}}},
            'backendDelta':{'sqlCalls':{'mapper':1200 if second else 12000},'syncAttempts':1200 if second else 12000},
            'completionMs':{'p99':100},'peakPendingAccepted':10,'drainMs':20,
-           'burst':{'acceptedWithinResponseDeadline':3900 if second else 3000,'completedWithinDeadline':3800 if second else 3900,'completed':4000}}
+           'burst':{'acceptedWithinResponseDeadline':3900 if second else 3000,'completedWithinDeadline':3800 if second else 3900,'completed':4000,'onTimeAcceptedPct':97.5 if second else 75,'onTimeCompletedPct':95 if second else 97.5}}
         result.append((str(len(result)),r))
     return args,result
 
@@ -29,8 +29,8 @@ class ProtocolTest(unittest.TestCase):
         kafka=list(matrix(parse_args(['kafka-burst'])))
         self.assertEqual(['A','B','B','A','A','B'],[p['path'] for p in redis])
         self.assertEqual(['B','C','C','B','B','C'],[p['path'] for p in kafka])
-        self.assertTrue(all(p['scheduled']==12000 and p['workload']=='mixed' for p in redis))
-        self.assertTrue(all(p['scheduled']==9000 and p['recoverySeconds']==30 for p in kafka))
+        self.assertTrue(all(p['scheduled']==36000 and p['workload']=='mixed' for p in redis))
+        self.assertTrue(all(p['scheduled']==11000 and p['recoverySeconds']==30 for p in kafka))
 
     def test_removed_search_flags_and_short_formal_runs_are_rejected(self):
         for extra in (['--stage','capacity'],['--rates','100,200'],['--baseline-report','x'],['--seconds','2']):
@@ -41,7 +41,7 @@ class ProtocolTest(unittest.TestCase):
         item=comparisons(args,result)[0]
         self.assertTrue(item['qualified'])
         self.assertEqual(500,item['metrics']['eligibleResponseP99Ms']['afterMinusBefore']['p50'])
-        self.assertEqual(-900,item['metrics']['businessSqlPer1000Requests']['afterMinusBefore']['p50'])
+        self.assertEqual(-300,item['metrics']['businessSqlPer1000Requests']['afterMinusBefore']['p50'])
         args,result=rows('kafka-burst')
         metrics=comparisons(args,result)[0]['metrics']
         self.assertEqual(900,metrics['burst.acceptedWithinResponseDeadline']['afterMinusBefore']['p50'])

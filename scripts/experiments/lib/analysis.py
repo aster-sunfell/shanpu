@@ -38,6 +38,7 @@ class Evidence:
             PRAGMA journal_mode=DELETE;
             CREATE TABLE IF NOT EXISTS starts(rid TEXT PRIMARY KEY,idx INTEGER UNIQUE,uid INTEGER,t REAL,e REAL,kind TEXT,due REAL);
             CREATE TABLE IF NOT EXISTS finishes(rid TEXT PRIMARY KEY,idx INTEGER,t REAL,f REAL,outcome TEXT,ms REAL,oid TEXT);
+            CREATE TABLE IF NOT EXISTS http_failures(rid TEXT PRIMARY KEY,status INTEGER,code TEXT,error_code TEXT,error TEXT,connecting_ms REAL,blocked_ms REAL);
             CREATE TABLE IF NOT EXISTS commits(oid TEXT PRIMARY KEY,aid INTEGER,uid INTEGER,t REAL);
             CREATE INDEX IF NOT EXISTS commit_time ON commits(t);
             CREATE INDEX IF NOT EXISTS start_time ON starts(kind,t);
@@ -85,6 +86,10 @@ class Evidence:
                     elif row['type'] == 'finish':
                         self.db.execute('INSERT INTO finishes VALUES (?,?,?,?,?,?,?)',
                                         (row['requestId'], row['index'], row['startedAtMs'], row['finishedAtMs'], row['outcome'], row['responseMs'], row['orderId']))
+                        if row['outcome'] in ('network_error','timeout','internal_error'):
+                            self.db.execute('INSERT INTO http_failures VALUES (?,?,?,?,?,?,?)',
+                                (row['requestId'],row.get('httpStatus'),str(row.get('code')),str(row.get('errorCode')),
+                                 row.get('error'),row.get('connectingMs'),row.get('blockedMs')))
                     else: raise ValueError('Unknown request record')
                 except sqlite3.IntegrityError:
                     if 'Duplicate request/index records' not in self.record_errors: self.record_errors.append('Duplicate request/index records')
@@ -224,6 +229,18 @@ class Evidence:
         accepted = self.scalar("SELECT COUNT(*) FROM finishes WHERE outcome='accepted'")
         timely_accepted = self.scalar("SELECT COUNT(*) FROM finishes WHERE outcome='accepted' AND f-t<=?", (response_limit,))
         on_time = self.scalar('SELECT COUNT(*) FROM joined WHERE ct<=? AND ct-t<=?', (cutoff_ms, completion_limit))
+        timely_success = self.scalar("SELECT COUNT(*) FROM joined WHERE kind='eligible' AND outcome='accepted' AND f-t<=? AND ct<=? AND ct-t<=?",
+                                     (response_limit, cutoff_ms, completion_limit))
+        windows = []
+        for offset in range(0, seconds-9, 10):
+            condition = f"t>={origin+offset*1000} AND t<{origin+(offset+10)*1000}"
+            windows.append({'startMs':origin+offset*1000,'endMs':origin+(offset+10)*1000,
+                            'requests':self.scalar(f'SELECT COUNT(*) FROM joined WHERE {condition}'),
+                            'eligibleResponseMs':self.quantiles('ms','joined',condition+" AND kind='eligible'")})
+        network = {'groups':[dict(zip(('status','code','errorCode','error','count'),row)) for row in
+                   self.db.execute('SELECT status,code,error_code,error,COUNT(*) FROM http_failures GROUP BY status,code,error_code,error ORDER BY COUNT(*) DESC LIMIT 20')],
+                   'examples':[dict(zip(('requestId','status','code','errorCode','error','connectingMs','blockedMs'),row)) for row in
+                   self.db.execute('SELECT * FROM http_failures LIMIT 5')]}
         burst = None
         if config['workload'] == 'burst':
             # Scenario identity keeps a delayed baseline request out of the burst cohort.
@@ -240,6 +257,8 @@ class Evidence:
                 'completionMs': self.quantiles('ct-t', 'joined', cohort+f' AND ct<={cutoff_ms}'),
                 'failed': self.scalar(f"SELECT COUNT(*) FROM joined WHERE {cohort} AND (outcome IS NULL OR outcome<>'accepted')"),
             }
+            for key, count in (('onTimeAcceptedPct','acceptedWithinResponseDeadline'), ('onTimeCompletedPct','completedWithinDeadline'), ('completionPct','completed')):
+                burst[key] = burst[count]*100/burst['requests'] if burst['requests'] else None
             if burst['requests'] != config['rate'] * config['seconds']:
                 load_errors.append('Burst request cohort does not match the scheduled phase')
         buckets = [{'second': i, 'started': 0, 'accepted': 0, 'completed': 0, 'pendingAccepted': 0, 'outstanding': 0}
@@ -296,7 +315,8 @@ class Evidence:
                 'accepted': accepted, 'completed': completed, 'eligible': eligible, 'unresolvedCount': unresolved,
                 'committedAfterResponseFailure': self.scalar("SELECT COUNT(*) FROM joined WHERE ct<=? AND (outcome IS NULL OR outcome<>'accepted')", (cutoff_ms,)),
                 'acceptedWithinResponseDeadline': timely_accepted, 'completedWithinDeadline': on_time,
-                'burst': burst,
+                'burst': burst, 'eligibleOnTimeSuccessPct':timely_success*100/eligible if eligible else None,
+                'warmupWindows':windows, 'networkErrors':network,
                 'actualRequestRps': started / seconds, 'acceptedRps': accepted / seconds, 'completionWindowRps': window_complete / seconds,
                 'responseMs': response, 'completionMs': completion_q, 'completionCoverage': completed / eligible if eligible else None,
                 'peakPendingAccepted': peak, 'drainMs': max(0, last_commit-end) if not unresolved else None,

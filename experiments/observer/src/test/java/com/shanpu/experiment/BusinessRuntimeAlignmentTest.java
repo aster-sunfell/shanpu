@@ -91,14 +91,14 @@ class BusinessRuntimeAlignmentTest {
         assertEquals(business, experiment);
         assertEquals(business, configuration("dev"));
         assertEquals(32, experiment.get("threads"));
-        assertEquals(256, experiment.get("connections"));
+        assertEquals(2048, experiment.get("connections"));
         assertEquals(8, experiment.get("poolMax"));
         assertEquals(3000L, experiment.get("poolWait"));
         assertEquals(Duration.ofSeconds(5), experiment.get("keepAliveTimeout"));
         assertEquals("INFO", experiment.get("logging"));
     }
 
-    @Test void sharedConnectorAcceptsTwoHundredConnectionsAndStillServesAnotherRequest() {
+    @Test void sharedConnectorAcceptsTwelveHundredConnectionsAndStillServesAnotherRequest() {
         configurationRunner("prod,experiment,sut").run(context -> {
             var factory = new TomcatServletWebServerFactory(0);
             factory.setAddress(InetAddress.getLoopbackAddress());
@@ -113,7 +113,7 @@ class BusinessRuntimeAlignmentTest {
             var sockets = new ArrayList<Socket>();
             try {
                 server.start();
-                for (int i = 0; i < 200; i++) {
+                for (int i = 0; i < 1200; i++) {
                     var socket = new Socket(InetAddress.getLoopbackAddress(), server.getPort());
                     sockets.add(socket);
                     // Incomplete request headers hold accepted connections without occupying servlet threads.
@@ -122,12 +122,12 @@ class BusinessRuntimeAlignmentTest {
                 }
                 var protocol = (AbstractProtocol<?>) server.getTomcat().getConnector().getProtocolHandler();
                 long deadline = System.nanoTime()+Duration.ofSeconds(2).toNanos();
-                while (protocol.getConnectionCount() < 200 && System.nanoTime() < deadline) Thread.sleep(10);
+                while (protocol.getConnectionCount() < 1200 && System.nanoTime() < deadline) Thread.sleep(10);
                 // Tomcat reserves a slot before accept(), so its admission counter may
-                // include the acceptor waiting for the next socket as well as our 200.
+                // include the acceptor waiting for the next socket as well as our 1200.
                 long connections = protocol.getConnectionCount();
-                assertTrue(connections >= 200 && connections <= 201,
-                        () -> "Expected 200 sockets plus at most one acceptor reservation, got "+connections);
+                assertTrue(connections >= 1200 && connections <= 1201,
+                        () -> "Expected 1200 sockets plus at most one acceptor reservation, got "+connections);
                 var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+server.getPort()+"/probe"))
                         .timeout(Duration.ofSeconds(2)).build();
                 var response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()

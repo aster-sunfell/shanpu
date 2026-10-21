@@ -6,8 +6,12 @@ from pathlib import Path
 from analysis import percentiles, write_json
 from host import validate_affinity
 
-VERSION = 4
-DEFAULT_VUS = 400
+VERSION = 5
+DEFAULT_VUS = 1200
+CALIBRATION_RATES = (400, 600, 800)
+# Candidate until a calibration run is reviewed; formal runs never change this rate.
+REDIS_RATE = 600
+KAFKA_BURST_RATE = 600
 PLANS = ('redis-filtering', 'kafka-burst')
 
 
@@ -32,8 +36,9 @@ def policy(args):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('plan', choices=PLANS)
-    for name, default in (('rate', 200), ('seconds', 60), ('repeats', 3), ('vus', DEFAULT_VUS),
-                          ('base-rate', 100), ('base-seconds', 20), ('burst-rate', 400), ('burst-seconds', 10),
+    parser.add_argument('--run-type', choices=['measurement', 'calibration'], default='measurement')
+    for name, default in (('rate', REDIS_RATE), ('seconds', 60), ('repeats', 3), ('vus', DEFAULT_VUS),
+                          ('base-rate', 100), ('base-seconds', 20), ('burst-rate', KAFKA_BURST_RATE), ('burst-seconds', 10),
                           ('recovery-rate', 100), ('recovery-seconds', 30), ('request-timeout', 10),
                           ('drain-seconds', 120), ('response-p99-ms', 500), ('completion-p99-ms', 5000),
                           ('min-samples', 1000)):
@@ -44,7 +49,9 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     args.deployment = 'github-actions'
     if not 0 <= args.max_error_rate <= 1: parser.error('--max-error-rate must be in [0,1]')
-    if args.vus > DEFAULT_VUS: parser.error('At most 400 VUs in the calibrated load-runner budget')
+    if max(args.rate, args.burst_rate, args.base_rate, args.recovery_rate) > 800:
+        parser.error('Rates above the 800 RPS generator verification envelope require explicit recalibration')
+    if args.vus > DEFAULT_VUS: parser.error('At most 1200 VUs in the calibrated load-runner budget')
     if args.repeats > 10: parser.error('At most 10 repetitions')
     if max(args.seconds, args.base_seconds, args.burst_seconds, args.recovery_seconds,
            args.drain_seconds, args.request_timeout) > 600: parser.error('Durations limited to 600 seconds')
@@ -57,6 +64,9 @@ def parse_args(argv=None):
 
 
 def matrix(args):
+    if args.run_type == 'calibration':
+        yield from calibration_matrix(args)
+        return
     burst = args.plan == 'kafka-burst'
     paths = ('B', 'C') if burst else ('A', 'B')
     for repeat in range(1, args.repeats+1):
@@ -69,6 +79,36 @@ def matrix(args):
                    'path': path, 'rate': rate, 'seconds': seconds, 'baseRate': args.base_rate, 'baseSeconds': base,
                    'recoveryRate': args.recovery_rate, 'recoverySeconds': recovery, 'vus': args.vus,
                    'requestTimeout': args.request_timeout, 'points': 10_000_000, 'scheduled': scheduled}
+
+
+def calibration_matrix(args):
+    # Baseline only, exactly three predeclared candidates; no adaptive search.
+    import copy
+    selected = copy.copy(args)
+    selected.run_type, selected.repeats, selected.seconds = 'measurement', 1, 20
+    baseline = 'A' if args.plan == 'redis-filtering' else 'B'
+    for rate in CALIBRATION_RATES:
+        selected.rate = selected.burst_rate = rate
+        yield next(p for p in matrix(selected) if p['path'] == baseline)
+
+
+def calibration_summary(args, results):
+    rows = []
+    for name,r in results:
+        response = (r.get('burst') or {}).get('responseMs') if args.plan == 'kafka-burst' else r.get('classes',{}).get('eligible',{}).get('responseMs')
+        p99 = (response or {}).get('p99')
+        network_errors = sum(r.get('outcomes',{}).get(k,0) for k in ('network_error','timeout','internal_error'))
+        response_errors = sum(c.get('failed',0) for c in r.get('classes',{}).values())
+        waits = r.get('backendDelta',{}).get('poolWaitCount',0)
+        # Selection uses baseline pressure, never the treatment's improvement.
+        pressure = bool(waits > 0 or r.get('peakPendingAccepted',0) > 0)
+        candidate = bool(r.get('valid') and not network_errors and not response_errors and p99 is not None and 300 <= p99 <= 1000 and pressure)
+        rows.append({'point':name,'rate':r['rate'],'valid':r['valid'],'p99Ms':p99,
+                     'networkErrors':network_errors,'responseErrors':response_errors,'poolWaitCount':waits,'eligibleCandidate':candidate})
+    selected = next((r['rate'] for r in sorted(rows,key=lambda r:r['rate']) if r['eligibleCandidate']),None)
+    return {'candidates':rows,'recommendedRate':selected,'automaticallyApplied':False,
+            'rule':'Lowest predeclared baseline rate with valid load, no network/timeout/internal errors, p99 300–1000ms, and DB waiting or pending backlog',
+            'nextStep':'Review evidence, freeze the chosen rate in protocol.py and run fresh measurement; no candidate is not a capacity failure'}
 
 
 def budgeted_matrix(args):
@@ -98,7 +138,7 @@ def context_contract(target, settings, generator_hash=None, load_host=None, args
     if args is not None:
         context['deployment'] = args.deployment
         context['generator'] = {'vus': args.vus, 'requestTimeout': args.request_timeout,
-                                'drainSeconds': args.drain_seconds, 'warmup': '50rps-10s-per-path-plus-one-paid-order-per-point',
+                                'drainSeconds': args.drain_seconds, 'warmup': 'equal-200rps-60-to-90s-three-window-stability-v1',
                                 'experiment': args.plan, 'matrix': list(matrix(args))}
     if database_settings is not None:
         context['databaseSettings'] = database_settings
@@ -106,7 +146,7 @@ def context_contract(target, settings, generator_hash=None, load_host=None, args
 
 
 def comparisons(args, results):
-    if args.validation_only: return []
+    if args.validation_only or args.run_type == 'calibration': return []
     paths = ('A', 'B') if args.plan == 'redis-filtering' else ('B', 'C')
     indexed = {(r['path'], r['repeat']): r for _, r in results}
     pairs = [(indexed.get((paths[0], i)), indexed.get((paths[1], i))) for i in range(1, args.repeats+1)]
@@ -122,7 +162,12 @@ def comparisons(args, results):
             values = [(fn(a), fn(b)) for a,b in valid]
             if all(a is not None and b is not None for a,b in values):
                 metrics[name] = {'before': spread(a for a,b in values), 'after': spread(b for a,b in values),
-                                 'afterMinusBefore': spread(b-a for a,b in values)}
+                                 'afterMinusBefore': spread(b-a for a,b in values),
+                                 'pairedReductionPct': spread((1-b/a)*100 for a,b in values) if all(a > 0 for a,b in values) else None}
+        difference('eligibleResponseP95Ms', lambda r: r['classes']['eligible']['responseMs'].get('p95'))
+        difference('eligibleSuccessfulResponseP99Ms', lambda r: r['classes']['eligible'].get('successfulResponseMs',{}).get('p99'))
+        difference('eligibleOnTimeSuccessPct', lambda r: r.get('eligibleOnTimeSuccessPct'))
+        difference('eligibleCompletionPct', lambda r: r.get('completionCoverage')*100 if r.get('completionCoverage') is not None else None)
         difference('eligibleResponseP99Ms', lambda r: r['classes']['eligible']['responseMs']['p99'])
         difference('completionP99Ms', lambda r: r['completionMs']['p99'])
         difference('completed', lambda r: r['completed'])
@@ -134,6 +179,10 @@ def comparisons(args, results):
             difference('syncAttemptsPer1000Requests', lambda r: r['backendDelta']['syncAttempts']*1000/r['started']
                        if 'syncAttempts' in r.get('backendDelta', {}) and r['started'] else None)
         else:
+            difference('burst.responseP99Ms', lambda r: (r.get('burst') or {}).get('responseMs',{}).get('p99'))
+            difference('burst.onTimeAcceptedPct', lambda r: (r.get('burst') or {}).get('onTimeAcceptedPct'))
+            difference('burst.onTimeCompletedPct', lambda r: (r.get('burst') or {}).get('onTimeCompletedPct'))
+            difference('burst.completionPct', lambda r: (r.get('burst') or {}).get('completionPct'))
             for field in ('acceptedWithinResponseDeadline', 'completedWithinDeadline', 'completed'):
                 difference('burst.'+field, lambda r, f=field: (r.get('burst') or {}).get(f))
             difference('peakPendingAccepted', lambda r: r['peakPendingAccepted'])
@@ -143,9 +192,13 @@ def comparisons(args, results):
 
 def report(directory, meta, results, args):
     paired = comparisons(args, results) if meta['status'] not in ('failed', 'running') else []
+    calibration = calibration_summary(args, results) if args.run_type == 'calibration' else None
+    if calibration and meta['status'] in ('running','failed'):
+        calibration['recommendedRate'] = None
+        calibration['nextStep'] = 'Calibration did not complete safely; inspect retained evidence before choosing a load'
     artifact = {'schemaVersion': VERSION, 'plan': args.plan, 'status': meta['status'], 'scope': meta['scope'],
                 'deployment': args.deployment, 'policy': policy(args), 'contract': meta.get('contract'),
-                'comparisons': paired, 'parameters': vars(args), 'points': [name for name, _ in results],
+                'comparisons': paired, 'calibration': calibration, 'parameters': vars(args), 'points': [name for name, _ in results],
                 'environment': {'target': meta.get('target'), 'loadHost': meta.get('loadHost')}}
     write_json(directory/'experiment.json', artifact)
     lines = [f"# {args.plan}", '', f"状态：{meta['status']}；用途：{meta['scope']}。", '',
@@ -155,7 +208,7 @@ def report(directory, meta, results, args):
     for name,r in results:
         lines.append(f"| [{name}]({name}/report.md) | {r['started']}/{r['scheduled']} | {r['valid']} | {r['sloPassed']} | {r['completed']}/{r['eligible']} | {r['classes'].get('eligible',{}).get('responseMs',{}).get('p99')} |")
     lines += ['', '配对指标的 before/after 为每轮值的分布，afterMinusBefore 为每轮差值的分布；不将多个 p99 合并成总体 p99。',
-              'Redis 主指标：每千请求业务 mapper SQL 调用数及同步事务尝试次数（不是数据库全部 SQL 或已提交事务数）。',
+              'Redis 主指标：有效购买响应 p95/p99、按时成功比例、最终完成比例及错误率；SQL/事务尝试仅解释机制。',
               f'Kafka 主指标：突发请求在 {args.response_p99_ms}ms 内受理及 {args.completion_p99_ms}ms 内完成的数量；PENDING 不等于订单完成。',
               '完整比较见 experiment.json；每点保留逐笔请求、提交、快照、资源采样及 timeline.csv。',
               'GitHub-hosted runner 共享宿主机资源；结论限于本次机器、配额和负载，不推断最大容量。']

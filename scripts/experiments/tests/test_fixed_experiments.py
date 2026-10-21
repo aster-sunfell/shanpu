@@ -13,7 +13,7 @@ from analysis import LATE_START_ERROR
 
 
 class FixedExperimentTest(unittest.TestCase):
-    def run_experiment(self, *, response=None, expected_error=None):
+    def run_experiment(self, *, response=None, expected_error=None, run_type='measurement', warm_error=None):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             runtime, reports = root/'runtime', root/'reports'
@@ -58,9 +58,9 @@ class FixedExperimentTest(unittest.TestCase):
                     patch.object(runner, 'create_users', return_value={}), patch.object(runner, 'credential', return_value={'token': 'private'}), \
                     patch.object(runner, 'require_idle', return_value=metrics), patch.object(runner, 'sql', return_value='7'), \
                     patch.object(runner, 'check_disk'), patch.object(runner, 'prepare', side_effect=prepare), \
-                    patch.object(runner, 'warm_runtime'), patch.object(runner, 'measure', side_effect=measure), patch.object(runner, 'release_redis'), \
+                    patch.object(runner, 'warm_runtime',side_effect=warm_error), patch.object(runner, 'measure', side_effect=measure), patch.object(runner, 'release_redis'), \
                     patch.object(runner, 'report', side_effect=report), patch('builtins.print'):
-                arguments = ['kafka-burst']
+                arguments = ['kafka-burst','--run-type',run_type]
                 if expected_error:
                     with self.assertRaisesRegex(RuntimeError, expected_error):
                         runner.main(arguments)
@@ -73,11 +73,23 @@ class FixedExperimentTest(unittest.TestCase):
         calls,meta=self.run_experiment()
         self.assertEqual(6,len(calls))
         self.assertEqual('completed',meta['status'])
-        self.assertTrue(all(p['rate']==400 for p in calls))
+        self.assertTrue(all(p['rate']==600 for p in calls))
 
     def test_load_failure_retains_evidence_and_continues_after_idle_check(self):
         calls,meta=self.run_experiment(response=lambda p: {'valid':False,'loadErrors':['Offered load not achieved']} if p['path']=='B' else {})
         self.assertEqual(6,len(calls))
+        self.assertEqual('inconclusive',meta['status'])
+
+    def test_calibration_is_one_baseline_run_and_never_repeats_or_changes_candidates(self):
+        calls,meta=self.run_experiment(run_type='calibration')
+        self.assertEqual([400,600,800],[p['rate'] for p in calls])
+        self.assertEqual({'B'},{p['path'] for p in calls})
+        self.assertEqual('calibration',meta['scope'])
+        self.assertEqual('completed',meta['status'])
+
+    def test_unstable_warmup_is_inconclusive_without_formal_points(self):
+        calls,meta=self.run_experiment(warm_error=runner.WarmupInconclusive('unstable'))
+        self.assertEqual([],calls)
         self.assertEqual('inconclusive',meta['status'])
 
     def test_corruption_unknown_load_error_and_unresolved_abort(self):

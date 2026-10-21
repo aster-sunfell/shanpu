@@ -1,5 +1,6 @@
 """GitHub Actions only: isolated ephemeral services, bounded load and evidence."""
 import argparse
+from contextlib import contextmanager
 import json
 import hashlib
 import tempfile
@@ -134,6 +135,7 @@ def validate_container(name, container, expected_cpuset=None, expected_pids=None
             or actual.get("Privileged") or actual.get("NetworkMode") == "host"
             or actual.get("RestartPolicy", {}).get("Name") != "unless-stopped"):
         raise RuntimeError(f"Docker did not apply the required CPU/memory/swap limits to {name}")
+    if name in ('backend','nginx'): validate_nofile(actual)
     actual_cpuset = actual.get('CpusetCpus', '')
     if expected_pids is not None and actual.get('PidsLimit') != expected_pids:
         raise RuntimeError(f'Docker did not apply the required PID limit to {name}')
@@ -237,7 +239,7 @@ def build():
                     "cp backend/docker/java.options /output/docker/java.options && "
                     "cp backend/docker/entrypoint.sh /output/docker/entrypoint.sh")
     command(["docker", "run", "--rm", "--name", "shanpu-experiment-build", "--cpus", "2",
-             "--memory", "768m", "--memory-swap", "768m", "--pids-limit", "128",
+             "--memory", "768m", "--memory-swap", "768m", "--pids-limit", "128", "--ulimit", "nofile=8192:8192",
              "-e", "MAVEN_OPTS=-Xms64m -Xmx384m -XX:ActiveProcessorCount=2",
              "-v", f"{ROOT}:/source:ro", "-v", f"{output}:/output",
              "-v", "shanpu-experiment-m2:/root/.m2", "maven:3.9-eclipse-temurin-17",
@@ -250,11 +252,19 @@ def build():
     (RUNTIME / "sut-source.json").write_text(json.dumps(sut_source, indent=2) + "\n")
 
 
+def validate_nofile(host_config):
+    limits = next((v for v in host_config.get('Ulimits',[]) if v['Name']=='nofile'),{})
+    if any(limits.get(k,0) < 8192 for k in ('Soft','Hard')):
+        raise RuntimeError('Docker did not apply the 8192 file descriptor budget')
+
+
 def validate_runner_config(service):
-    if (float(service.get("cpus", 0)) != 1 or int(service.get("mem_limit", 0)) != 1024 * MIB
-            or int(service.get("memswap_limit", 0)) != 1024 * MIB or service.get("pids_limit") != 128
+    if (float(service.get("cpus", 0)) != 1 or int(service.get("mem_limit", 0)) != 2048 * MIB
+            or int(service.get("memswap_limit", 0)) != 2048 * MIB or service.get("pids_limit") != 128
             or service.get("restart") != "no"):
-        raise RuntimeError("Load runner must have fixed 1 CPU / 1024 MiB limits")
+        raise RuntimeError("Load runner must have fixed 1 CPU / 2048 MiB limits")
+    limits = service.get('ulimits',{}).get('nofile',{})
+    if any(limits.get(k,0) < 8192 for k in ('soft','hard')): raise RuntimeError('Load runner requires 8192 descriptors')
     for mount in service.get("volumes", []):
         if "docker.sock" in mount.get("source", ""):
             raise RuntimeError("The load runner must not access the Docker socket")
@@ -262,10 +272,11 @@ def validate_runner_config(service):
 
 def validate_runner_container(container, expected_cpuset=None):
     actual = container["HostConfig"]
-    if (actual.get("NanoCpus") != 1000000000 or actual.get("Memory") != 1024 * MIB
-            or actual.get("MemorySwap") != 1024 * MIB or actual.get("PidsLimit") != 128
+    if (actual.get("NanoCpus") != 1000000000 or actual.get("Memory") != 2048 * MIB
+            or actual.get("MemorySwap") != 2048 * MIB or actual.get("PidsLimit") != 128
             or actual.get("Privileged") or actual.get("RestartPolicy", {}).get("Name") != "no"):
         raise RuntimeError("Docker did not apply the load runner limits")
+    validate_nofile(actual)
     if expected_cpuset is not None and cpu_list(actual.get('CpusetCpus', '') or '') != cpu_list(expected_cpuset or ''):
         raise RuntimeError('Docker did not apply the load runner CPU affinity')
     if any("docker.sock" in mount.get("Source", "") for mount in container.get("Mounts", [])):
@@ -307,6 +318,30 @@ def start_services():
     verify()
 
 
+@contextmanager
+def gateway_capture(identifier, directory):
+    # Follow stderr before injection so Docker access-log rotation cannot erase early errors.
+    # Raw runtime files are private; publish only redacted diagnostics.
+    path = RUNTIME / ('gateway-'+directory.name+'.log')
+    try:
+        with path.open('w') as file:
+            process = subprocess.Popen(['docker','logs','--follow',identifier],stdout=subprocess.DEVNULL,stderr=file)
+            try:
+                yield
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try: process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+    finally:
+        log = path.read_text()
+        if ENV_FILE.exists():
+            for secret in initialize().values(): log=log.replace(secret,'[REDACTED]')
+        (directory/'nginx-error.log').write_text(log)
+
+
 def run_stage(arguments, deadline, *, preflight=False):
     from protocol import parse_args, VERSION
     args = parse_args(arguments)
@@ -334,7 +369,7 @@ def run_stage(arguments, deadline, *, preflight=False):
     # Create evidence location before startup, so even a failed container launch is reported.
     result_dir.mkdir(parents=True)
     atomic_json(result_dir / 'manifest.json', {'schemaVersion': VERSION, 'plan': args.plan, 'stage': 'preflight' if preflight else 'experiment',
-                'scope': 'validation' if preflight or args.validation_only else 'performance', 'status': 'running',
+                'scope': 'validation' if preflight or args.validation_only else 'calibration' if args.run_type == 'calibration' else 'performance', 'status': 'running',
                 'deployment': 'github-actions', 'source': source, 'actions': actions_context()})
     identifier, watchdog, failure = None, None, None
     try:
@@ -348,7 +383,7 @@ def run_stage(arguments, deadline, *, preflight=False):
             identifier = command(invocation + ['ps', '-a', '-q', 'load-runner']).strip()
             container = json.loads(command(['docker', 'inspect', identifier]))[0]
             validate_runner_container(container, service['cpuset'])
-            load_host = {'machineId': machine_id(), 'cpus': 1, 'memoryMiB': 1024, 'environment': environment(),
+            load_host = {'machineId': machine_id(), 'cpus': 1, 'memoryMiB': 2048, 'environment': environment(),
                          'actions': actions_context(), 'cpuset': service['cpuset'], 'imageId': container['Image'],
                          'engine': json.loads(command(['docker', 'version', '--format', '{{json .Server}}']))}
             atomic_json(RUNTIME / 'load-host.json', load_host)
@@ -384,7 +419,7 @@ def run_stage(arguments, deadline, *, preflight=False):
             watchdog = HostMonitor(watch, observe, lambda: stop([identifier, *identifier_list]),
                                    lambda: stop([identifier]), (min(args.drain_seconds, 30) if preflight else args.drain_seconds) + args.request_timeout + 30,
                                    deadline=deadline)
-            with watchdog:
+            with gateway_capture(dict(zip(LIMITS,identifier_list))['nginx'],result_dir), watchdog:
                 command(['docker', 'start', '--attach', identifier], capture=False)
                 container_state = json.loads(command(['docker', 'inspect', identifier]))[0]['State']
             watchdog.last_observation = 0
@@ -408,9 +443,9 @@ def run_stage(arguments, deadline, *, preflight=False):
     return result_dir
 
 
-def experiment_parameters(experiment):
+def experiment_parameters(experiment, run_type='measurement'):
     from protocol import parse_args, VERSION
-    return {'protocol': VERSION, **vars(parse_args([experiment]))}
+    return {'protocol': VERSION, **vars(parse_args([experiment, '--run-type', run_type]))}
 
 
 def reset_after_preflight(previous):
@@ -448,18 +483,18 @@ def reset_after_preflight(previous):
             'emptyJournal': True, 'emptyRedis': True}
 
 
-def run_preflight(experiment, minutes):
-    parameters = experiment_parameters(experiment)
+def run_preflight(experiment, minutes, run_type='measurement'):
+    parameters = experiment_parameters(experiment, run_type)
     if not 1 <= minutes <= 12:
         raise RuntimeError('Preflight requires a 1–12 minute budget')
     marker = RUNTIME/'preflight-ready.json'
     marker.unlink(missing_ok=True)
     previous = verify()
     directory = REPORTS/'preflight'/f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT','1')}-preflight"
-    arguments = [experiment]
+    arguments = [experiment, '--run-type', run_type]
     deadline = min(time.monotonic()+minutes*60, json.loads((RUNTIME/'deadline.json').read_text())['monotonic'])
     suite = json.loads((REPORTS/'suite.json').read_text())
-    suite.update(mode=experiment, scope='validation', phase='preflight')
+    suite.update(mode=experiment, runType=run_type, scope='validation', phase='preflight')
     try:
         run_stage(arguments, deadline, preflight=True)
         collect(directory/'diagnostics')
@@ -498,17 +533,17 @@ def require_preflight(parameters):
         raise RuntimeError('Successful preflight and verified clean reset are required before measurement: '+str(error)) from error
 
 
-def run_experiment(experiment, minutes):
-    parameters = experiment_parameters(experiment)
+def run_experiment(experiment, minutes, run_type='measurement'):
+    parameters = experiment_parameters(experiment, run_type)
     if not 1 <= minutes <= 45:
         raise RuntimeError('Measurement deadline must be between 1 and 45 minutes')
     deadline = min(time.monotonic()+minutes*60, json.loads((RUNTIME/'deadline.json').read_text())['monotonic'])
     suite = json.loads((REPORTS/'suite.json').read_text())
-    suite.update(mode=experiment, scope='performance', phase='measurement')
+    suite.update(mode=experiment, runType=run_type, scope='calibration' if run_type == 'calibration' else 'performance', phase=run_type)
     atomic_json(REPORTS/'suite.json', suite)
     try:
         require_preflight(parameters)
-        directory = run_stage([experiment], deadline)
+        directory = run_stage([experiment, '--run-type', run_type], deadline)
         suite['stages'] = [str(directory.relative_to(REPORTS))]
         value = json.loads((directory/'experiment.json').read_text())
         suite['status'] = value['status']
@@ -534,6 +569,19 @@ def collect(public=None):
             (public / f'{kind}.log').write_text(log)
         except (OSError, subprocess.SubprocessError) as error:
             (public / f'{kind}.log').write_text(type(error).__name__)
+    try:
+        identifier = command(compose('sut', 'ps', '-a', '-q', 'nginx')).strip()
+        if identifier:
+            destination = public/'nginx-error.log'
+            # Nginx errors go to stderr; retain all available errors, not an access-log tail.
+            result = subprocess.run(['docker','logs',identifier],stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE,text=True,timeout=30)
+            log = result.stderr
+            if ENV_FILE.exists():
+                for secret in initialize().values(): log = log.replace(secret, '[REDACTED]')
+            destination.write_text(log)
+    except (OSError, subprocess.SubprocessError):
+        pass  # Service may have failed before creating the log.
     # Export the last complete snapshot even if the publisher/runner failed.
     try:
         identifier = command(compose('sut', 'ps', '-a', '-q', 'backend')).strip()
@@ -558,6 +606,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['prepare', 'build', 'up', 'preflight', 'run', 'collect', 'cleanup'])
     parser.add_argument('--experiment', choices=['redis-filtering', 'kafka-burst'], default='redis-filtering')
+    parser.add_argument('--run-type', choices=['measurement','calibration'], default='measurement')
     parser.add_argument('--minutes', type=int, default=30)
     args = parser.parse_args()
     require_actions()
@@ -571,9 +620,9 @@ def main():
     elif args.action == 'up':
         start_services()
     elif args.action == 'preflight':
-        run_preflight(args.experiment, args.minutes)
+        run_preflight(args.experiment, args.minutes, args.run_type)
     elif args.action == 'run':
-        run_experiment(args.experiment, args.minutes)
+        run_experiment(args.experiment, args.minutes, args.run_type)
     elif args.action == 'collect':
         collect()
     elif args.action == 'cleanup':

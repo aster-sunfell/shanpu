@@ -108,6 +108,14 @@ def environment_report(environment):
 
 
 METRICS = {
+    'eligibleResponseP95Ms':'有效购买响应 p95 / ms',
+    'eligibleSuccessfulResponseP99Ms':'成功购买响应 p99 / ms',
+    'eligibleOnTimeSuccessPct':'有效购买按时成功率 / %',
+    'eligibleCompletionPct':'有效购买最终完成率 / %',
+    'burst.responseP99Ms':'突发请求受理响应 p99 / ms',
+    'burst.onTimeAcceptedPct':'突发请求按时受理率 / %',
+    'burst.onTimeCompletedPct':'突发请求按时完成率 / %',
+    'burst.completionPct':'突发请求最终完成率 / %',
     'businessSqlPer1000Requests': '每千请求业务 SQL 调用',
     'syncAttemptsPer1000Requests': '每千请求同步事务尝试',
     'eligibleResponseP99Ms': '有效购买响应 p99 / ms',
@@ -123,29 +131,40 @@ METRICS = {
 
 def experiment_report(experiment):
     e = experiment
-    body = [schemes(e.paths), '<section id="results">'+heading('固定负载配对结果', '各轮交替对照；保留零收益和负收益，不要求双方 SLO 均达标。')]
+    body = [schemes(e.paths), '<section id="results">'+heading('负载校准' if e.artifact.get('calibration') else '固定负载配对结果', '仅用于人工选择负载，不计算方案收益。' if e.artifact.get('calibration') else '各轮交替对照；保留零收益和负收益，不要求双方 SLO 均达标。')]
     parameters=e.parameters
     profile=(f"{parameters.get('rate', '—')} RPS × {parameters.get('seconds', '—')} 秒；90% 重复 / 10% 有效购买"
              if e.plan == 'redis-filtering' else
              f"{parameters.get('base_rate', '—')} RPS × {parameters.get('base_seconds', '—')} 秒 → "
              f"{parameters.get('burst_rate', '—')} RPS × {parameters.get('burst_seconds', '—')} 秒 → "
              f"{parameters.get('recovery_rate', '—')} RPS × {parameters.get('recovery_seconds', '—')} 秒；全部有效购买")
-    body.append('<p>'+text(profile)+'</p>')
-    body.append(table(['每路径重复次数','固定 VU 数','排空上限 / 秒'], [[parameters.get('repeats'),parameters.get('vus'),parameters.get('drain_seconds')]]))
+    calibration = e.artifact.get('calibration')
+    if calibration:
+        body.append('<p>负载校准：只测基线路径的三个预设档位，不计算方案收益。</p>')
+        body.append(table(['基线 RPS','输入有效','响应 p99 ms','网络/超时/内部错误','非预期响应','池等待次数','候选'],[
+            [r['rate'],r['valid'],fmt(r['p99Ms']),r['networkErrors'],r['responseErrors'],r['poolWaitCount'],r['eligibleCandidate']]
+            for r in calibration['candidates']]))
+        body.append('<p>建议负载：'+text(calibration['recommendedRate'] or '暂无合适候选')+
+                    '。规则：选择输入有效、无非预期响应、p99 在 300–1000ms 且有数据库等待或积压的最低档位。'
+                    '人工审查后在源码中冻结负载，再发起新的 measurement；不会自动采用建议，也不读取历史结果。</p>')
+    else:
+        body.append('<p>'+text(profile)+'</p>')
+    if not calibration: body.append(table(['每路径重复次数','固定 VU 数','排空上限 / 秒'], [[parameters.get('repeats'),parameters.get('vus'),parameters.get('drain_seconds')]]))
     body.append('<p>服务质量目标：响应 p99 ≤ '+fmt(e.policy.get('responseP99Ms'))+' ms，完成 p99 ≤ '
                 +fmt(e.policy.get('completionP99Ms'))+' ms，分类错误比例 ≤ '+fmt(e.policy.get('maxErrorRate'))+'。</p>')
     metrics = e.comparisons[0]['metrics'] if e.comparisons else {}
-    primary = ('businessSqlPer1000Requests', 'syncAttemptsPer1000Requests') if e.plan == 'redis-filtering' else (
-        'burst.acceptedWithinResponseDeadline', 'burst.completedWithinDeadline')
-    for key in primary:
+    primary = ('eligibleResponseP99Ms', 'eligibleOnTimeSuccessPct') if e.plan == 'redis-filtering' else (
+        'burst.onTimeAcceptedPct', 'burst.onTimeCompletedPct')
+    for key in (() if calibration else primary):
         value = metrics.get(key)
         body.append(panel(METRICS[key], '柱为每轮值的中位数，线为最小至最大值',
                           charts.paired([value['before'], value['after']] if value else [], e.paths, METRICS[key]),
-                          '后方案减前方案：'+fmt(value['afterMinusBefore']['p50']) if value else '尚无完整有效比较。', e.paths))
-    body.append(table(['指标','前方案中位数','后方案中位数','配对差值中位数','配对差值范围'], [
+                          ('后方案减前方案：'+fmt(value['afterMinusBefore']['p50'])+(' 个百分点' if key.endswith('Pct') else '')+
+                           ('；配对降幅中位数 '+fmt(value['pairedReductionPct']['p50'])+'%' if key.endswith('Ms') and value.get('pairedReductionPct') else '')) if value else '尚无完整有效比较。', e.paths))
+    if not calibration: body.append(table(['指标','前方案中位数','后方案中位数','配对差值中位数','配对差值范围'], [
         [METRICS.get(k,k), fmt(v['before']['p50']),fmt(v['after']['p50']),fmt(v['afterMinusBefore']['p50']),
          fmt(v['afterMinusBefore']['min'])+' ～ '+fmt(v['afterMinusBefore']['max'])] for k,v in metrics.items()]))
-    body.append('<p>每轮 p99 单独计算；不把多个 p99 平均成总体分位数。业务 SQL 来自 mapper 计数，事务尝试不等于提交。'
+    body.append('<p>按时成功率以所有有效购买请求为分母，同时要求响应成功且满足响应期限、订单满足完成期限。百分比指标差值用百分点表示。SQL/事务尝试只用于解释机制。每轮 p99 单独计算；不把多个 p99 平均成总体分位数。业务 SQL 来自 mapper 计数，事务尝试不等于提交。'
                 'Kafka 的 PENDING 仅为受理；完成量以提交证据为准。突发指标只计算突发段请求。</p></section>')
     body.append('<section id="observations">'+heading('逐轮观测与时间线','无效点仅供诊断，不参与收益比较。'))
     for directory,r in e.points:
@@ -154,8 +173,10 @@ def experiment_report(experiment):
         body.append(table(['发出/计划','完成/有效请求','错误数','HTTP 在途峰值','待完成峰值','排空 ms'], [[
             f"{r.get('started')}/{r.get('scheduled')}",f"{r.get('completed')}/{r.get('eligible')}",
             sum(c.get('failed',0) for c in r.get('classes',{}).values()),r.get('peakHttpInFlight'),r.get('peakPendingAccepted'),fmt(r.get('drainMs'))]]))
-        body.append(table(['请求分类','响应 p95 ms','响应 p99 ms','错误比例'], [[k,fmt(c.get('responseMs',{}).get('p95')),fmt(c.get('responseMs',{}).get('p99')),fmt(c.get('errorRate'))] for k,c in r.get('classes',{}).items()]))
+        body.append(table(['请求分类','响应 p95 ms','响应 p99 ms','成功响应 p99 ms','错误比例'], [[k,fmt(c.get('responseMs',{}).get('p95')),fmt(c.get('responseMs',{}).get('p99')),fmt(c.get('successfulResponseMs',{}).get('p99')),fmt(c.get('errorRate'))] for k,c in r.get('classes',{}).items()]))
         body.append('<p>'+text('; '.join(r.get('loadErrors',[])+r.get('correctnessErrors',[])))+'</p>')
+        if r.get('networkErrors',{}).get('groups'):
+            body.append('<pre>'+text(json.dumps(r['networkErrors'],ensure_ascii=False,indent=2))+'</pre>')
         base = r.get('baseSeconds',0)
         body.append(charts.timeline(directory/'timeline.csv', base, base+r.get('seconds',0) if base else 0,
                                    base+r.get('seconds',0)+r.get('recoverySeconds',0)))

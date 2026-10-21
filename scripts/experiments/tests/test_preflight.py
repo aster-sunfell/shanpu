@@ -19,10 +19,10 @@ from protocol import parse_args
 
 class PreflightTest(unittest.TestCase):
     def test_dataset_covers_only_selected_fixed_experiment_with_margin(self):
-        for plan,total,batch in [('redis-filtering',72000,12000), ('kafka-burst',54000,9000)]:
+        for plan,total,batch in [('redis-filtering',216000,36000), ('kafka-burst',66000,11000)]:
             value=preflight.dataset_plan(parse_args([plan]))
             self.assertEqual(total,value['formalRequests'])
-            self.assertEqual(int(total*1.2),value['seedUsers'])
+            self.assertEqual(int((total+36000)*1.2),value['seedUsers'])
             self.assertEqual(batch,value['batchUsers'])
             self.assertEqual(5,value['probeRate'])
         self.assertNotEqual(actions.experiment_parameters('redis-filtering'),actions.experiment_parameters('kafka-burst'))
