@@ -25,7 +25,9 @@ def dataset_plan(args, mode):
     initial = sum(p['scheduled'] for p in points)
     return {'initialLadderRequests': initial, 'seedUsers': math.ceil(initial*1.2),
             'batchUsers': max(p['scheduled'] for p in points),
-            'probeRate': max(args.rates), 'probeSeconds': 3,
+            # Readiness must not require passing the highest capacity rung.
+            # Ten seconds also exercises an eligible mixed request at 1 RPS.
+            'probeRate': min(5, min(args.rates)), 'warmupSeconds': 10, 'probeSeconds': 10,
             'coverage': 'Initial capacity ladders plus 20%; not all refinements, burst sizes or long-duration effects'}
 
 
@@ -113,29 +115,48 @@ def run(args):
             seeded += size
             summary['seeds'].append({'point': name, 'counts': counts})
             write_json(directory/'preflight.json', summary)
-        # A/B/C probes use the same k6 scripts, evidence joins and drain rules as
-        # measurement, with validation scope and no capacity/SLO claims.
+        # Warm each path at low rate, then validate with fresh users and activity.
+        # Both phases retain evidence and validity checks; neither gates on SLO
+        # or requires passing the highest rung of the formal capacity ladder.
         probe_args = copy.copy(args)
         probe_args.validation_only = True
         probe_args.drain_seconds = min(args.drain_seconds, 30)
         for path in ('A', 'B', 'C'):
-            check_host_health()
-            name = f'probe-{path}'
-            point_dir = directory/name
-            point_dir.mkdir()
-            point = {'plan': 'kafka-buffering' if path=='C' else 'redis-filtering', 'repeat': 1,
-                     'workload': 'steady' if path=='C' else 'mixed', 'path': path,
-                     'rate': summary['dataset']['probeRate'], 'seconds': summary['dataset']['probeSeconds'],
-                     'baseSeconds': 0, 'baseRate': 1, 'vus': args.vus, 'requestTimeout': args.request_timeout,
-                     'points': POINTS, 'scheduled': summary['dataset']['probeRate']*summary['dataset']['probeSeconds'],
-                     'userPrefix': 'x'+secrets.token_hex(6)}
-            prepare(point, product, private/name, point_dir, admin, api, require_idle)
-            value = measure(point, private/name, point_dir, admin, probe_args)
-            if not value['valid'] or value['unresolvedCount']:
-                raise RuntimeError(f'Preflight probe {path} failed: ' + '; '.join(value['loadErrors']+value['correctnessErrors']))
-            summary['probes'].append({'path': path, 'started': value['started'], 'completed': value['completed']})
-            write_json(directory/'preflight.json', summary)
-            release_redis(private/name, point)
+            for phase, seconds in (('warmup', summary['dataset']['warmupSeconds']),
+                                   ('probe', summary['dataset']['probeSeconds'])):
+                check_host_health()
+                name = f'{phase}-{path}'
+                point_dir = directory/name
+                point_dir.mkdir()
+                point = {'plan': 'kafka-buffering' if path=='C' else 'redis-filtering', 'repeat': 1,
+                         'workload': 'steady' if path=='C' else 'mixed', 'path': path,
+                         'rate': summary['dataset']['probeRate'], 'seconds': seconds,
+                         'baseSeconds': 0, 'baseRate': 1, 'vus': args.vus, 'requestTimeout': args.request_timeout,
+                         'points': POINTS, 'scheduled': summary['dataset']['probeRate']*seconds,
+                         'userPrefix': 'x'+secrets.token_hex(6)}
+                print(f'Preflight {name}: {point["rate"]} RPS, {seconds}s, '
+                      f'{point["scheduled"]} requests (readiness only)', flush=True)
+                prepare(point, product, private/name, point_dir, admin, api, require_idle)
+                value = measure(point, private/name, point_dir, admin, probe_args)
+                errors = value['loadErrors']+value['correctnessErrors']
+                for kind, metrics in value['classes'].items():
+                    if metrics['failed']:
+                        errors.append(f'Unexpected {kind} responses: {metrics["failed"]}')
+                if not value['eligible'] or value['completed'] != value['eligible']:
+                    errors.append(f'Eligible orders incomplete: {value["completed"]}/{value["eligible"]}')
+                if value['unresolvedCount']:
+                    errors = errors+[f'Unresolved accepted orders: {value["unresolvedCount"]}']
+                passed = value['valid'] and not errors
+                summary['probes'].append({'phase': phase, 'path': path, 'rate': point['rate'], 'seconds': seconds,
+                                         'scheduled': point['scheduled'], 'started': value['started'],
+                                         'completed': value['completed'], 'status': 'completed' if passed else 'failed',
+                                         'errors': errors})
+                write_json(directory/'preflight.json', summary)
+                print(f'Preflight {name}: started={value["started"]}/{point["scheduled"]}, '
+                      f'completed={value["completed"]}, status={summary["probes"][-1]["status"]}', flush=True)
+                if not passed:
+                    raise RuntimeError(f'Preflight {phase} {path} failed: ' + '; '.join(errors))
+                release_redis(private/name, point)
         check_host_health()
         summary['status'] = meta['status'] = 'completed'
     except BaseException as error:

@@ -25,6 +25,8 @@ class HtmlReportTest(unittest.TestCase):
             html = stage_report(stage)
             self.assertIn('真实环境预检', html)
             self.assertIn('validation', html)
+            self.assertIn('低速预热', html)
+            self.assertIn('最高档压力由正式容量实验逐级探索', html)
             self.assertIn('339840', html)
             self.assertIn('270.00', html)
             self.assertIn('重建后的环境核验', html)

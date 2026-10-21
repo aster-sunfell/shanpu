@@ -23,9 +23,17 @@ class PreflightTest(unittest.TestCase):
         self.assertEqual(283200, plan['initialLadderRequests'])
         self.assertEqual(339840, plan['seedUsers'])
         self.assertEqual(12000, plan['batchUsers'])
-        self.assertEqual((200, 3), (plan['probeRate'], plan['probeSeconds']))
+        self.assertEqual((5, 10, 10), (plan['probeRate'], plan['warmupSeconds'], plan['probeSeconds']))
         self.assertEqual('redis-filtering', args.plan)
         self.assertLess(preflight.dataset_plan(args, 'redis')['seedUsers'], plan['seedUsers'])
+
+    def test_readiness_rate_is_capped_independently_of_capacity_and_preserves_mixed_eligible_requests(self):
+        for rates, expected in (('25,50,100,200', 5), ('100,400', 5), ('1,2', 1)):
+            with self.subTest(rates=rates):
+                plan = preflight.dataset_plan(parse_args(['redis-filtering', '--rates', rates]), 'full')
+                self.assertEqual(expected, plan['probeRate'])
+                for seconds in (plan['warmupSeconds'], plan['probeSeconds']):
+                    self.assertGreaterEqual(plan['probeRate']*seconds, 10)
 
     def resources(self, current=300, inactive=0, events='max 0\noom 0\noom_kill 0'):
         return [{'service': 'mysql', 'memoryLimitMiB': 384, 'resources': {
@@ -213,8 +221,9 @@ class PreflightTest(unittest.TestCase):
                 actions.require_preflight(actions.experiment_parameters('full', '25,50', 60, 3, 100, 4))
 
     def test_real_probe_orchestration_preserves_validation_scope_and_stops_after_a_bad_probe(self):
-        for valid in (True, False):
-            with self.subTest(valid=valid), tempfile.TemporaryDirectory() as temp:
+        for failure in (None, 'warmup-load', 'probe-load', 'warmup-correctness', 'probe-correctness',
+                        'warmup-unresolved', 'probe-unresolved', 'probe-responses', 'probe-empty'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 directory = root/'reports/preflight/run'
                 directory.mkdir(parents=True)
@@ -222,31 +231,56 @@ class PreflightTest(unittest.TestCase):
                 runtime = root/'runtime'
                 runtime.mkdir()
                 for name in ('target.json', 'load-host.json'): (runtime/name).write_text('{}')
-                result = {'valid': valid, 'unresolvedCount': 0, 'started': 3, 'completed': 3,
-                          'loadErrors': [] if valid else ['Missing arrivals'], 'correctnessErrors': []}
+                result = {'valid': True, 'sloPassed': False, 'unresolvedCount': 0, 'started': 50, 'completed': 5, 'eligible': 5,
+                          'classes': {'eligible': {'failed': 0}, 'duplicate': {'failed': 0}},
+                          'loadErrors': [], 'correctnessErrors': []}
+                bad = {**result, 'valid': False, 'loadErrors': ['Missing arrivals']}
+                if failure and failure.endswith('correctness'):
+                    bad = {**result, 'valid': False, 'correctnessErrors': ['Stock conservation failed']}
+                if failure and failure.endswith('unresolved'):
+                    bad = {**result, 'unresolvedCount': 1}
+                if failure == 'probe-responses':
+                    bad = {**result, 'classes': {'eligible': {'failed': 0}, 'duplicate': {'failed': 1}}}
+                if failure == 'probe-empty':
+                    bad = {**result, 'eligible': 0, 'completed': 0}
+                results = [result]*6 if failure is None else ([bad] if failure.startswith('warmup') else [result, bad])
                 with patch.object(preflight, 'RUNTIME', runtime), patch.object(preflight, 'REPORTS', root/'reports'), \
                         patch.dict(os.environ, {'BENCH_CONTAINER': '1', 'GITHUB_ACTIONS': 'true',
                                               'BENCH_RUN_ID': 'run', 'BENCH_PREFLIGHT_MODE': 'full'}), \
                         patch.object(preflight, 'validate_deployment'), patch.object(preflight, 'check_host_health'), \
                         patch.object(preflight, 'mysql_settings', return_value={'version': '8.0.46'}), \
-                        patch.object(preflight, 'dataset_plan', return_value={'seedUsers': 20, 'batchUsers': 10, 'probeRate': 1, 'probeSeconds': 3}), \
+                        patch.object(preflight, 'dataset_plan', return_value={'seedUsers': 20, 'batchUsers': 10,
+                            'probeRate': 5, 'warmupSeconds': 10, 'probeSeconds': 10}), \
                         patch.object(preflight, 'create_users'), patch.object(preflight, 'credential', return_value={'token': 'private-token'}), \
                         patch.object(preflight, 'require_idle'), patch.object(preflight, 'sql', return_value='7'), \
                         patch.object(preflight, 'prepare') as prepare, patch.object(preflight, 'verify_fixture', return_value={}), \
-                        patch.object(preflight, 'release_redis'), patch.object(preflight, 'measure', return_value=result) as measure, \
+                        patch.object(preflight, 'release_redis') as release, \
+                        patch.object(preflight, 'measure', side_effect=results) as measure, \
                         patch('builtins.print'):
                     args = parse_args(['redis-filtering'])
-                    if valid:
+                    if failure is None:
                         preflight.run(args)
-                        self.assertEqual(5, prepare.call_count)
-                        self.assertEqual(['A', 'B', 'C'], [c.args[0]['path'] for c in measure.call_args_list])
+                        self.assertEqual(8, prepare.call_count)
+                        self.assertEqual(['A', 'A', 'B', 'B', 'C', 'C'], [c.args[0]['path'] for c in measure.call_args_list])
+                        self.assertEqual(['warmup-A', 'probe-A', 'warmup-B', 'probe-B', 'warmup-C', 'probe-C'],
+                                         [c.args[2].name for c in measure.call_args_list])
+                        self.assertEqual(6, len({c.args[0]['userPrefix'] for c in measure.call_args_list}))
+                        self.assertTrue(all((c.args[0]['rate'], c.args[0]['seconds'], c.args[0]['scheduled']) == (5, 10, 50)
+                                            for c in measure.call_args_list))
                         self.assertTrue(all(c.args[-1].validation_only for c in measure.call_args_list))
                     else:
-                        with self.assertRaisesRegex(RuntimeError, 'Missing arrivals'): preflight.run(args)
-                        self.assertEqual(1, measure.call_count)
+                        reason = ('Stock conservation failed' if failure.endswith('correctness') else
+                                  'Unresolved accepted orders' if failure.endswith('unresolved') else
+                                  'Unexpected duplicate responses' if failure=='probe-responses' else
+                                  'Eligible orders incomplete' if failure=='probe-empty' else 'Missing arrivals')
+                        with self.assertRaisesRegex(RuntimeError, reason): preflight.run(args)
+                        self.assertEqual(len(results), measure.call_count)
+                        self.assertEqual(2+len(results)-1, release.call_count)
                 summary = json.loads((directory/'preflight.json').read_text())
                 self.assertEqual('validation', summary['scope'])
-                self.assertEqual('completed' if valid else 'failed', summary['status'])
+                self.assertEqual('completed' if failure is None else 'failed', summary['status'])
+                self.assertEqual(len(results), len(summary['probes']))
+                self.assertEqual('completed' if failure is None else 'failed', summary['probes'][-1]['status'])
                 self.assertFalse((directory/'capacity.json').exists())
                 self.assertNotIn('private-token', (directory/'preflight.json').read_text())
 

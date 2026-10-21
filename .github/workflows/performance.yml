@@ -53,7 +53,7 @@ jobs:
       - name: Start and verify isolated services
         timeout-minutes: 8
         run: python3 scripts/experiments/lib/actions.py up
-      - name: Preflight real data growth, A/B/C probes and clean environment reset
+      - name: Preflight data growth, low-rate A/B/C warmup and probes, then reset
         timeout-minutes: 12
         run: |
           python3 scripts/experiments/lib/actions.py preflight \

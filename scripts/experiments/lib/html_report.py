@@ -98,7 +98,8 @@ def timeline(path):
 
 def preflight_report(directory, meta):
     body = ['<section><h2>真实环境预检</h2><p class="warning">用途：validation。'
-            '预检验证造数、短时请求和运行资源，不输出容量或性能提升结论。</p>',
+            '预检验证造数、低速预热与请求核对及运行资源，不输出容量或性能提升结论。'
+            '最高档压力由正式容量实验逐级探索。</p>',
             '<p>状态：<strong>' + text(meta.get('status', 'incomplete')) + '</strong></p>']
     if meta.get('error') or meta.get('hostFailure'):
         body.append('<p class="failed">' + text(meta.get('error') or meta['hostFailure']) + '</p>')
