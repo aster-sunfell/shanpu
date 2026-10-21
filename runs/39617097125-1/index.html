@@ -1,0 +1,393 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>闪铺实验报告</title><style>
+:root{--ink:#202e40;--muted:#7b8798;--line:#e7ecf1;--teal:#168b80;--purple:#7961cc;--a:#6d7e96;--amber:#b2781f}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:#f6f8fb;color:var(--ink);font:14px/1.7 Inter,"Noto Sans CJK SC","Microsoft YaHei",system-ui,sans-serif}a{color:inherit;text-decoration:none}button,select{font:inherit}button{cursor:pointer}aside{position:fixed;inset:0 auto 0 0;width:216px;background:#fff;border-right:1px solid var(--line);padding:31px 22px;display:flex;flex-direction:column}.brand{font-size:24px;font-weight:800;letter-spacing:2px}.brand i{display:inline-block;width:12px;height:24px;background:var(--teal);transform:skew(-16deg);margin-right:10px;vertical-align:-3px}.eyebrow{font-size:10px;letter-spacing:2.3px;font-weight:700;color:var(--muted)}.brand-sub{margin:5px 0 38px 25px;font-size:9px;letter-spacing:2px;color:var(--muted)}nav a{display:flex;align-items:center;gap:12px;padding:12px 13px;margin:5px 0;color:#748195;border-radius:7px;font-size:13px}nav a:first-child{background:#edf6f4;color:var(--teal);font-weight:650}nav span{font-size:10px;opacity:.65}.aside-bottom{margin-top:auto;border-top:1px solid var(--line);padding-top:20px;color:var(--muted);font-size:11px}.aside-bottom strong{display:block;color:var(--ink);font-weight:600;margin-bottom:4px}.switch{margin-top:14px;display:block;color:var(--teal);font-size:12px}
+main{margin-left:216px;padding:30px 38px 32px;max-width:1570px}.topline{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:11px;margin-bottom:24px}.preview-label{padding:5px 10px;background:#fff5df;color:#976a20;border:1px solid #f0e0bc;border-radius:5px;font-weight:600}.hero{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.hero h1{font-size:31px;letter-spacing:-1px;line-height:1.3;margin:8px 0 10px}.hero p{margin:0;color:#788498;font-size:13px}.badge{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;padding:6px 11px;border-radius:30px;background:#e9f5f0;color:#24785f;font-size:11px;font-weight:600;margin-top:15px}.badge:before{content:"";width:6px;height:6px;background:currentColor;border-radius:50%}.badge.warn{background:#fff1d7;color:#9c711f}.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:25px 0 19px}.metric{background:#fff;border:1px solid var(--line);border-radius:10px;padding:19px 20px}.metric-top{display:flex;align-items:center;gap:7px;color:#7d8797;font-size:11px}.tag{font-size:9px;color:var(--teal);background:#eaf5f3;padding:1px 6px;border-radius:3px}.tag.purple{color:var(--purple);background:#f0ecfa}.metric-value{font-size:33px;font-weight:700;line-height:1.3;letter-spacing:-1.1px;margin:13px 0 6px;font-variant-numeric:tabular-nums}.metric-value small{font-size:15px;font-weight:500;letter-spacing:0}.metric-value.quiet{font-size:24px;letter-spacing:0;color:#7b8798;margin-top:17px;margin-bottom:12px}.metric-note{font-size:10px;color:#8c96a5}.teal{color:var(--teal)}.purple-text{color:var(--purple)}.context-line{display:flex;flex-wrap:wrap;gap:8px 23px;color:#7f8999;font-size:11px;padding:0 2px}.context-line b{font-weight:500;color:#4d5b6e}.summary-note{font-size:12px;color:#876d3a;background:#fff7e8;border:1px solid #f2e3c4;border-radius:8px;padding:11px 15px;margin-top:16px}.section-heading{display:flex;justify-content:space-between;align-items:flex-end;margin:39px 0 17px;gap:16px}.section-heading h2{font-size:21px;letter-spacing:-.4px;margin:0 0 5px;line-height:1.4}.section-heading p{font-size:11px;color:var(--muted);margin:0}.section-number{font-size:11px;color:var(--teal);font-weight:700;letter-spacing:1px;margin-right:9px;vertical-align:3px}.path-pill{display:inline-block;font-size:10px;line-height:1.4;padding:6px 10px;border:1px solid var(--line);border-radius:5px;color:#738095;background:#fff;white-space:nowrap}.two-col{display:grid;grid-template-columns:1.12fr 1fr;gap:17px}.panel{background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden;min-width:0}.panel-head{padding:20px 22px 0;display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.panel h3{margin:0;font-size:14px;font-weight:650}.panel-sub{font-size:10px;color:#929baa;margin-top:4px}.legend{display:flex;gap:12px;font-size:10px;white-space:nowrap;color:#7b8798}.legend span:before{content:"";display:inline-block;width:7px;height:7px;background:var(--c);border-radius:50%;margin-right:5px}.chart{padding:7px 12px 3px}.chart svg{display:block;width:100%;height:auto;overflow:visible}.chart svg text{font-family:inherit}.takeaway{border-top:1px solid #eef1f5;padding:13px 21px;background:#fbfcfd;color:#647186;font-size:11px;min-height:61px}.takeaway b{font-weight:600;color:#34475a}.takeaway strong{color:var(--teal);font-weight:600}.takeaway .amber{color:#9b752f}.mini-stat{display:flex;gap:12px;margin-top:6px;color:#8c97a5;font-size:10px}.burst-grid{display:grid;grid-template-columns:.92fr 1.08fr;gap:17px;margin-top:17px}.controls{display:flex;gap:7px;align-items:center}.segmented{display:flex;background:#f0f3f7;border-radius:5px;padding:2px}.segmented button{border:0;background:transparent;color:#8c95a3;border-radius:4px;padding:4px 9px;font-size:10px}.segmented button.active{background:#fff;color:#37495d;box-shadow:0 1px 3px #172d3c13}.controls select{border:1px solid var(--line);color:#7d8898;border-radius:4px;background:#fff;font-size:10px;padding:5px 6px}.chart-caption{display:flex;justify-content:space-between;font-size:10px;color:#8a95a4;padding:0 21px 13px}.chart-caption b{color:#526176;font-weight:500}.bc-stable{margin-bottom:0}.bc-stable .chart{max-width:100%;padding-right:22px}.status-strip{display:grid;grid-template-columns:1fr 1fr 1fr;padding:16px 21px;border-top:1px solid var(--line);gap:16px}.status-strip span{font-size:10px;color:#98a1ad}.status-strip b{display:block;font-size:13px;color:#58667a;font-weight:600;margin-top:4px}.empty-state{min-height:267px;display:flex;align-items:center;justify-content:center;text-align:center;padding:30px;color:#8c97a7}.empty-ring{margin:0 auto 16px;width:45px;height:45px;border:1px dashed #bec8d5;border-radius:50%;display:grid;place-items:center;font-size:19px;color:#aab5c2}.empty-state strong{display:block;color:#657487;font-size:13px;font-weight:600;margin-bottom:6px}.empty-state p{font-size:11px;max-width:340px;margin:0 auto;line-height:1.9}.progress{display:flex;gap:6px;align-items:center;font-size:10px;color:#9c8561}.progress i{height:5px;width:36px;background:#e7ecf1;border-radius:3px}.progress i.done{background:#8dbcb5}.environment{background:#fff;border:1px solid var(--line);border-radius:10px;padding:22px}.env-feature{display:flex;justify-content:space-between;align-items:center;gap:20px;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:20px}.cpu-label{font-size:10px;color:var(--muted)}.cpu-name{font-size:18px;font-weight:650;margin-top:5px;letter-spacing:-.2px}.env-caption{font-size:10px;color:#8793a3;max-width:245px}.env-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px 16px}.env-grid dt{font-size:10px;color:#909aaa}.env-grid dd{margin:5px 0 0;font-size:12px;color:#4f5e73;overflow-wrap:anywhere}.env-note{font-size:10px;color:#9ba4b1;margin:20px 0 0}.methods{margin-top:18px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:16px 21px}.methods summary{cursor:pointer;font-size:12px;color:#68768b;font-weight:550}.methods-body{display:grid;grid-template-columns:1fr 1fr;gap:8px 30px;padding-top:12px;font-size:11px;color:#8692a3}.methods-body b{display:block;color:#627187;font-weight:550}footer{display:flex;justify-content:space-between;gap:14px;border-top:1px solid var(--line);margin-top:25px;padding-top:17px;font-size:10px;color:#9aa4b2}.detail-link{color:var(--teal);font-size:11px}.observations{margin-top:17px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:15px 21px}.observations summary{font-size:11px;color:#738298;cursor:pointer}.table-scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:11px;margin-top:12px;min-width:520px}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line);font-weight:400;color:#718097}th{color:#43536b;background:#f8fafc}.mock-watermark{color:#a0a9b5;font-size:9px;letter-spacing:1px}
+@media(min-width:1550px){main{margin-left:max(216px,calc((100vw - 1354px)/2));max-width:1354px}}@media(max-width:1100px){aside{width:180px;padding:25px 17px}main{margin-left:180px;padding:25px}.metric{padding:16px}.metric-value{font-size:28px}.two-col,.burst-grid{grid-template-columns:1fr}.env-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.hero h1{font-size:27px}}
+@media(max-width:720px){aside{position:static;width:auto;padding:15px 20px;display:block;border-right:0;border-bottom:1px solid var(--line)}.brand{font-size:19px}.brand-sub,.aside-bottom{display:none}nav{display:flex;overflow:auto;margin-top:10px}nav a{padding:5px 9px;font-size:10px;white-space:nowrap;margin:0}nav span{display:none}main{margin:0;padding:20px 15px}.topline{font-size:9px;gap:10px;margin-bottom:20px}.preview-label{font-size:9px}.hero h1{font-size:25px}.hero p{font-size:11px}.badge{font-size:9px;padding:5px 8px}.summary{grid-template-columns:1fr 1fr;gap:9px;margin-top:20px}.metric{padding:14px}.metric-value{font-size:28px}.metric-top{font-size:9px}.metric-note{font-size:9px}.context-line{font-size:10px;gap:5px 14px}.section-heading{margin-top:29px}.section-heading h2{font-size:18px}.section-heading p{font-size:10px}.path-pill{display:none}.panel-head{padding:17px 16px 0}.panel h3{font-size:12px}.panel-sub{font-size:9px}.legend{font-size:9px;gap:8px}.takeaway{padding:12px 16px;font-size:10px}.env-feature{display:block}.cpu-name{font-size:16px}.env-caption{max-width:none;margin-top:10px}.env-grid{grid-template-columns:1fr 1fr;gap:17px}.environment{padding:18px}.methods-body{grid-template-columns:1fr}footer{font-size:9px}.controls select{max-width:64px}.empty-state{min-height:230px}.topline>a{white-space:nowrap}.status-strip{gap:10px;padding:14px}.status-strip b{font-size:11px}.metric-value.quiet{font-size:21px}}
+:root{--section-offset:24px}html{scroll-padding-top:var(--section-offset)}
+aside{max-height:100dvh}.brand,.brand-sub,.aside-bottom{flex-shrink:0}.brand-sub{margin-bottom:24px}
+nav{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+nav a:first-child{background:transparent;color:#748195;font-weight:400}nav a.active{background:#edf6f4;color:var(--teal);font-weight:650}
+nav a:focus-visible{outline:2px solid var(--teal);outline-offset:-2px}.aside-bottom{margin-top:16px}
+.metric-top{flex-wrap:wrap}.tag{white-space:nowrap}.panel-head{flex-wrap:wrap}.legend{flex-wrap:wrap}
+.scheme-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.scheme{border:1px solid var(--line);border-top:3px solid var(--scheme-color);border-radius:8px;background:#fff;padding:18px 20px;min-width:0}
+.scheme h3{font-size:13px;font-weight:650;margin:0 0 9px;line-height:1.7}.scheme h3 small{font-size:10px;font-weight:500;color:var(--scheme-color);margin-right:8px}
+.scheme p{font-size:11px;color:#8290a2;margin:0}.scheme-state{font-size:10px;color:var(--scheme-color);margin-top:12px}
+@media(max-width:1100px){nav a{font-size:12px}.scheme{padding:15px}.scheme h3{font-size:12px}}
+@media(max-width:720px){aside{position:sticky;top:0;z-index:20;max-height:none}nav{overflow-x:auto;overflow-y:hidden;flex:none}nav a{flex-shrink:0;font-size:10px}.scheme-grid{grid-template-columns:1fr}.scheme{padding:15px 17px}.scheme h3{font-size:13px}.scheme p{font-size:11px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+
+.archive main{margin:0 auto;max-width:1240px}.archive h1{font-size:30px}.archive section{background:#fff;border:1px solid var(--line);border-radius:10px;padding:20px;margin:20px 0}.warning,.failed{overflow-wrap:anywhere}.warning{padding:13px 16px;background:#fff4df;color:#956c24;border:1px solid #efdfbc;border-radius:7px}.failed{color:#a14540}.muted{color:var(--muted)}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px}code{overflow-wrap:anywhere}.scroll{overflow:auto}.diagnostics{padding:16px 20px;border:1px solid var(--line);background:#fff;border-radius:8px;margin-top:16px}.diagnostics summary{cursor:pointer;font-size:12px;color:#66788e}.diagnostics h3{font-size:13px}.diagnostics details{margin-top:12px}.empty-state{min-height:225px}.timeline-controls{display:flex;flex-wrap:wrap;gap:8px}.timeline-controls select{font:inherit;font-size:11px;border:1px solid var(--line);border-radius:5px;padding:4px 7px;background:#fff;color:#65758a}.chart svg{min-width:0}.badge{max-width:260px;white-space:normal}.metric-note{overflow-wrap:anywhere}.chart .legend{padding:4px 10px}.environment-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px}.environment-grid dt{font-size:11px;color:var(--muted)}.environment-grid dd{font-size:12px;margin:4px 0 0;overflow-wrap:anywhere}.timeline-variant[hidden]{display:none}.metric-top{align-items:flex-start}.panel-head>.legend{margin-top:4px}.site-meta{font-size:11px;color:var(--muted);margin-top:14px}.site-meta a{color:var(--teal)}@media(max-width:720px){.environment-grid{grid-template-columns:1fr 1fr}.archive main{padding:20px 15px}}
+/* Experiment-specific service objectives; kept outside chart canvases. */
+.criteria{background:#fbfcfe;border:1px solid var(--line);border-radius:9px;padding:18px 21px;margin-bottom:17px}
+.criteria-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:7px 17px;margin-bottom:14px}
+.criteria-heading h3{font-size:12px;font-weight:650;margin:0;color:#4e6076}.criteria-heading p{font-size:11px;color:#8793a4;margin:0}
+.criteria-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:19px}
+.criteria-grid span{display:block;font-size:10px;color:#8b96a6}.criteria-grid strong{display:block;font-size:14px;font-weight:600;color:#42576e;margin:3px 0 5px}
+.criteria-grid p{font-size:11px;color:#7b889b;line-height:1.75;margin:0}.criteria-note{font-size:11px;color:#7b889b;margin:12px 0 0;line-height:1.8}
+.criteria-note b{font-weight:550;color:#596d84}.criteria-policy-label{font-size:11px;color:#536a84;border-top:1px solid var(--line);padding-top:11px;margin:13px 0 10px}
+@media(max-width:720px){.criteria{padding:15px 17px}.criteria-grid{grid-template-columns:1fr;gap:13px}.criteria-grid>div{display:grid;grid-template-columns:1fr auto;align-items:center;gap:3px 12px}.criteria-grid strong{font-size:13px;margin:0}.criteria-grid p{grid-column:1/-1;font-size:10px}.criteria-heading p,.criteria-note{font-size:10px}.criteria-heading{margin-bottom:13px}}
+</style></head><body class="report"><aside><a href="../../index.html" class="brand"><i></i>闪铺</a><div class="brand-sub">PERFORMANCE LAB</div><nav aria-label="报告导航"><a href="#overview" class=active aria-current=location><span>01</span>运行概况</a><a href="#results" ><span>02</span>配对结果</a><a href="#observations" ><span>03</span>逐轮证据</a><a href="#environment" ><span>04</span>实验环境</a><a href="#methods" ><span>05</span>方法说明</a></nav><div class="aside-bottom"><strong>性能实验报告</strong>本次测量 · 独立资源配额<a class="switch" href="https://github.com/aster-sunfell/shanpu/actions/runs/39617097125">Actions 与完整证据 ↗</a></div></aside><main><header id="overview"><div class="section-heading"><div><h2>Kafka 削峰实验报告</h2><p>一个 run，一个固定负载实验</p></div></div><p>运行状态：failed；用途：performance</p></header><div class="table-scroll"><table><thead><tr><th>Actions run</th><th>Attempt</th><th>Commit</th></tr></thead><tbody><tr><td>39617097125</td><td>1</td><td>59dc317346196b04578fc855aff797852d23aa5e</td></tr></tbody></table></div><p class="warning">Command &#x27;[&#x27;docker&#x27;, &#x27;start&#x27;, &#x27;--attach&#x27;, &#x27;e757a90e8546f304f6d7f66a06383007b44ce390ef4f05ef043028ccf9f2e895&#x27;]&#x27; returned non-zero exit status 1.</p><section id="schemes"><div class="section-heading"><div><h2>方案说明</h2><p>独立对照方案；图表使用具体名称，字母仅用于对应实验记录。</p></div></div><div class="scheme-grid"><article class="scheme" style="--scheme-color:#168b80"><h3><small>B</small>Redis 预扣＋同步下单</h3><p>Redis 预扣和过滤重复购买，再同步执行数据库事务。</p><div class="scheme-state">PAID · 订单已完成</div></article><article class="scheme" style="--scheme-color:#7961cc"><h3><small>C</small>Redis 预扣＋Kafka 异步下单</h3><p>Redis 预扣，Kafka 确认后先返回，由消费者完成数据库事务。</p><div class="scheme-state">PENDING · 已受理，等待完成</div></article></div></section><section id="results"><div class="section-heading"><div><h2>固定负载配对结果</h2><p>各轮交替对照；保留零收益和负收益，不要求双方 SLO 均达标。</p></div></div><p>100 RPS × 20 秒 → 400 RPS × 10 秒 → 100 RPS × 30 秒；全部有效购买</p><div class="table-scroll"><table><thead><tr><th>每路径重复次数</th><th>固定 VU 数</th><th>排空上限 / 秒</th></tr></thead><tbody><tr><td>3</td><td>400</td><td>120</td></tr></tbody></table></div><p>服务质量目标：响应 p99 ≤ 500 ms，完成 p99 ≤ 5,000 ms，分类错误比例 ≤ 0.001。</p><article class="panel"><div class="panel-head"><div><h3>突发请求按响应期限受理数</h3><div class="panel-sub">柱为每轮值的中位数，线为最小至最大值</div></div><div class="legend"><span style="--c:#168b80">Redis 同步</span><span style="--c:#7961cc">Kafka 异步</span></div></div><div class="chart"><div class="empty-state"><div><div class="empty-ring">—</div><strong>尚无完整有效对照</strong><p>保留每点观测；不从无效或不完整配对计算收益。</p></div></div></div><div class="takeaway">尚无完整有效比较。</div></article><article class="panel"><div class="panel-head"><div><h3>突发请求按完成期限完成数</h3><div class="panel-sub">柱为每轮值的中位数，线为最小至最大值</div></div><div class="legend"><span style="--c:#168b80">Redis 同步</span><span style="--c:#7961cc">Kafka 异步</span></div></div><div class="chart"><div class="empty-state"><div><div class="empty-ring">—</div><strong>尚无完整有效对照</strong><p>保留每点观测；不从无效或不完整配对计算收益。</p></div></div></div><div class="takeaway">尚无完整有效比较。</div></article><div class="table-scroll"><table><thead><tr><th>指标</th><th>前方案中位数</th><th>后方案中位数</th><th>配对差值中位数</th><th>配对差值范围</th></tr></thead><tbody></tbody></table></div><p>每轮 p99 单独计算；不把多个 p99 平均成总体分位数。业务 SQL 来自 mapper 计数，事务尝试不等于提交。Kafka 的 PENDING 仅为受理；完成量以提交证据为准。突发指标只计算突发段请求。</p></section><section id="observations"><div class="section-heading"><div><h2>逐轮观测与时间线</h2><p>无效点仅供诊断，不参与收益比较。</p></div></div><details class="observations"><summary>001-r1-burst-400-B · 有效 / 未达标</summary><div class="table-scroll"><table><thead><tr><th>发出/计划</th><th>完成/有效请求</th><th>错误数</th><th>HTTP 在途峰值</th><th>待完成峰值</th><th>排空 ms</th></tr></thead><tbody><tr><td>9000/9000</td><td>5799/9000</td><td>3201</td><td>271</td><td>0</td><td>0</td></tr></tbody></table></div><div class="table-scroll"><table><thead><tr><th>请求分类</th><th>响应 p95 ms</th><th>响应 p99 ms</th><th>错误比例</th></tr></thead><tbody><tr><td>eligible</td><td>2,965.23</td><td>3,070.25</td><td>0.36</td></tr></tbody></table></div><p></p><svg viewBox="0 0 600 300" role="img" aria-label="请求 / 完成数每秒"><text x="52" y="25" font-size="10" fill="#8c98a8" text-anchor="start">请求 / 完成数每秒</text><line x1="58" y1="243" x2="552" y2="243" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="247" font-size="10" fill="#8c98a8" text-anchor="end">0</text><line x1="58" y1="181.333" x2="552" y2="181.333" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="185.333" font-size="10" fill="#8c98a8" text-anchor="end">200</text><line x1="58" y1="119.667" x2="552" y2="119.667" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="123.667" font-size="10" fill="#8c98a8" text-anchor="end">400</text><line x1="58" y1="58" x2="552" y2="58" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="62" font-size="10" fill="#8c98a8" text-anchor="end">600</text><line x1="112.444" y1="47" x2="112.444" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="112.444" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">突发开始</text><line x1="139.667" y1="47" x2="139.667" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="139.667" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">恢复低流量</text><line x1="221.333" y1="47" x2="221.333" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="221.333" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">停止注入</text><polyline fill="none" stroke="#6d7e96" stroke-width="2" points="58,212.167 60.7222,212.167 63.4444,212.167 66.1667,212.167 68.8889,212.167 71.6111,212.167 74.3333,212.167 77.0556,212.167 79.7778,212.167 82.5,212.167 85.2222,212.167 87.9444,212.167 90.6667,212.167 93.3889,212.167 96.1111,212.167 98.8333,212.167 101.556,212.167 104.278,212.167 107,212.167 109.722,212.167 112.444,119.667 115.167,119.667 117.889,119.667 120.611,119.667 123.333,119.667 126.056,119.667 128.778,119.667 131.5,119.667 134.222,119.667 136.944,119.667 139.667,212.167 142.389,212.167 145.111,212.167 147.833,212.167 150.556,212.167 153.278,212.167 156,212.167 158.722,212.167 161.444,212.167 164.167,212.167 166.889,212.167 169.611,212.167 172.333,212.167 175.056,212.167 177.778,212.167 180.5,212.167 183.222,212.167 185.944,212.167 188.667,212.167 191.389,212.167 194.111,212.167 196.833,212.167 199.556,212.167 202.278,212.167 205,212.167 207.722,212.167 210.444,212.167 213.167,212.167 215.889,212.167 218.611,212.167 221.333,243 224.056,243 226.778,243 229.5,243 232.222,243 234.944,243 237.667,243 240.389,243 243.111,243 245.833,243 248.556,243 251.278,243 254,243 256.722,243 259.444,243 262.167,243 264.889,243 267.611,243 270.333,243 273.056,243 275.778,243 278.5,243 281.222,243 283.944,243 286.667,243 289.389,243 292.111,243 294.833,243 297.556,243 300.278,243 303,243 305.722,243 308.444,243 311.167,243 313.889,243 316.611,243 319.333,243 322.056,243 324.778,243 327.5,243 330.222,243 332.944,243 335.667,243 338.389,243 341.111,243 343.833,243 346.556,243 349.278,243 352,243 354.722,243 357.444,243 360.167,243 362.889,243 365.611,243 368.333,243 371.056,243 373.778,243 376.5,243 379.222,243 381.944,243 384.667,243 387.389,243 390.111,243 392.833,243 395.556,243 398.278,243 401,243 403.722,243 406.444,243 409.167,243 411.889,243 414.611,243 417.333,243 420.056,243 422.778,243 425.5,243 428.222,243 430.944,243 433.667,243 436.389,243 439.111,243 441.833,243 444.556,243 447.278,243 450,243 452.722,243 455.444,243 458.167,243 460.889,243 463.611,243 466.333,243 469.056,243 471.778,243 474.5,243 477.222,243 479.944,243 482.667,243 485.389,243 488.111,243 490.833,243 493.556,243 496.278,243 499,243 501.722,243 504.444,243 507.167,243 509.889,243 512.611,243 515.333,243 518.056,243 520.778,243 523.5,243 526.222,243 528.944,243 531.667,243 534.389,243 537.111,243 539.833,243 542.556,243 545.278,243 548,243"/><polyline fill="none" stroke="#168b80" stroke-width="2" points="58,224.192 60.7222,219.567 63.4444,219.875 66.1667,222.033 68.8889,218.333 71.6111,219.258 74.3333,218.642 77.0556,215.558 79.7778,218.333 82.5,218.642 85.2222,217.1 87.9444,218.642 90.6667,218.642 93.3889,214.325 96.1111,216.175 98.8333,217.1 101.556,214.017 104.278,214.325 107,214.633 109.722,214.942 112.444,217.408 115.167,214.942 117.889,214.017 120.611,215.558 123.333,213.708 126.056,213.4 128.778,213.708 131.5,215.867 134.222,216.483 136.944,214.633 139.667,209.392 142.389,212.167 145.111,208.775 147.833,209.7 150.556,213.708 153.278,210.008 156,210.317 158.722,210.317 161.444,208.467 164.167,209.7 166.889,210.008 169.611,208.158 172.333,208.467 175.056,206.617 177.778,208.467 180.5,210.933 183.222,205.692 185.944,202.3 188.667,207.542 191.389,195.825 194.111,211.858 196.833,212.475 199.556,211.858 202.278,212.783 205,211.55 207.722,212.475 210.444,211.858 213.167,212.167 215.889,212.167 218.611,212.475 221.333,242.692 224.056,243 226.778,243 229.5,243 232.222,243 234.944,243 237.667,243 240.389,243 243.111,243 245.833,243 248.556,243 251.278,243 254,243 256.722,243 259.444,243 262.167,243 264.889,243 267.611,243 270.333,243 273.056,243 275.778,243 278.5,243 281.222,243 283.944,243 286.667,243 289.389,243 292.111,243 294.833,243 297.556,243 300.278,243 303,243 305.722,243 308.444,243 311.167,243 313.889,243 316.611,243 319.333,243 322.056,243 324.778,243 327.5,243 330.222,243 332.944,243 335.667,243 338.389,243 341.111,243 343.833,243 346.556,243 349.278,243 352,243 354.722,243 357.444,243 360.167,243 362.889,243 365.611,243 368.333,243 371.056,243 373.778,243 376.5,243 379.222,243 381.944,243 384.667,243 387.389,243 390.111,243 392.833,243 395.556,243 398.278,243 401,243 403.722,243 406.444,243 409.167,243 411.889,243 414.611,243 417.333,243 420.056,243 422.778,243 425.5,243 428.222,243 430.944,243 433.667,243 436.389,243 439.111,243 441.833,243 444.556,243 447.278,243 450,243 452.722,243 455.444,243 458.167,243 460.889,243 463.611,243 466.333,243 469.056,243 471.778,243 474.5,243 477.222,243 479.944,243 482.667,243 485.389,243 488.111,243 490.833,243 493.556,243 496.278,243 499,243 501.722,243 504.444,243 507.167,243 509.889,243 512.611,243 515.333,243 518.056,243 520.778,243 523.5,243 526.222,243 528.944,243 531.667,243 534.389,243 537.111,243 539.833,243 542.556,243 545.278,243 548,243"/><text x="58" y="280" font-size="10" fill="#8c98a8" text-anchor="start">请求发出 / 订单完成</text><text x="550" y="280" font-size="10" fill="#8c98a8" text-anchor="end">180 s</text></svg><svg viewBox="0 0 600 300" role="img" aria-label="已受理待完成订单数"><text x="52" y="25" font-size="10" fill="#8c98a8" text-anchor="start">已受理待完成订单数</text><line x1="58" y1="243" x2="552" y2="243" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="247" font-size="10" fill="#8c98a8" text-anchor="end">0</text><line x1="58" y1="196.75" x2="552" y2="196.75" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="200.75" font-size="10" fill="#8c98a8" text-anchor="end">0.25</text><line x1="58" y1="150.5" x2="552" y2="150.5" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="154.5" font-size="10" fill="#8c98a8" text-anchor="end">0.5</text><line x1="58" y1="104.25" x2="552" y2="104.25" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="108.25" font-size="10" fill="#8c98a8" text-anchor="end">0.75</text><line x1="58" y1="58" x2="552" y2="58" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="62" font-size="10" fill="#8c98a8" text-anchor="end">1</text><line x1="112.444" y1="47" x2="112.444" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="112.444" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">突发开始</text><line x1="139.667" y1="47" x2="139.667" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="139.667" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">恢复低流量</text><line x1="221.333" y1="47" x2="221.333" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="221.333" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">停止注入</text><polyline fill="none" stroke="#7961cc" stroke-width="2" points="58,243 60.7222,243 63.4444,243 66.1667,243 68.8889,243 71.6111,243 74.3333,243 77.0556,243 79.7778,243 82.5,243 85.2222,243 87.9444,243 90.6667,243 93.3889,243 96.1111,243 98.8333,243 101.556,243 104.278,243 107,243 109.722,243 112.444,243 115.167,243 117.889,243 120.611,243 123.333,243 126.056,243 128.778,243 131.5,243 134.222,243 136.944,243 139.667,243 142.389,243 145.111,243 147.833,243 150.556,243 153.278,243 156,243 158.722,243 161.444,243 164.167,243 166.889,243 169.611,243 172.333,243 175.056,243 177.778,243 180.5,243 183.222,243 185.944,243 188.667,243 191.389,243 194.111,243 196.833,243 199.556,243 202.278,243 205,243 207.722,243 210.444,243 213.167,243 215.889,243 218.611,243 221.333,243 224.056,243 226.778,243 229.5,243 232.222,243 234.944,243 237.667,243 240.389,243 243.111,243 245.833,243 248.556,243 251.278,243 254,243 256.722,243 259.444,243 262.167,243 264.889,243 267.611,243 270.333,243 273.056,243 275.778,243 278.5,243 281.222,243 283.944,243 286.667,243 289.389,243 292.111,243 294.833,243 297.556,243 300.278,243 303,243 305.722,243 308.444,243 311.167,243 313.889,243 316.611,243 319.333,243 322.056,243 324.778,243 327.5,243 330.222,243 332.944,243 335.667,243 338.389,243 341.111,243 343.833,243 346.556,243 349.278,243 352,243 354.722,243 357.444,243 360.167,243 362.889,243 365.611,243 368.333,243 371.056,243 373.778,243 376.5,243 379.222,243 381.944,243 384.667,243 387.389,243 390.111,243 392.833,243 395.556,243 398.278,243 401,243 403.722,243 406.444,243 409.167,243 411.889,243 414.611,243 417.333,243 420.056,243 422.778,243 425.5,243 428.222,243 430.944,243 433.667,243 436.389,243 439.111,243 441.833,243 444.556,243 447.278,243 450,243 452.722,243 455.444,243 458.167,243 460.889,243 463.611,243 466.333,243 469.056,243 471.778,243 474.5,243 477.222,243 479.944,243 482.667,243 485.389,243 488.111,243 490.833,243 493.556,243 496.278,243 499,243 501.722,243 504.444,243 507.167,243 509.889,243 512.611,243 515.333,243 518.056,243 520.778,243 523.5,243 526.222,243 528.944,243 531.667,243 534.389,243 537.111,243 539.833,243 542.556,243 545.278,243 548,243"/><text x="58" y="280" font-size="10" fill="#8c98a8" text-anchor="start">已受理待完成</text><text x="550" y="280" font-size="10" fill="#8c98a8" text-anchor="end">180 s</text></svg></details><details class="observations"><summary>002-r1-burst-400-C · 测量无效</summary><div class="table-scroll"><table><thead><tr><th>发出/计划</th><th>完成/有效请求</th><th>错误数</th><th>HTTP 在途峰值</th><th>待完成峰值</th><th>排空 ms</th></tr></thead><tbody><tr><td>9000/9000</td><td>8671/9000</td><td>329</td><td>298</td><td>3230</td><td>5,823</td></tr></tbody></table></div><div class="table-scroll"><table><thead><tr><th>请求分类</th><th>响应 p95 ms</th><th>响应 p99 ms</th><th>错误比例</th></tr></thead><tbody><tr><td>eligible</td><td>805.04</td><td>1,111.7</td><td>0.04</td></tr></tbody></table></div><p>Uncertain asynchronous submission outcome: 329; preserve this point</p><svg viewBox="0 0 600 300" role="img" aria-label="请求 / 完成数每秒"><text x="52" y="25" font-size="10" fill="#8c98a8" text-anchor="start">请求 / 完成数每秒</text><line x1="58" y1="243" x2="552" y2="243" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="247" font-size="10" fill="#8c98a8" text-anchor="end">0</text><line x1="58" y1="181.333" x2="552" y2="181.333" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="185.333" font-size="10" fill="#8c98a8" text-anchor="end">200</text><line x1="58" y1="119.667" x2="552" y2="119.667" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="123.667" font-size="10" fill="#8c98a8" text-anchor="end">400</text><line x1="58" y1="58" x2="552" y2="58" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="62" font-size="10" fill="#8c98a8" text-anchor="end">600</text><line x1="112.444" y1="47" x2="112.444" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="112.444" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">突发开始</text><line x1="139.667" y1="47" x2="139.667" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="139.667" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">恢复低流量</text><line x1="221.333" y1="47" x2="221.333" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="221.333" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">停止注入</text><polyline fill="none" stroke="#6d7e96" stroke-width="2" points="58,212.167 60.7222,212.167 63.4444,212.167 66.1667,212.167 68.8889,212.167 71.6111,212.167 74.3333,212.167 77.0556,212.167 79.7778,212.167 82.5,212.167 85.2222,212.167 87.9444,212.167 90.6667,212.167 93.3889,212.167 96.1111,212.167 98.8333,212.167 101.556,212.167 104.278,212.167 107,212.167 109.722,212.167 112.444,119.667 115.167,119.667 117.889,121.208 120.611,118.125 123.333,119.667 126.056,119.667 128.778,119.667 131.5,119.667 134.222,119.667 136.944,119.667 139.667,212.167 142.389,212.167 145.111,212.167 147.833,212.167 150.556,212.167 153.278,212.167 156,212.167 158.722,212.167 161.444,212.167 164.167,212.167 166.889,212.167 169.611,212.167 172.333,212.167 175.056,212.167 177.778,212.167 180.5,212.167 183.222,212.167 185.944,212.167 188.667,212.167 191.389,212.167 194.111,212.167 196.833,212.167 199.556,212.167 202.278,212.167 205,212.167 207.722,212.167 210.444,212.167 213.167,212.167 215.889,212.167 218.611,212.167 221.333,243 224.056,243 226.778,243 229.5,243 232.222,243 234.944,243 237.667,243 240.389,243 243.111,243 245.833,243 248.556,243 251.278,243 254,243 256.722,243 259.444,243 262.167,243 264.889,243 267.611,243 270.333,243 273.056,243 275.778,243 278.5,243 281.222,243 283.944,243 286.667,243 289.389,243 292.111,243 294.833,243 297.556,243 300.278,243 303,243 305.722,243 308.444,243 311.167,243 313.889,243 316.611,243 319.333,243 322.056,243 324.778,243 327.5,243 330.222,243 332.944,243 335.667,243 338.389,243 341.111,243 343.833,243 346.556,243 349.278,243 352,243 354.722,243 357.444,243 360.167,243 362.889,243 365.611,243 368.333,243 371.056,243 373.778,243 376.5,243 379.222,243 381.944,243 384.667,243 387.389,243 390.111,243 392.833,243 395.556,243 398.278,243 401,243 403.722,243 406.444,243 409.167,243 411.889,243 414.611,243 417.333,243 420.056,243 422.778,243 425.5,243 428.222,243 430.944,243 433.667,243 436.389,243 439.111,243 441.833,243 444.556,243 447.278,243 450,243 452.722,243 455.444,243 458.167,243 460.889,243 463.611,243 466.333,243 469.056,243 471.778,243 474.5,243 477.222,243 479.944,243 482.667,243 485.389,243 488.111,243 490.833,243 493.556,243 496.278,243 499,243 501.722,243 504.444,243 507.167,243 509.889,243 512.611,243 515.333,243 518.056,243 520.778,243 523.5,243 526.222,243 528.944,243 531.667,243 534.389,243 537.111,243 539.833,243 542.556,243 545.278,243 548,243"/><polyline fill="none" stroke="#168b80" stroke-width="2" points="58,217.408 60.7222,220.183 63.4444,208.775 66.1667,209.7 68.8889,214.942 71.6111,208.775 74.3333,208.467 77.0556,217.717 79.7778,211.858 82.5,203.842 85.2222,213.708 87.9444,216.483 90.6667,206.925 93.3889,215.25 96.1111,213.708 98.8333,210.625 101.556,208.467 104.278,212.475 107,213.4 109.722,220.492 112.444,232.208 115.167,225.425 117.889,222.958 120.611,228.508 123.333,224.5 126.056,226.042 128.778,222.65 131.5,229.125 134.222,229.433 136.944,228.508 139.667,225.425 142.389,191.817 145.111,193.05 147.833,198.292 150.556,204.15 153.278,190.275 156,191.817 158.722,205.075 161.444,187.5 164.167,212.475 166.889,182.258 169.611,165.917 172.333,188.733 175.056,199.217 177.778,210.625 180.5,194.9 183.222,178.25 185.944,200.758 188.667,197.058 191.389,190.275 194.111,201.992 196.833,188.733 199.556,180.1 202.278,197.367 205,184.108 207.722,201.067 210.444,186.575 213.167,176.092 215.889,176.708 218.611,200.45 221.333,160.983 224.056,188.425 226.778,156.975 229.5,166.533 232.222,175.167 234.944,192.742 237.667,243 240.389,243 243.111,243 245.833,243 248.556,243 251.278,243 254,243 256.722,243 259.444,243 262.167,243 264.889,243 267.611,243 270.333,243 273.056,243 275.778,243 278.5,243 281.222,243 283.944,243 286.667,243 289.389,243 292.111,243 294.833,243 297.556,243 300.278,243 303,243 305.722,243 308.444,243 311.167,243 313.889,243 316.611,243 319.333,243 322.056,243 324.778,243 327.5,243 330.222,243 332.944,243 335.667,243 338.389,243 341.111,243 343.833,243 346.556,243 349.278,243 352,243 354.722,243 357.444,243 360.167,243 362.889,243 365.611,243 368.333,243 371.056,243 373.778,243 376.5,243 379.222,243 381.944,243 384.667,243 387.389,243 390.111,243 392.833,243 395.556,243 398.278,243 401,243 403.722,243 406.444,243 409.167,243 411.889,243 414.611,243 417.333,243 420.056,243 422.778,243 425.5,243 428.222,243 430.944,243 433.667,243 436.389,243 439.111,243 441.833,243 444.556,243 447.278,243 450,243 452.722,243 455.444,243 458.167,243 460.889,243 463.611,243 466.333,243 469.056,243 471.778,243 474.5,243 477.222,243 479.944,243 482.667,243 485.389,243 488.111,243 490.833,243 493.556,243 496.278,243 499,243 501.722,243 504.444,243 507.167,243 509.889,243 512.611,243 515.333,243 518.056,243 520.778,243 523.5,243 526.222,243 528.944,243 531.667,243 534.389,243 537.111,243 539.833,243 542.556,243 545.278,243 548,243"/><text x="58" y="280" font-size="10" fill="#8c98a8" text-anchor="start">请求发出 / 订单完成</text><text x="550" y="280" font-size="10" fill="#8c98a8" text-anchor="end">180 s</text></svg><svg viewBox="0 0 600 300" role="img" aria-label="已受理待完成订单数"><text x="52" y="25" font-size="10" fill="#8c98a8" text-anchor="start">已受理待完成订单数</text><line x1="58" y1="243" x2="552" y2="243" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="247" font-size="10" fill="#8c98a8" text-anchor="end">0</text><line x1="58" y1="196.75" x2="552" y2="196.75" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="200.75" font-size="10" fill="#8c98a8" text-anchor="end">1,000</text><line x1="58" y1="150.5" x2="552" y2="150.5" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="154.5" font-size="10" fill="#8c98a8" text-anchor="end">2,000</text><line x1="58" y1="104.25" x2="552" y2="104.25" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="108.25" font-size="10" fill="#8c98a8" text-anchor="end">3,000</text><line x1="58" y1="58" x2="552" y2="58" stroke="#edf0f4" stroke-width="1" stroke-dasharray=""/><text x="46" y="62" font-size="10" fill="#8c98a8" text-anchor="end">4,000</text><line x1="112.444" y1="47" x2="112.444" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="112.444" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">突发开始</text><line x1="139.667" y1="47" x2="139.667" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="139.667" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">恢复低流量</text><line x1="221.333" y1="47" x2="221.333" y2="243" stroke="#d4cde6" stroke-width="1" stroke-dasharray="4 5"/><text x="221.333" y="39" font-size="9" fill="#8c98a8" text-anchor="middle">停止注入</text><polyline fill="none" stroke="#7961cc" stroke-width="2" points="58,242.306 60.7222,241.104 63.4444,241.659 66.1667,241.982 68.8889,241.474 71.6111,242.029 74.3333,242.584 77.0556,241.751 79.7778,241.751 82.5,243 85.2222,242.815 87.9444,242.214 90.6667,242.954 93.3889,242.537 96.1111,242.306 98.8333,242.445 101.556,243 104.278,242.954 107,242.861 109.722,241.566 112.444,227.923 115.167,215.99 117.889,199.988 120.611,185.789 123.333,175.382 126.056,160.814 128.778,145.644 131.5,132.925 134.222,121.27 136.944,107.21 139.667,93.89 142.389,96.9425 145.111,99.81 147.833,101.938 150.556,103.603 153.278,106.331 156,109.43 158.722,110.494 161.444,114.24 164.167,114.148 166.889,118.634 169.611,125.525 172.333,129.086 175.056,131.075 177.778,131.26 180.5,133.804 183.222,138.938 185.944,140.695 188.667,142.915 191.389,146.338 194.111,147.725 196.833,151.286 199.556,156.004 202.278,158.501 205,162.433 207.722,164.144 210.444,167.983 213.167,173.44 215.889,178.759 218.611,180.424 221.333,192.726 224.056,200.912 226.778,213.816 229.5,225.286 232.222,235.461 234.944,243 237.667,243 240.389,243 243.111,243 245.833,243 248.556,243 251.278,243 254,243 256.722,243 259.444,243 262.167,243 264.889,243 267.611,243 270.333,243 273.056,243 275.778,243 278.5,243 281.222,243 283.944,243 286.667,243 289.389,243 292.111,243 294.833,243 297.556,243 300.278,243 303,243 305.722,243 308.444,243 311.167,243 313.889,243 316.611,243 319.333,243 322.056,243 324.778,243 327.5,243 330.222,243 332.944,243 335.667,243 338.389,243 341.111,243 343.833,243 346.556,243 349.278,243 352,243 354.722,243 357.444,243 360.167,243 362.889,243 365.611,243 368.333,243 371.056,243 373.778,243 376.5,243 379.222,243 381.944,243 384.667,243 387.389,243 390.111,243 392.833,243 395.556,243 398.278,243 401,243 403.722,243 406.444,243 409.167,243 411.889,243 414.611,243 417.333,243 420.056,243 422.778,243 425.5,243 428.222,243 430.944,243 433.667,243 436.389,243 439.111,243 441.833,243 444.556,243 447.278,243 450,243 452.722,243 455.444,243 458.167,243 460.889,243 463.611,243 466.333,243 469.056,243 471.778,243 474.5,243 477.222,243 479.944,243 482.667,243 485.389,243 488.111,243 490.833,243 493.556,243 496.278,243 499,243 501.722,243 504.444,243 507.167,243 509.889,243 512.611,243 515.333,243 518.056,243 520.778,243 523.5,243 526.222,243 528.944,243 531.667,243 534.389,243 537.111,243 539.833,243 542.556,243 545.278,243 548,243"/><text x="58" y="280" font-size="10" fill="#8c98a8" text-anchor="start">已受理待完成</text><text x="550" y="280" font-size="10" fill="#8c98a8" text-anchor="end">180 s</text></svg></details><details><summary>warmup.json</summary><pre>{
+  &quot;scope&quot;: &quot;validation&quot;,
+  &quot;status&quot;: &quot;completed&quot;,
+  &quot;points&quot;: [
+    {
+      &quot;path&quot;: &quot;B&quot;,
+      &quot;rate&quot;: 50,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;started&quot;: 500,
+      &quot;scheduled&quot;: 500,
+      &quot;errors&quot;: []
+    },
+    {
+      &quot;path&quot;: &quot;C&quot;,
+      &quot;rate&quot;: 50,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;started&quot;: 500,
+      &quot;scheduled&quot;: 500,
+      &quot;errors&quot;: []
+    }
+  ]
+}</pre></details><details><summary>containers-final.json</summary><pre>{
+  &quot;timeMs&quot;: 1792594739367,
+  &quot;containers&quot;: [
+    {
+      &quot;service&quot;: &quot;backend&quot;,
+      &quot;imageId&quot;: &quot;sha256:6858b3b707c723869d5f5d4d9fdf78595ddcbbdd07b57937b1ad0095585ef747&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T14:51:11.727435122Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;mysql&quot;,
+      &quot;imageId&quot;: &quot;sha256:6cd09145362dfe6831b14545de3d5fd6cc75c37cfd6ef8561429c1fc73518b39&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T14:50:55.871159274Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;redis&quot;,
+      &quot;imageId&quot;: &quot;sha256:f84b0c4678011602b9b98c227a4dcd5468bf8b088b02fdd4165cb7758bad8058&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T14:50:55.865739495Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;kafka&quot;,
+      &quot;imageId&quot;: &quot;sha256:6d8457e841c10f58f952cb3942a38b6b3c21015b643e3dd010aea37cc0b89055&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T14:50:55.872672195Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;frontend&quot;,
+      &quot;imageId&quot;: &quot;sha256:4a6a83f41e950f3f083f16e1bda21060c819045e4031741fd1663ca6e1d2d3ce&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T14:51:44.886255217Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;nginx&quot;,
+      &quot;imageId&quot;: &quot;sha256:dc73b49f5124cf2ee538dfbdfbd121f0b4ccdcb20fea30f3a81bd477c02e2bb5&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T14:51:51.531311111Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;load-runner&quot;,
+      &quot;imageId&quot;: &quot;sha256:fab1b94ef157faa0725a90d050f867795a5048bda407c543eeb9099aea6246fd&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;exited&quot;,
+        &quot;Running&quot;: false,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 1,
+        &quot;StartedAt&quot;: &quot;2026-10-21T14:52:12.326679572Z&quot;,
+        &quot;FinishedAt&quot;: &quot;2026-10-21T14:58:59.312038492Z&quot;
+      }
+    }
+  ]
+}</pre></details><p>Data/evidence invalid or accepted orders unresolved; preserve this run</p><details><summary>实验配置与源码</summary><pre>{
+  &quot;parameters&quot;: {
+    &quot;plan&quot;: &quot;kafka-burst&quot;,
+    &quot;rate&quot;: 200,
+    &quot;seconds&quot;: 60,
+    &quot;repeats&quot;: 3,
+    &quot;vus&quot;: 400,
+    &quot;base_rate&quot;: 100,
+    &quot;base_seconds&quot;: 20,
+    &quot;burst_rate&quot;: 400,
+    &quot;burst_seconds&quot;: 10,
+    &quot;recovery_rate&quot;: 100,
+    &quot;recovery_seconds&quot;: 30,
+    &quot;request_timeout&quot;: 10,
+    &quot;drain_seconds&quot;: 120,
+    &quot;response_p99_ms&quot;: 500,
+    &quot;completion_p99_ms&quot;: 5000,
+    &quot;min_samples&quot;: 1000,
+    &quot;max_error_rate&quot;: 0.001,
+    &quot;validation_only&quot;: false,
+    &quot;dry_run&quot;: false,
+    &quot;deployment&quot;: &quot;github-actions&quot;
+  },
+  &quot;policy&quot;: {
+    &quot;responseP99Ms&quot;: 500,
+    &quot;completionP99Ms&quot;: 5000,
+    &quot;maxErrorRate&quot;: 0.001,
+    &quot;minSamples&quot;: 1000,
+    &quot;generatorLagP99Ms&quot;: 100,
+    &quot;tailToleranceMs&quot;: 20,
+    &quot;tailFraction&quot;: 0.0001,
+    &quot;backlogGrowthSeconds&quot;: 0.25,
+    &quot;backlogSlopeFraction&quot;: 0.005
+  },
+  &quot;source&quot;: {
+    &quot;scope&quot;: &quot;runner&quot;,
+    &quot;gitCommit&quot;: &quot;59dc317346196b04578fc855aff797852d23aa5e&quot;,
+    &quot;gitStatus&quot;: &quot;&quot;,
+    &quot;sourceSha256&quot;: &quot;fc6fd16729d0cb9722690ef8c0014c9e0d34e54d96001a430a2e223f833fa3ed&quot;
+  },
+  &quot;contract&quot;: &quot;4be6571553f8c1254433627f5c0fb699e86bfecd2ad73191b4de1efdd1e65f0f&quot;
+}</pre></details><details><summary>容器资源采样</summary><div class="table-scroll"><table><thead><tr><th>服务</th><th>采样内存峰值</th><th>CPU nr_throttled 增量</th></tr></thead><tbody><tr><td>backend</td><td>306.24 MiB</td><td>1,371</td></tr><tr><td>mysql</td><td>353.91 MiB</td><td>75</td></tr><tr><td>redis</td><td>15.26 MiB</td><td>74</td></tr><tr><td>kafka</td><td>244.88 MiB</td><td>243</td></tr><tr><td>frontend</td><td>47.2 MiB</td><td>179</td></tr><tr><td>nginx</td><td>15.23 MiB</td><td>103</td></tr><tr><td>load-runner</td><td>208.72 MiB</td><td>1</td></tr></tbody></table></div><p class="muted">采样峰值可能遗漏瞬时峰值；throttle 计数不代表完整 CPU 利用率，资源相关性不等于性能变化的唯一原因。</p></details></section><details><summary>启动前核验</summary><pre>{
+  &quot;status&quot;: &quot;completed&quot;,
+  &quot;scope&quot;: &quot;validation&quot;,
+  &quot;seeds&quot;: [
+    {
+      &quot;point&quot;: &quot;seed-001-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 9001,
+        &quot;orders&quot;: 1,
+        &quot;logs&quot;: 1
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-002-C&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 9001,
+        &quot;orders&quot;: 1,
+        &quot;logs&quot;: 1
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-003-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 9001,
+        &quot;orders&quot;: 1,
+        &quot;logs&quot;: 1
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-004-C&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 9001,
+        &quot;orders&quot;: 1,
+        &quot;logs&quot;: 1
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-005-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 9001,
+        &quot;orders&quot;: 1,
+        &quot;logs&quot;: 1
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-006-C&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 9001,
+        &quot;orders&quot;: 1,
+        &quot;logs&quot;: 1
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-007-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 9001,
+        &quot;orders&quot;: 1,
+        &quot;logs&quot;: 1
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-008-C&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 1801,
+        &quot;orders&quot;: 1,
+        &quot;logs&quot;: 1
+      }
+    }
+  ],
+  &quot;probes&quot;: [
+    {
+      &quot;phase&quot;: &quot;warmup&quot;,
+      &quot;path&quot;: &quot;B&quot;,
+      &quot;rate&quot;: 5,
+      &quot;seconds&quot;: 5,
+      &quot;scheduled&quot;: 25,
+      &quot;started&quot;: 25,
+      &quot;completed&quot;: 25,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;errors&quot;: []
+    },
+    {
+      &quot;phase&quot;: &quot;probe&quot;,
+      &quot;path&quot;: &quot;B&quot;,
+      &quot;rate&quot;: 5,
+      &quot;seconds&quot;: 10,
+      &quot;scheduled&quot;: 50,
+      &quot;started&quot;: 50,
+      &quot;completed&quot;: 50,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;errors&quot;: []
+    },
+    {
+      &quot;phase&quot;: &quot;warmup&quot;,
+      &quot;path&quot;: &quot;C&quot;,
+      &quot;rate&quot;: 5,
+      &quot;seconds&quot;: 5,
+      &quot;scheduled&quot;: 25,
+      &quot;started&quot;: 25,
+      &quot;completed&quot;: 25,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;errors&quot;: []
+    },
+    {
+      &quot;phase&quot;: &quot;probe&quot;,
+      &quot;path&quot;: &quot;C&quot;,
+      &quot;rate&quot;: 5,
+      &quot;seconds&quot;: 10,
+      &quot;scheduled&quot;: 50,
+      &quot;started&quot;: 50,
+      &quot;completed&quot;: 50,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;errors&quot;: []
+    }
+  ],
+  &quot;dataset&quot;: {
+    &quot;formalRequests&quot;: 54000,
+    &quot;seedUsers&quot;: 64800,
+    &quot;batchUsers&quot;: 9000,
+    &quot;probeRate&quot;: 5,
+    &quot;warmupSeconds&quot;: 5,
+    &quot;probeSeconds&quot;: 10,
+    &quot;coverage&quot;: &quot;Complete fixed experiment request count plus 20%&quot;
+  },
+  &quot;elapsedSeconds&quot;: 62.983
+}</pre></details><section id="environment"><div class="section-heading"><div><h2><span class="section-number">03</span>实验环境</h2><p>本次 Runner 采集值与被测端资源预算</p></div></div><div class="environment"><dl class="environment-grid"><div><dt>CPU 型号</dt><dd>AMD EPYC 7763 64-Core Processor</dd></div><div><dt>Runner 可用逻辑 CPU</dt><dd>4 vCPU</dd></div><div><dt>Runner 可见内存</dt><dd>15.62 GiB</dd></div><div><dt>被测端 CPU 配额合计</dt><dd>2 vCPU</dd></div><div><dt>被测端 CPU 集合</dt><dd>0,1</dd></div><div><dt>发压端 CPU 集合</dt><dd>2</dd></div><div><dt>被测容器内存配额合计</dt><dd>1632 MiB</dd></div><div><dt>被测端总内存预算</dt><dd>2048 MiB</dd></div><div><dt>宿主余量预算</dt><dd>416 MiB</dd></div><div><dt>Runner 镜像 / 版本</dt><dd>ubuntu24 / 20261012.334.1</dd></div><div><dt>运行平台</dt><dd>Linux-6.17.0-1022-azure-x86_64-with-glibc2.39</dd></div><div><dt>内核版本</dt><dd>6.17.0-1022-azure</dd></div></dl><p class="env-note">CPU 型号中的核心数不代表实验分配的核心数；Runner 可见内存不等于被测容器配额。宿主余量为预算，不是硬预留。</p></div></section><section id="methods"><div class="section-heading"><div><h2>方法与适用范围</h2><p></p></div></div><p>同一 runner 内交替配对，记录机器型号、镜像、配额和源码。GitHub Actions 每次机器性能可能不同，跨运行的绝对 RPS 与延迟不可直接归因于代码变化。固定负载只回答此条件下的收益，不推断最大容量。发压有效性、业务一致性与服务质量分别判定。原始数据见 performance-evidence artifact；每点 result.json、timeline.csv 和请求/提交证据可追溯。</p></section><footer><span>闪铺 · GitHub Actions 单机受限资源测量</span><span>vCPU 配额不等同于独占物理核或线上容量。</span></footer></main><script>const menu = document.querySelector('nav');
+if (menu) {
+const navigation = Array.from(menu.querySelectorAll('a[href^="#"]')).map(link => ({link, section: document.querySelector(link.getAttribute('href'))})).filter(item => item.section);
+const mobile = window.matchMedia('(max-width:720px)');
+const reducedMotion = window.matchMedia('(prefers-reduced-motion:reduce)');
+let navigating = false, navigationTimer, scrollFrame;
+
+function sectionOffset() {
+ return mobile.matches ? document.querySelector('aside').getBoundingClientRect().height + 16 : 24;
+}
+function setCurrent(id) {
+ const current = navigation.find(item => item.section.id === id);
+ if (!current) return;
+ navigation.forEach(({link, section}) => {
+  const active = section.id === id;
+  link.classList.toggle('active', active);
+  if (active) link.setAttribute('aria-current', 'location'); else link.removeAttribute('aria-current');
+ });
+ // Scroll only the menu, so keeping an item visible never moves the report.
+ const rect = current.link.getBoundingClientRect(), bounds = menu.getBoundingClientRect();
+ if (mobile.matches) {
+  if (rect.left < bounds.left + 8) menu.scrollLeft -= bounds.left + 8 - rect.left;
+  else if (rect.right > bounds.right - 8) menu.scrollLeft += rect.right - bounds.right + 8;
+ } else {
+  if (rect.top < bounds.top + 8) menu.scrollTop -= bounds.top + 8 - rect.top;
+  else if (rect.bottom > bounds.bottom - 8) menu.scrollTop += rect.bottom - bounds.bottom + 8;
+ }
+}
+function trackSection() {
+ scrollFrame = null;
+ if (navigating) return;
+ const marker = sectionOffset() + 64;
+ let current = navigation[0];
+ for (const item of navigation) {
+  if (item.section.getBoundingClientRect().top <= marker) current = item;
+ }
+ if (window.scrollY > 0 && window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 3) current = navigation[navigation.length - 1];
+ if (current) setCurrent(current.section.id);
+}
+function scheduleTrack() {
+ if (!scrollFrame) scrollFrame = requestAnimationFrame(trackSection);
+}
+function finishNavigation() {
+ navigating = false;
+ clearTimeout(navigationTimer);
+}
+function navigate(id, updateHistory = true) {
+ const target = navigation.find(item => item.section.id === id)?.section;
+ if (!target) return;
+ if (target.tagName === 'DETAILS') target.open = true;
+ navigating = true;
+ clearTimeout(navigationTimer);
+ setCurrent(id);
+ if (updateHistory && location.hash !== '#' + id) history.pushState(null, '', '#' + id);
+ window.scrollTo({top: Math.max(0, window.scrollY + target.getBoundingClientRect().top - sectionOffset()), behavior: reducedMotion.matches ? 'instant' : 'smooth'});
+ navigationTimer = setTimeout(finishNavigation, 1400);
+}
+navigation.forEach(({link, section}) => link.addEventListener('click', event => {
+ if (event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+ event.preventDefault(); navigate(section.id);
+}));
+window.addEventListener('scroll', scheduleTrack, {passive:true});
+window.addEventListener('scrollend', finishNavigation);
+window.addEventListener('wheel', finishNavigation, {passive:true});
+window.addEventListener('touchstart', finishNavigation, {passive:true});
+window.addEventListener('keydown', event => {
+ if (['ArrowUp','ArrowDown','PageUp','PageDown','Home','End',' '].includes(event.key)) finishNavigation();
+});
+function resizeNavigation() {
+ document.documentElement.style.setProperty('--section-offset', sectionOffset() + 'px');
+ scheduleTrack();
+}
+window.addEventListener('resize', resizeNavigation);
+new ResizeObserver(resizeNavigation).observe(document.querySelector('aside'));
+window.addEventListener('popstate', () => navigate(location.hash.slice(1) || 'overview', false));
+window.addEventListener('hashchange', () => navigate(location.hash.slice(1) || 'overview', false));
+resizeNavigation();
+if (location.hash) navigate(location.hash.slice(1), false); else setCurrent('overview');
+
+}
+</script></body></html>

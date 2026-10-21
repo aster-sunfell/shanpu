@@ -1,0 +1,11 @@
+{
+  "id": "39617097125-1",
+  "runId": "39617097125",
+  "attempt": "1",
+  "status": "failed",
+  "scope": "performance",
+  "mode": "kafka-burst",
+  "commit": "59dc317346196b04578fc855aff797852d23aa5e",
+  "runUrl": "https://github.com/aster-sunfell/shanpu/actions/runs/39617097125",
+  "createdAt": "2026-10-21T14:59:00.006775+00:00"
+}
