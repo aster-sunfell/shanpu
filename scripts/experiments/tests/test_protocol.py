@@ -99,6 +99,20 @@ class ProtocolTest(unittest.TestCase):
         b['paths']['B']['bounded']=False
         with self.assertRaises(RuntimeError): validate_baseline(b,args,'same')
 
+    def test_new_generator_requires_remeasuring_old_100_vu_baseline(self):
+        args = parse_args(['kafka-buffering'])
+        baseline = {'schemaVersion': 3, 'plan': args.plan, 'stage': 'capacity', 'status': 'completed',
+                    'scope': 'performance', 'deployment': args.deployment, 'policy': policy(args),
+                    'parameters': {'vus': 100, 'request_timeout': args.request_timeout, 'drain_seconds': args.drain_seconds},
+                    'paths': {'B': {'passingRps': 200, 'failingRps': 212, 'bounded': True}}}
+        with self.assertRaisesRegex(RuntimeError, 'VUs'): validate_baseline(baseline, args)
+        baseline['parameters']['vus'] = 200
+        validate_baseline(baseline, args)
+        target = {'instanceId': 'sut', 'services': []}
+        original = context_contract(target, {}, args=args)
+        args.vus = 100
+        self.assertNotEqual(original, context_contract(target, {}, args=args))
+
     def test_actions_checks_run_identity_environment_and_cpu_overlap(self):
         args = self.args()
         rows = [{'cpu': i, 'socket': 0, 'core': i//2, 'siblings': [i//2*2, i//2*2+1]} for i in range(4)]

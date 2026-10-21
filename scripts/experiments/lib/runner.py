@@ -19,8 +19,9 @@ import transport
 from analysis import Evidence, save_result, write_json
 from fixtures import POINTS, PRICE, create_users, credential, prepare, snapshot, check_disk, release_redis
 from protocol import (VERSION, parse_args, matrix, budgeted_matrix, policy, context_contract,
-                      validate_baseline, refinement_rates, capacities, read_baseline, report, validate_deployment)
-from host import check_host_health
+                      validate_baseline, capacities, read_baseline, report, validate_deployment,
+                      search_candidates, point_fits_budget, baseline_readiness)
+from host import check_host_health, container_resources
 
 ROOT = Path(__file__).resolve().parents[3]
 RUNTIME = Path(os.environ.get('BENCH_RUNTIME', '/bench/runtime'))
@@ -99,6 +100,7 @@ def mysql_settings():
 def runner_usage():
     status = Path("/proc/self/status").read_text().splitlines()
     return {"rssKiB": next(int(line.split()[1]) for line in status if line.startswith("VmRSS:")),
+            "containerResources": container_resources({'State': {'Pid': os.getpid()}}),
             "childPeakRssKiB": resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss}
 
 
@@ -330,6 +332,8 @@ def main(argv=None):
         print(json.dumps({'scope': 'validation' if args.validation_only else 'performance',
                           'deployment': args.deployment,
                           'policy': policy(args), 'initialMeasurements': points,
+                          'expansionRoundsPerPath': args.expand_steps if args.stage == 'capacity' else 0,
+                          'capacityBudgetMinutes': args.search_minutes,
                           'refinementRounds': args.refine_steps if args.stage == 'capacity' else 0}, ensure_ascii=False, indent=2))
         return 0
     if os.environ.get('BENCH_CONTAINER') != '1' or os.environ.get('GITHUB_ACTIONS') != 'true': raise RuntimeError('Use the resource-limited load-runner container')
@@ -374,15 +378,40 @@ def main(argv=None):
                 write_json(directory / 'baseline.json', baseline)
             product_id = int(sql(f"INSERT INTO t_product(title,price,stock,status) VALUES ('experiment-{name}',{PRICE},0,1); SELECT LAST_INSERT_ID();").strip())
             meta['productId'] = product_id
-            refinements = 0
+            rounds = {path: {'expand': 0, 'refine': 0} for path in capacities(args, results)}
+            search_deadline = min(time.monotonic()+args.search_minutes*60,
+                                  float(os.environ.get('BENCH_STAGE_DEADLINE', 'inf'))-args.drain_seconds-args.request_timeout-60)
+            meta['search'] = {'budgetMinutes': args.search_minutes, 'rounds': rounds, 'history': [], 'stopReason': None}
+            budget_exhausted = False
             while True:
-                for point in points:
+                started_rates = set()
+                for index, point in enumerate(points):
                     check_host_health()
                     if args.stage == 'capacity':
-                        observations = capacities(args, results)[point['path']]['observations']
+                        bounds = capacities(args, results)
+                        observations = bounds[point['path']]['observations']
                         failures = [item['rate'] for item in observations if item['state']=='fail']
                         if failures and point['rate'] > min(failures):
                             continue
+                        remaining = search_deadline-time.monotonic()
+                        # Reserve an entire new rate's remaining repetitions before
+                        # allocating fixtures, so budget stops normally land between rates.
+                        block = [p for p in points[index:] if p['rate'] == point['rate'] and not any(
+                            o['state'] == 'fail' and o['rate'] < p['rate'] for o in bounds[p['path']]['observations'])]
+                        if point['rate'] not in started_rates:
+                            required = sum(p['seconds']+p['requestTimeout']+30 for p in block)
+                        else:
+                            required = point['seconds']+point['requestTimeout']+30
+                        if not point_fits_budget(point, remaining) or remaining < required:
+                            meta['search']['stopReason'] = 'time-budget'
+                            budget_exhausted = True
+                            print('Capacity search stopped at its budget; retaining qualified observations', flush=True)
+                            break
+                        started_rates.add(point['rate'])
+                        if len(meta['points']) >= 200:
+                            meta['search']['stopReason'] = 'point-limit'
+                            budget_exhausted = True
+                            break
                     check_disk(directory)
                     point_name = f"{len(meta['points'])+1:03d}-r{point['repeat']}-{point['workload']}-{point['rate']}-{point['path']}"
                     point_dir = directory / point_name
@@ -401,6 +430,10 @@ def main(argv=None):
                     value = measure(point, private / point_name, point_dir, admin['token'], args)
                     value.pop("timeline", None)
                     results.append((point_name, value))
+                    print(f"结果 {point_name}: valid={value['valid']}, SLO={value['sloPassed']}, "
+                          f"started={value['started']}/{value['scheduled']}, "
+                          f"peakHttpInFlight={value.get('peakHttpInFlight')}, VUs={point['vus']}, "
+                          f"responseP99Ms={value['classes'].get('eligible', {}).get('responseMs', {}).get('p99')}", flush=True)
                     report(directory, meta, results, args)
                     check_host_health()
                     if value['correctnessErrors'] or value['unresolvedCount']:
@@ -416,11 +449,20 @@ def main(argv=None):
                     release_redis(private / point_name, point)
                     meta['points'][-1]['redisReleased'] = True
                     write_json(directory / 'manifest.json', meta)
-                if args.stage != 'capacity' or refinements >= args.refine_steps: break
-                rates = refinement_rates(args, results)
-                if not rates: break
-                points = list(matrix(args, rates))
-                refinements += 1
+                if args.stage != 'capacity' or budget_exhausted: break
+                candidates = search_candidates(args, results, rounds)
+                if not candidates:
+                    meta['search']['stopReason'] = ('bounds-resolved' if all(not baseline_readiness(b)
+                        for b in capacities(args, results).values()) else 'round-limit-or-inconclusive-evidence')
+                    break
+                selected = {(c['path'], c['rate']) for c in candidates}
+                points = [p for p in matrix(args, sorted({c['rate'] for c in candidates}))
+                          if (p['path'], p['rate']) in selected]
+                for candidate in candidates:
+                    rounds[candidate['path']][candidate['reason']] += 1
+                meta['search']['history'].append(candidates)
+                write_json(directory/'manifest.json', meta)
+                print('Capacity search next: '+json.dumps(candidates), flush=True)
             check_host_health()
             meta['status'] = 'completed'
         except BaseException as error:

@@ -229,7 +229,12 @@ class Evidence:
         last_commit = self.scalar('SELECT MAX(ct) FROM joined WHERE ct<=?', (cutoff_ms,)) or end
         window_complete = self.scalar('SELECT COUNT(*) FROM joined WHERE ct>=? AND ct<?', (origin, end))
         health = bool(not errors and not unresolved)
+        peak_http = self.scalar('''SELECT COALESCE(MAX(n),0) FROM
+            (SELECT SUM(delta) OVER (ORDER BY t) n FROM
+                (SELECT t,SUM(delta) delta FROM
+                    (SELECT t,1 delta FROM starts UNION ALL SELECT f,-1 FROM finishes) GROUP BY t))''')
         return {'path': config['path'], 'workload': config['workload'], 'rate': config['rate'],
+                'peakHttpInFlight': peak_http,
                 'scheduled': config['scheduled'], 'started': started, 'generatorLagMs': generator_lag, 'outcomes': outcomes, 'classes': classes,
                 'accepted': accepted, 'completed': completed, 'eligible': eligible, 'unresolvedCount': unresolved,
                 'committedAfterResponseFailure': self.scalar("SELECT COUNT(*) FROM joined WHERE ct<=? AND (outcome IS NULL OR outcome<>'accepted')", (cutoff_ms,)),

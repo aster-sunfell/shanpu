@@ -142,6 +142,9 @@ def stage_report(directory):
     for key in ('error', 'hostFailure'):
         if meta.get(key):
             body.append(f'<p class="failed">{text(meta[key])}</p>')
+    if artifact.get('search'):
+        body.append('<details><summary>容量搜索预算与停止原因</summary><pre>'
+                    + text(json.dumps(artifact['search'], ensure_ascii=False, indent=2)) + '</pre></details>')
     paths = artifact.get('paths', {})
     if paths and artifact.get('scope') == 'performance':
         body.append('<h3>稳定容量区间</h3><ul>')
@@ -173,12 +176,12 @@ def stage_report(directory):
     if results:
         body.append('<div class="chart-grid">' + chart([(f'{r["path"]} {r["rate"]} r{r["repeat"]}', r['classes'].get('eligible', {}).get('responseMs', {}).get('p99')) for _, r in results], '有效请求响应 p99', 'ms')
                     + chart([(f'{r["path"]} {r["rate"]} r{r["repeat"]}', r['completedWithinDeadline']) for _, r in results], '按期限完成', '订单') + '</div>')
-        body.append('<div class="scroll"><table><thead><tr>' + ''.join(f'<th>{label}</th>' for label in ['测量点', '实际 RPS', '有效样本', '响应 p99 ms', '完成 p99 ms', '按时完成', '峰值积压', '有效 / SLO']) + '</tr></thead><tbody>')
+        body.append('<div class="scroll"><table><thead><tr>' + ''.join(f'<th>{label}</th>' for label in ['测量点', '实际 RPS', '有效样本', '响应 p99 ms', '完成 p99 ms', '按时完成', '峰值积压', 'HTTP 在途峰值', '有效 / SLO']) + '</tr></thead><tbody>')
         for path, value in results:
             eligible = value['classes'].get('eligible', {}).get('responseMs', {})
             columns = [text(path.name), number(value['actualRequestRps']), number(eligible.get('samples')),
                        number(eligible.get('p99')), number(value['completionMs'].get('p99')),
-                       number(value['completedWithinDeadline']), number(value['peakPendingAccepted']),
+                       number(value['completedWithinDeadline']), number(value['peakPendingAccepted']), number(value.get('peakHttpInFlight')),
                        text(f'{value["valid"]} / {value["sloPassed"]}')]
             body.append('<tr>' + ''.join(f'<td>{column}</td>' for column in columns) + '</tr>')
         body.append('</tbody></table></div>')
@@ -243,7 +246,7 @@ def render(reports, output):
     environment = read_json(reports / 'environment.json', {})
     actions = suite.get('actions') or environment.get('actions') or {}
     status = suite.get('status', 'failed')
-    if status != 'completed':
+    if status not in ('completed', 'inconclusive'):
         status = 'failed'
     scope = suite.get('scope', 'validation' if os.environ.get('BENCH_MODE') == 'smoke' else 'performance')
     run_id = str(actions.get('runId') or os.environ.get('GITHUB_RUN_ID', 'unknown'))
@@ -255,6 +258,12 @@ def render(reports, output):
         body.append('<p class="warning">流程验证：仅核对执行、采集和业务一致性，不输出正式性能提升结论，不能作为正式突发基线。</p>')
     if status != 'completed':
         body.append('<p class="warning">运行未完整完成。已有证据供排查，不能以部分结果声称完整实验成功。</p>')
+    if status == 'inconclusive':
+        body.append('<p class="warning">容量边界尚未确定：保留已完成的有效测量，缺少合格基线时跳过突发。</p>')
+    for title, values in [('未确定的容量边界', suite.get('inconclusive')), ('未执行的阶段与原因', suite.get('skipped'))]:
+        if values:
+            body.append('<details open><summary>'+title+'</summary><pre>'
+                        +text(json.dumps(values, ensure_ascii=False, indent=2))+'</pre></details>')
     if suite.get('error'):
         body.append('<p class="failed">' + text(suite['error']) + '</p>')
     body.append('<p>Commit：<code>' + text(actions.get('commit', os.environ.get('GITHUB_SHA', 'unknown'))) + '</code></p>')

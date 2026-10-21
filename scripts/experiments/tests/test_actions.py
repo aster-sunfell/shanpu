@@ -54,12 +54,13 @@ class ActionsTest(unittest.TestCase):
             args = parse_args(['kafka-buffering'])
             baseline = {'schemaVersion': VERSION, 'plan': 'kafka-buffering', 'stage': 'capacity',
                         'status': 'completed', 'scope': 'performance', 'deployment': 'github-actions',
-                        'policy': policy(args), 'paths': {'B': {'passingRps': 100, 'failingRps': 105, 'bounded': True}}}
+                        'policy': policy(args), 'paths': {p: {'passingRps': 100, 'failingRps': 105, 'bounded': True}
+                                                       for p in ('B', 'C')}}
             (directory / 'capacity.json').write_text(json.dumps(baseline))
             with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
                     patch.object(actions, 'require_preflight'), \
                     patch.object(actions, 'run_stage', return_value=directory) as stage:
-                actions.run_suite('kafka', '25,50', 60, 3, 20, 4, 10)
+                actions.run_suite('kafka', '25,50', 60, 3, 20, 4, 30)
             self.assertEqual(2, stage.call_count)
             first, second = stage.call_args_list
             self.assertEqual(first.args[1], second.args[1])
@@ -72,10 +73,78 @@ class ActionsTest(unittest.TestCase):
             with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
                     patch.object(actions, 'require_preflight'), \
                     patch.object(actions, 'run_stage', return_value=directory) as stage:
-                with self.assertRaisesRegex(RuntimeError, 'bracketed'):
-                    actions.run_suite('kafka', '25,50', 60, 3, 20, 4, 10)
+                actions.run_suite('kafka', '25,50', 60, 3, 20, 4, 10)
             self.assertEqual(1, stage.call_count)
-            self.assertEqual('failed', json.loads((root / 'suite.json').read_text())['status'])
+            suite = json.loads((root / 'suite.json').read_text())
+            self.assertEqual('inconclusive', suite['status'])
+            self.assertEqual('burst', suite['skipped'][0]['stage'])
+            self.assertIn('bracketed', suite['skipped'][0]['reason'])
+            baseline['paths']['B']['bounded'] = True
+            (directory/'capacity.json').write_text(json.dumps(baseline))
+            (root/'suite.json').write_text(json.dumps({'status': 'running', 'stages': []}))
+            with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
+                    patch.object(actions, 'require_preflight'), patch('builtins.print'), \
+                    patch.object(actions, 'run_stage', return_value=directory) as stage:
+                actions.run_suite('kafka', '25,50', 60, 3, 20, 4, 10)
+            self.assertEqual(1, stage.call_count)
+            suite = json.loads((root/'suite.json').read_text())
+            self.assertEqual('inconclusive', suite['status'])
+            self.assertIn('budget', suite['skipped'][0]['reason'])
+
+    def test_unbounded_baseline_with_invalid_provenance_still_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root/'suite.json').write_text(json.dumps({'status': 'running', 'stages': []}))
+            (root/'deadline.json').write_text(json.dumps({'monotonic': time.monotonic()+1000}))
+            (root/'capacity.json').write_text(json.dumps({'paths': {'B': {'passingRps': 200}}}))
+            with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
+                    patch.object(actions, 'require_preflight'), patch.object(actions, 'run_stage', return_value=root), \
+                    self.assertRaisesRegex(RuntimeError, 'protocol'):
+                actions.run_suite('kafka', None, 60, 3, 200, 4, 10)
+            self.assertEqual('failed', json.loads((root/'suite.json').read_text())['status'])
+
+    def test_default_full_suite_uses_distinct_ladders_and_same_200_vu_generator_for_burst(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root/'suite.json').write_text(json.dumps({'status': 'running', 'stages': []}))
+            (root/'deadline.json').write_text(json.dumps({'monotonic': time.monotonic()+1000}))
+            called = []
+
+            def stage(arguments, deadline):
+                args = parse_args(arguments)
+                called.append(args)
+                directory = root/args.plan/args.stage
+                directory.mkdir(parents=True)
+                if args.stage == 'capacity':
+                    paths = ('A', 'B') if args.plan == 'redis-filtering' else ('B', 'C')
+                    baseline = {'schemaVersion': VERSION, 'plan': args.plan, 'stage': args.stage,
+                                'status': 'completed', 'scope': 'performance', 'deployment': args.deployment,
+                                'policy': policy(args), 'parameters': vars(args),
+                                'paths': {p: {'passingRps': 200, 'failingRps': 210, 'bounded': True} for p in paths}}
+                    (directory/'capacity.json').write_text(json.dumps(baseline))
+                return directory
+
+            with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
+                    patch.object(actions, 'require_preflight'), patch.object(actions, 'run_stage', side_effect=stage):
+                actions.run_suite('full', None, 60, 3, 200, 4, 30)
+            self.assertEqual(3, len(called))
+            self.assertEqual([200, 250, 300, 350, 400], called[0].rates)
+            self.assertEqual([200, 225, 250, 275, 300], called[1].rates)
+            self.assertEqual('burst', called[2].stage)
+            self.assertEqual(200, called[2].q)
+            self.assertTrue(all(args.vus == 200 for args in called))
+            self.assertEqual('completed', json.loads((root/'suite.json').read_text())['status'])
+
+    def test_global_budget_exhaustion_skips_new_capacity_stage_without_marking_tool_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root/'suite.json').write_text(json.dumps({'status': 'running', 'stages': []}))
+            (root/'deadline.json').write_text(json.dumps({'monotonic': time.monotonic()+100}))
+            with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
+                    patch.object(actions, 'require_preflight'), patch.object(actions, 'run_stage') as stage:
+                actions.run_suite('full', None, 60, 3, 200, 4, 10)
+            stage.assert_not_called()
+            self.assertEqual('inconclusive', json.loads((root/'suite.json').read_text())['status'])
 
     def test_internal_deadline_stops_injection_before_job_timeout(self):
         with tempfile.TemporaryDirectory() as temp, patch('host.memory', return_value={'MemAvailable': 4000 * MIB}):

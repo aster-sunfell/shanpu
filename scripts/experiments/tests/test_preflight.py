@@ -28,6 +28,18 @@ class PreflightTest(unittest.TestCase):
         self.assertEqual('redis-filtering', args.plan)
         self.assertLess(preflight.dataset_plan(args, 'redis')['seedUsers'], plan['seedUsers'])
 
+    def test_new_baseline_preflight_sizes_both_plan_specific_ladders_and_binds_them_to_marker(self):
+        args = parse_args(['redis-filtering'])
+        plan = preflight.dataset_plan(args, 'full')
+        self.assertEqual(990000, plan['initialLadderRequests'])
+        self.assertEqual(1188000, plan['seedUsers'])
+        self.assertEqual(24000, plan['batchUsers'])
+        self.assertEqual([200, 225, 250, 275, 300], plan['planRates']['kafka-buffering'])
+        parameters = actions.experiment_parameters('full', None, 60, 3, 200, 4)
+        self.assertEqual(plan['planRates'], parameters['rates'])
+        self.assertEqual(200, parameters['vus'])
+        self.assertNotEqual(parameters, actions.experiment_parameters('full', '200,300', 60, 3, 200, 4))
+
     def test_readiness_rate_is_capped_independently_of_capacity_and_preserves_mixed_eligible_requests(self):
         for rates, expected in (('25,50,100,200', 5), ('100,400', 5), ('1,2', 1)):
             with self.subTest(rates=rates):

@@ -10,7 +10,7 @@ import time
 from analysis import Evidence, write_json
 from fixtures import POINTS, PRICE, create_users, credential, prepare, release_redis
 from host import check_host_health
-from protocol import budgeted_matrix, parse_args, validate_deployment
+from protocol import budgeted_matrix, parse_args, validate_deployment, capacity_rates
 from runner import RUNTIME, REPORTS, api, measure, mysql_settings, require_idle, sql
 
 
@@ -21,9 +21,11 @@ def dataset_plan(args, mode):
     for plan in plans:
         selected = copy.copy(args)
         selected.plan = plan
+        selected.rates = capacity_rates(plan, args.rates_override)
         points.extend(budgeted_matrix(selected))
     initial = sum(p['scheduled'] for p in points)
     return {'initialLadderRequests': initial, 'seedUsers': math.ceil(initial*1.2),
+            'planRates': {plan: capacity_rates(plan, args.rates_override) for plan in plans},
             'batchUsers': max(p['scheduled'] for p in points),
             # Readiness must not require passing the highest capacity rung.
             # Ten seconds also exercises an eligible mixed request at 1 RPS.

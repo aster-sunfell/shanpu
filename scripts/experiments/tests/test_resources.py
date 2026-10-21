@@ -2,6 +2,7 @@
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 from actions import LIMITS, MIB, validate_config, validate_container, validate_runner_container, validate_runner_config, validate_engine
@@ -72,8 +73,10 @@ class ResourceTest(unittest.TestCase):
 
     def test_safe_default_vus_and_duration_remain_bounded(self):
         points = budgeted_matrix(parse_args(['redis-filtering']))
-        self.assertTrue(all(p['vus'] == 100 for p in points))
+        self.assertTrue(all(p['vus'] == 200 for p in points))
         self.assertTrue(all(60 <= p['seconds'] <= 600 for p in points))
+        with patch('sys.stderr'), self.assertRaises(SystemExit):
+            parse_args(['redis-filtering', '--vus', '201'])
 
 
 if __name__ == '__main__':

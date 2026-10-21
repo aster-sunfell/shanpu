@@ -6,10 +6,17 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-from runner import MYSQL_MEMORY_SETTINGS, mysql_settings, verify_k6_load
+from runner import MYSQL_MEMORY_SETTINGS, mysql_settings, verify_k6_load, runner_usage
 
 
 class LoadEvidenceTest(unittest.TestCase):
+    def test_load_container_records_its_own_resource_counters_for_200_vu_calibration(self):
+        counters = {'memory.current': '123456', 'cpu.stat': 'usage_usec 123'}
+        with patch('runner.container_resources', return_value=counters):
+            sample = runner_usage()
+            self.assertEqual(counters, sample['containerResources'])
+            self.assertGreater(sample['rssKiB'], 0)
+
     def test_database_profile_records_only_expected_server_variables(self):
         values = {'version': '8.0.46', **MYSQL_MEMORY_SETTINGS}
         with patch('runner.sql', return_value='\n'.join(f'{k}\t{v}' for k, v in values.items())):

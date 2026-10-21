@@ -312,6 +312,7 @@ def run_stage(arguments, deadline, *, preflight=False, mode='full'):
             converted[index + 1] = str(Path('/bench/reports') / Path(converted[index + 1]).relative_to(REPORTS))
     overrides = {'command': converted, 'user': f'{os.getuid()}:{os.getgid()}',
                  'environment': {'BENCH_RUN_ID': run_id,
+                                 'BENCH_STAGE_DEADLINE': str(deadline),
                                  'BENCH_HOST_STATUS': str(Path('/bench/runtime/host-watch') / run_id / 'status.json')}}
     if preflight:
         overrides['entrypoint'] = ['python3', '/workspace/scripts/experiments/lib/preflight.py']
@@ -395,7 +396,8 @@ def run_stage(arguments, deadline, *, preflight=False, mode='full'):
 
 
 def experiment_parameters(mode, rates, seconds, repeats, vus, refine_steps):
-    return {'mode': mode, 'rates': sorted(set(int(rate) for rate in rates.split(','))),
+    from protocol import capacity_rates
+    return {'mode': mode, 'rates': {plan: capacity_rates(plan, rates) for plan in ('redis-filtering', 'kafka-buffering')},
             'seconds': seconds, 'repeats': repeats, 'vus': vus, 'refineSteps': refine_steps}
 
 
@@ -436,13 +438,13 @@ def reset_after_preflight(previous):
 
 def run_preflight(mode, rates, seconds, repeats, vus, refine_steps, minutes):
     parameters = experiment_parameters(mode, rates, seconds, repeats, vus, refine_steps)
-    if mode not in ('full', 'redis', 'kafka', 'smoke') or not 1 <= minutes <= 5:
-        raise RuntimeError('Preflight requires a supported mode and a 1–5 minute data/probe budget')
+    if mode not in ('full', 'redis', 'kafka', 'smoke') or not 1 <= minutes <= 12:
+        raise RuntimeError('Preflight requires a supported mode and a 1–12 minute data/probe budget')
     marker = RUNTIME/'preflight-ready.json'
     marker.unlink(missing_ok=True)
     previous = verify()
     directory = REPORTS/'preflight'/f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT','1')}-preflight"
-    arguments = ['redis-filtering', '--rates', rates, '--seconds', str(seconds), '--repeats', str(repeats),
+    arguments = ['redis-filtering', *(['--rates', rates] if rates else []), '--seconds', str(seconds), '--repeats', str(repeats),
                  '--vus', str(vus), '--refine-steps', str(refine_steps)]
     if mode == 'smoke': arguments.append('--validation-only')
     deadline = min(time.monotonic()+minutes*60, json.loads((RUNTIME/'deadline.json').read_text())['monotonic'])
@@ -491,9 +493,9 @@ def run_suite(mode, rates, seconds, repeats, vus, refine_steps, minutes):
         raise RuntimeError('Unsupported experiment selection')
     if not 1 <= minutes <= 150:
         raise RuntimeError('Internal deadline must be between 1 and 150 minutes')
-    from protocol import parse_args, read_baseline, validate_baseline
+    from protocol import parse_args, read_baseline, validate_baseline, baseline_readiness, budgeted_matrix
     # Parse all numeric inputs before starting services or creating fixtures.
-    common = ['--rates', rates, '--seconds', str(seconds), '--repeats', str(repeats),
+    common = [*(['--rates', rates] if rates else []), '--seconds', str(seconds), '--repeats', str(repeats),
               '--vus', str(vus), '--refine-steps', str(refine_steps)]
     if mode == 'smoke':
         common = ['--rates', '5', '--seconds', '2', '--repeats', '1', '--vus', '5',
@@ -509,20 +511,44 @@ def run_suite(mode, rates, seconds, repeats, vus, refine_steps, minutes):
         plans = ['redis-filtering', 'kafka-buffering'] if mode in ('full', 'smoke') else [
             'redis-filtering' if mode == 'redis' else 'kafka-buffering']
         for plan in plans:
-            if time.monotonic() >= deadline:
-                raise RuntimeError('Experiment deadline reached before next stage')
+            if time.monotonic() >= deadline-180:
+                suite.setdefault('skipped', []).append({'plan': plan, 'stage': 'capacity',
+                                                        'reason': 'Insufficient remaining measurement budget'})
+                break
             directory = run_stage([plan, *common], deadline)
             suite['stages'].append(str(directory.relative_to(REPORTS)))
+            value = read_baseline(directory/'capacity.json')
+            if plan == 'kafka-buffering':
+                validate_baseline(value, parse_args([plan, *common]), require_capacity=False)
+            if mode != 'smoke':
+                for path in (('A', 'B') if plan == 'redis-filtering' else ('B', 'C')):
+                    bound = value.get('paths', {}).get(path, {})
+                    if baseline_readiness(bound):
+                        suite.setdefault('inconclusive', []).append({'plan': plan, 'path': path,
+                            'reason': 'Qualified passing/failing capacity interval within 10% not established'})
             atomic_json(REPORTS / 'suite.json', suite)
             if plan == 'kafka-buffering':
                 baseline = directory / 'capacity.json'
-                # Fails closed if B is unbounded or insufficient. No manually supplied Q.
+                reason = baseline_readiness(value.get('paths', {}).get('B', {}), mode == 'smoke')
+                if reason:
+                    suite.setdefault('skipped', []).append({'plan': plan, 'stage': 'burst', 'reason': reason})
+                    print('Burst skipped: '+reason, flush=True)
+                    continue
+                # Provenance and runtime configuration must still match exactly.
                 burst_args = [plan, '--stage', 'burst', '--baseline-report', str(baseline), *common]
-                validate_baseline(read_baseline(baseline), parse_args(burst_args))
+                burst_options = parse_args(burst_args)
+                validate_baseline(value, burst_options)
+                required = 180+sum(p['seconds']+p['baseSeconds']+p['requestTimeout']+30
+                                   for p in budgeted_matrix(burst_options))
+                if deadline-time.monotonic() < required:
+                    suite.setdefault('skipped', []).append({'plan': plan, 'stage': 'burst',
+                                                            'reason': 'Insufficient remaining budget for the full burst matrix'})
+                    print('Burst skipped: insufficient budget for all repetitions', flush=True)
+                    continue
                 directory = run_stage(burst_args, deadline)
                 suite['stages'].append(str(directory.relative_to(REPORTS)))
                 atomic_json(REPORTS / 'suite.json', suite)
-        suite['status'] = 'completed'
+        suite['status'] = 'inconclusive' if suite.get('skipped') or suite.get('inconclusive') else 'completed'
     except BaseException as error:
         suite.update(status='failed', error=str(error) or type(error).__name__)
         raise
@@ -565,10 +591,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['prepare', 'build', 'up', 'preflight', 'run', 'collect', 'cleanup'])
     parser.add_argument('--mode', choices=['full', 'redis', 'kafka', 'smoke'], default='full')
-    parser.add_argument('--rates', default='25,50,100,200')
+    parser.add_argument('--rates', help='Override both plan-specific ladders')
     parser.add_argument('--seconds', type=int, default=60)
     parser.add_argument('--repeats', type=int, default=3)
-    parser.add_argument('--vus', type=int, default=100)
+    parser.add_argument('--vus', type=int, default=200)
     parser.add_argument('--refine-steps', type=int, default=4)
     parser.add_argument('--minutes', type=int, default=150)
     args = parser.parse_args()

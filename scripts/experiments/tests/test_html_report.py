@@ -104,6 +104,24 @@ class HtmlReportTest(unittest.TestCase):
             self.assertIn('流程验证', html)
             self.assertIn('运行未完整完成', html)
 
+    def test_inconclusive_capacity_preserves_results_and_never_replaces_complete_report(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root/'site'
+            merge_report(self.report(root, 1), archive)
+            output = self.report(root, 2, status='inconclusive')
+            reports = root/'evidence-2'
+            suite = json.loads((reports/'suite.json').read_text())
+            suite['skipped'] = [{'stage': 'burst', 'reason': 'No qualified bound <example>'}]
+            (reports/'suite.json').write_text(json.dumps(suite))
+            render(reports, output)
+            self.assertEqual('inconclusive', json.loads((output/'report.json').read_text())['status'])
+            self.assertIn('容量边界尚未确定', (output/'index.html').read_text())
+            self.assertIn('No qualified bound &lt;example&gt;', (output/'index.html').read_text())
+            merge_report(output, archive, keep=1)
+            self.assertTrue((archive/'runs/1-1/index.html').exists())
+            self.assertIn('runs/1-1/index.html', (archive/'index.html').read_text())
+
     def test_archive_rejects_path_traversal_in_run_identity(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
