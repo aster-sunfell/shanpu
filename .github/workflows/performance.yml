@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   checks:
-    name: checks (unit tests)
+    name: checks
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -34,11 +34,11 @@ jobs:
           python3 scripts/experiments/lib/runtime_alignment.py
           python3 -m unittest discover -s scripts/experiments/tests -v
           node scripts/experiments/tests/schedule.test.mjs
-      - name: Unit test summary
+      - name: Checks summary
         if: always()
         env:
           CHECK_STATUS: ${{ job.status }}
-        run: printf '## Unit tests\n\nProtocol, runtime alignment, evidence, reporting and scheduling checks — %s.\n' "$CHECK_STATUS" >> "$GITHUB_STEP_SUMMARY"
+        run: printf '## Checks\n\nProtocol, runtime alignment, evidence, reporting and scheduling checks — %s.\n' "$CHECK_STATUS" >> "$GITHUB_STEP_SUMMARY"
 
   performance:
     needs: checks

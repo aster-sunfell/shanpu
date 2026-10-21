@@ -49,4 +49,4 @@ GitHub Pages 分别保留两个实验最近一次完整正式报告，失败记�
 
 发压预算按 800 RPS、1 秒响应延迟验证，1200 VU 留有余量；这不保证 10 秒超时下仍可维持 800 RPS。若服务变慢超出已验证范围，输入无效点只诊断，不生成收益。Nginx 共 4096 连接位（客户端和上游均占位），Tomcat 2048 连接，相关容器 nofile 8192。k6 固定 `GOMAXPROCS=1` 与其单 CPU 配额一致，避免按宿主 CPU 数调度。
 
-`checks (unit tests)` 仅显示单元测试状态。报告函数默认不写 Actions summary；performance 的报告 CLI 显式传入 `--summary` 才写入所选实验结果。失败响应保留 k6 错误码、HTTP 状态、连接/阻塞时间；每阶段 `nginx-error.log` 在注入前开始跟随采集，避免访问日志轮转丢失早期错误。
+`checks` 仅显示配置与测试检查状态。报告函数默认不写 Actions summary；performance 的报告 CLI 显式传入 `--summary` 才写入所选实验结果。失败响应保留 k6 错误码、HTTP 状态、连接/阻塞时间；每阶段 `nginx-error.log` 在注入前开始跟随采集，避免访问日志轮转丢失早期错误。
