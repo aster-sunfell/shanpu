@@ -29,9 +29,9 @@ def percentiles(values):
 
 
 class Evidence:
-    def __init__(self, directory):
+    def __init__(self, directory, database_name="evidence.sqlite"):
         self.directory = Path(directory)
-        self.db = sqlite3.connect(self.directory / 'evidence.sqlite')
+        self.db = sqlite3.connect(self.directory / database_name)
         self.db.executescript('''
             PRAGMA cache_size=-8192;
             PRAGMA temp_store=FILE;
@@ -259,6 +259,8 @@ class Evidence:
             }
             for key, count in (('onTimeAcceptedPct','acceptedWithinResponseDeadline'), ('onTimeCompletedPct','completedWithinDeadline'), ('completionPct','completed')):
                 burst[key] = burst[count]*100/burst['requests'] if burst['requests'] else None
+            burst_last_commit = self.scalar(f'SELECT MAX(ct) FROM joined WHERE {cohort} AND ct<={cutoff_ms}')
+            burst['recoveryMs'] = max(0,burst_last_commit-(origin+(config['baseSeconds']+config['seconds'])*1000)) if (burst['requests'] and burst['completed']==burst['requests'] and burst_last_commit is not None) else None
             if burst['requests'] != config['rate'] * config['seconds']:
                 load_errors.append('Burst request cohort does not match the scheduled phase')
         buckets = [{'second': i, 'started': 0, 'accepted': 0, 'completed': 0, 'pendingAccepted': 0, 'outstanding': 0}

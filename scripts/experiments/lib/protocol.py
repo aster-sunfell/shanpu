@@ -6,7 +6,7 @@ from pathlib import Path
 from analysis import percentiles, write_json
 from host import validate_affinity
 
-VERSION = 6
+VERSION = 7
 DEFAULT_VUS = 1200
 # Fixed experimental conditions; never adapted to observed results.
 REDIS_RATE = 600
@@ -158,6 +158,8 @@ def comparisons(args, results):
                        if 'syncAttempts' in r.get('backendDelta', {}) and r['started'] else None)
         else:
             difference('burst.responseP99Ms', lambda r: (r.get('burst') or {}).get('responseMs',{}).get('p99'))
+            difference('burst.completionP99Ms', lambda r: (r.get('burst') or {}).get('completionMs',{}).get('p99'))
+            difference('burst.recoveryMs', lambda r: (r.get('burst') or {}).get('recoveryMs'))
             difference('burst.onTimeAcceptedPct', lambda r: (r.get('burst') or {}).get('onTimeAcceptedPct'))
             difference('burst.onTimeCompletedPct', lambda r: (r.get('burst') or {}).get('onTimeCompletedPct'))
             difference('burst.completionPct', lambda r: (r.get('burst') or {}).get('completionPct'))

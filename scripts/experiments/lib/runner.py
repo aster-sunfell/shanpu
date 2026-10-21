@@ -19,7 +19,7 @@ import urllib.request
 import transport
 import observation
 from analysis import Evidence, save_result, write_json
-from fixtures import POINTS, PRICE, create_users, credential, prepare, snapshot, check_disk, release_redis
+from fixtures import PRICE, create_users, credential, prepare, snapshot, check_disk, release_redis
 from protocol import (VERSION, parse_args, matrix, budgeted_matrix, policy, context_contract,
                       report, validate_deployment, comparisons, warmup_matrix)
 from host import check_host_health, container_resources
@@ -303,7 +303,7 @@ def measure(config, private, directory, token, args):
         write_json(directory / 'load.json', {'planned':config['scheduled'], 'started':result['started'],
                    'missing':max(0,config['scheduled']-result['started']), 'vus':config['vus'],
                    'vuExhausted':result['vuExhausted'], 'metricsAggregation':'disabled; disk evidence and k6 warnings are authoritative'})
-        result.update(phase=config.get('phase', 'confirmation'), scope='validation' if args.validation_only else 'performance',
+        result.update(plan=config['plan'], phase=config.get('phase', 'confirmation'), scope='validation' if args.validation_only else 'performance',
                       repeat=config['repeat'], seconds=config['seconds'], baseRate=config['baseRate'], baseSeconds=config['baseSeconds'], recoveryRate=config.get('recoveryRate', 0), recoverySeconds=config.get('recoverySeconds', 0), k6ExitCode=process.returncode,
                       wallSeconds=round(time.monotonic()-started, 3), backendDelta=delta(before_metrics, after_metrics))
         if abs(drift)>50 or abs(after_metrics['runnerClock']['offsetEstimateMs'])>50+after_metrics['runnerClock']['uncertaintyMs']:
@@ -364,6 +364,7 @@ def warm_runtime(args, product_id, private, directory, token):
     summary = {'scope':'validation','status':'running','points':[],
                'policy':'equal fixed 90s per path; final block must have valid load and healthy responses'}
     final_health = {}
+    warmup_started=time.monotonic()
     try:
         for point in warmup_matrix(args):
             check_host_health()
@@ -405,6 +406,7 @@ def warm_runtime(args, product_id, private, directory, token):
         summary.update(status='failed',error=str(error))
         raise
     finally:
+        summary['elapsedSeconds']=round(time.monotonic()-warmup_started,3)
         write_json(directory/'warmup.json',summary)
 
 
@@ -522,8 +524,10 @@ def main(argv=None):
                 checkpoint()
                 return value
 
+            measurement_started=time.monotonic()
             for point in points:
                 execute_point(point, 'measurement')
+            meta['phaseTimings']={'measurementSeconds':round(time.monotonic()-measurement_started,3)}
             check_host_health()
             qualified = args.validation_only or all(c['qualified'] for c in comparisons(args, results))
             meta['status'] = 'completed' if len(results) == len(points) and all(r['valid'] for _, r in results) and qualified else 'inconclusive'

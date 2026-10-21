@@ -53,11 +53,11 @@ class ActionsTest(unittest.TestCase):
                     (root/'deadline.json').write_text(json.dumps({'monotonic':time.monotonic()+1000}))
                     (root/'experiment.json').write_text(json.dumps({'status':status}))
                     with patch.object(actions,'RUNTIME',root), patch.object(actions,'REPORTS',root), \
-                            patch.object(actions,'require_preflight') as gate, patch.object(actions,'run_stage',return_value=root) as stage:
+                            patch.object(actions,'require_generator_check') as gate, patch.object(actions,'verify_clean_start',return_value={}), patch.object(actions,'run_stage',return_value=root) as stage:
                         actions.run_experiment(plan,30)
                     self.assertEqual(1, stage.call_count)
                     self.assertEqual([plan], stage.call_args.args[0])
-                    gate.assert_called_once_with(actions.experiment_parameters(plan))
+                    gate.assert_called_once_with(plan)
                     self.assertEqual(status,json.loads((root/'suite.json').read_text())['status'])
 
     def test_gateway_errors_are_retained_and_redacted_even_when_stage_fails(self):

@@ -1,10 +1,9 @@
 """Chart-first, self-contained report layout shared by formal and partial runs."""
 from html import escape
-import json
 from pathlib import Path
 
 import report_charts as charts
-from report_charts import COLORS, NAMES, empty, fmt, legend, numeric
+from report_charts import fmt, legend, numeric
 from report_data import read_json
 
 ASSETS=Path(__file__).resolve().parent
@@ -30,9 +29,9 @@ def heading(title,subtitle='',number=''):
     return f'<div class="section-heading"><div><h2>{prefix}{text(title)}</h2><p>{text(subtitle)}</p></div></div>'
 
 
-def panel(title,subtitle,graphic,note,paths=()):
+def panel(title,subtitle,graphic,note,paths=(),names=None):
     return (f'<article class="panel"><div class="panel-head"><div><h3>{text(title)}</h3>'
-            f'<div class="panel-sub">{text(subtitle)}</div></div>{legend(paths) if paths else ""}</div>'
+            f'<div class="panel-sub">{text(subtitle)}</div></div>{legend(paths,names) if paths else ""}</div>'
             f'<div class="chart">{graphic}</div><div class="takeaway">{note}</div></article>')
 
 
@@ -55,37 +54,6 @@ def valid_run_url(url):
     return isinstance(url,str) and url.startswith('https://github.com/')
 
 
-def schemes(paths):
-    values={'A':('数据库同步下单','直接执行数据库事务，完成扣库存、扣积分与创建订单。','PAID · 订单已完成'),
-            'B':('Redis 预扣＋同步下单','Redis 预扣和过滤重复购买，再同步执行数据库事务。','PAID · 订单已完成'),
-            'C':('Redis 预扣＋Kafka 异步下单','Redis 预扣，Kafka 确认后先返回，由消费者完成数据库事务。','PENDING · 已受理，等待完成')}
-    cards=[]
-    for p in paths:
-        title,description,state=values[p]
-        cards.append(f'<article class="scheme" style="--scheme-color:{COLORS[p]}"><h3><small>{p}</small>{title}</h3><p>{description}</p><div class="scheme-state">{state}</div></article>')
-    return '<section id="schemes">'+heading('方案说明','独立对照方案；图表使用具体名称，字母仅用于对应实验记录。')+'<div class="scheme-grid">'+''.join(cards)+'</div></section>'
-
-
-def resources(path):
-    if not path.exists(): return ''
-    peaks={}
-    throttled={}
-    with path.open() as file:
-        for line in file:
-            try: sample=json.loads(line)
-            except ValueError: continue
-            for container in sample.get('containers') or []:
-                memory=container.get('resources',{}).get('memory.current')
-                if memory is not None: peaks[container['service']]=max(peaks.get(container['service'],0),int(memory))
-                fields=dict(row.split() for row in container.get('resources',{}).get('cpu.stat','').splitlines())
-                if 'nr_throttled' in fields:
-                    value=int(fields['nr_throttled'])
-                    first,_=throttled.get(container['service'],(value,value))
-                    throttled[container['service']]=(first,value)
-    if not peaks: return ''
-    return '<details><summary>容器资源采样</summary>'+table(['服务','采样内存峰值','CPU nr_throttled 增量'],[(p,fmt(v/1048576)+' MiB',fmt(max(0,throttled[p][1]-throttled[p][0])) if p in throttled else '—') for p,v in peaks.items()])+'<p class="muted">采样峰值可能遗漏瞬时峰值；throttle 计数不代表完整 CPU 利用率，资源相关性不等于性能变化的唯一原因。</p></details>'
-
-
 def environment_report(environment):
     host=environment.get('host') or {}
     allocation=environment.get('cpuAllocation') or {}
@@ -96,88 +64,93 @@ def environment_report(environment):
     memory=host.get('memoryBytes')
     image=' / '.join(str(actions[key]) for key in ('runnerImage','runnerImageVersion') if actions.get(key))
     fields=[('CPU 型号',host.get('cpuModel') or '未采集'),
-            ('Runner 可用逻辑 CPU',quantity(len(available) if isinstance(available,list) else None,'vCPU')),
-            ('Runner 可见内存',quantity(round(memory/1024**3,2) if numeric(memory) else None,'GiB')),
             ('被测端共享逻辑 CPU 数' if budget.get('cpuModel')=='shared-cpuset' else '被测端 CPU 配额合计',quantity(budget.get('cpuLimit'),'vCPU')),
-            ('CPU 分配模式',budget.get('cpuModel') or '历史逐服务配额'),('被测端 CPU 集合',allocation.get('sut') or '未采集'),('发压端 CPU 集合',allocation.get('runner') or '未采集'),
-            ('被测容器内存配额合计',quantity(budget.get('containerMemoryMiB'),'MiB')),
-            ('被测端总内存预算',quantity(budget.get('machineMemoryMiB'),'MiB')),
-            ('宿主余量预算',quantity(budget.get('hostReserveMiB'),'MiB')),
-            ('Runner 镜像 / 版本',image or '未采集'),('运行平台',host.get('platform') or '未采集'),('内核版本',host.get('kernel') or '未采集')]
-    return '<section id="environment">'+heading('实验环境','本次 Runner 采集值与被测端资源预算','03')+'<div class="environment"><dl class="environment-grid">'+''.join(f'<div><dt>{text(k)}</dt><dd>{text(v)}</dd></div>' for k,v in fields)+'</dl><p class="env-note">逻辑 CPU 可能是同一核心的 SMT 线程，不代表独占物理核。CPU 型号中的核心数不代表实验分配的核心数；Runner 可见内存不等于被测容器配额。宿主余量为预算，不是硬预留。</p></div></section>'
+            ('CPU 分配模式',budget.get('cpuModel') or '历史逐服务配额'),
+            ('被测端 / 发压端 CPU 集合',str(allocation.get('sut','—'))+' / '+str(allocation.get('runner','—'))),
+            ('被测容器内存合计',quantity(budget.get('containerMemoryMiB'),'MiB')),
+            ('被测部署内存预算',quantity(budget.get('machineMemoryMiB'),'MiB')),
+            ('Runner 镜像 / 版本',image or '未采集'),('内核',host.get('kernel') or '未采集')]
+    return '<section id="environment">'+heading('实验环境','本次 Runner 采集值与被测端资源预算')+'<div class="environment"><dl class="environment-grid">'+''.join(f'<div><dt>{text(k)}</dt><dd>{text(v)}</dd></div>' for k,v in fields)+'</dl><p class="env-note">逻辑 CPU 可能是同一核心的 SMT 线程，不代表独占物理核。CPU 型号中的核心数不代表实验分配的核心数；Runner 可见内存不等于被测容器配额。宿主余量为预算，不是硬预留。</p></div></section>'
 
 
-METRICS = {
-    'eligibleResponseP95Ms':'有效购买响应 p95 / ms',
-    'eligibleSuccessfulResponseP99Ms':'成功购买响应 p99 / ms',
-    'eligibleOnTimeSuccessPct':'有效购买按时成功率 / %',
-    'eligibleCompletionPct':'有效购买最终完成率 / %',
-    'burst.responseP99Ms':'突发请求受理响应 p99 / ms',
-    'burst.onTimeAcceptedPct':'突发请求按时受理率 / %',
-    'burst.onTimeCompletedPct':'突发请求按时完成率 / %',
-    'burst.completionPct':'突发请求最终完成率 / %',
-    'businessSqlPer1000Requests': '每千请求业务 SQL 调用',
-    'syncAttemptsPer1000Requests': '每千请求同步事务尝试',
-    'eligibleResponseP99Ms': '有效购买响应 p99 / ms',
-    'duplicateResponseP99Ms': '重复拒绝响应 p99 / ms',
-    'completionP99Ms': '完成 p99 / ms', 'completed': '最终完成订单数',
-    'eligibleErrorRate': '有效请求错误比例',
-    'burst.acceptedWithinResponseDeadline': '突发请求按响应期限受理数',
-    'burst.completedWithinDeadline': '突发请求按完成期限完成数',
-    'burst.completed': '突发请求最终完成数',
-    'peakPendingAccepted': '已受理待完成峰值', 'drainMs': '停止注入后排空 / ms',
-}
+from report_metrics import EXPERIMENTS, LABELS, paired_rows, summarize
 
 
-def experiment_report(experiment):
-    e = experiment
-    body = [schemes(e.paths), '<section id="results">'+heading('固定负载配对结果', '各轮交替对照；保留零收益和负收益，不要求双方 SLO 均达标。')]
-    parameters=e.parameters
-    profile=(f"{parameters.get('rate', '—')} RPS × {parameters.get('seconds', '—')} 秒；90% 重复 / 10% 有效购买"
-             if e.plan == 'redis-filtering' else
-             f"{parameters.get('base_rate', '—')} RPS × {parameters.get('base_seconds', '—')} 秒 → "
-             f"{parameters.get('burst_rate', '—')} RPS × {parameters.get('burst_seconds', '—')} 秒 → "
-             f"{parameters.get('recovery_rate', '—')} RPS × {parameters.get('recovery_seconds', '—')} 秒；全部有效购买")
-    body.append('<p>'+text(profile)+'</p>')
-    body.append(table(['每路径重复次数','固定 VU 数','排空上限 / 秒'], [[parameters.get('repeats'),parameters.get('vus'),parameters.get('drain_seconds')]]))
-    body.append('<p>服务质量目标：响应 p99 ≤ '+fmt(e.policy.get('responseP99Ms'))+' ms，完成 p99 ≤ '
-                +fmt(e.policy.get('completionP99Ms'))+' ms，分类错误比例 ≤ '+fmt(e.policy.get('maxErrorRate'))+'。</p>')
-    metrics = e.comparisons[0]['metrics'] if e.comparisons else {}
-    primary = ('eligibleResponseP99Ms', 'eligibleOnTimeSuccessPct') if e.plan == 'redis-filtering' else (
-        'burst.onTimeAcceptedPct', 'burst.onTimeCompletedPct')
-    for key in primary:
-        value = metrics.get(key)
-        body.append(panel(METRICS[key], '柱为每轮值的中位数，线为最小至最大值',
-                          charts.paired([value['before'], value['after']] if value else [], e.paths, METRICS[key]),
-                          ('后方案减前方案：'+fmt(value['afterMinusBefore']['p50'])+(' 个百分点' if key.endswith('Pct') else '')+
-                           ('；配对降幅中位数 '+fmt(value['pairedReductionPct']['p50'])+'%' if key.endswith('Ms') and value.get('pairedReductionPct') else '')) if value else '尚无完整有效比较。', e.paths))
-    body.append(table(['指标','前方案中位数','后方案中位数','配对差值中位数','配对差值范围'], [
-        [METRICS.get(k,k), fmt(v['before']['p50']),fmt(v['after']['p50']),fmt(v['afterMinusBefore']['p50']),
-         fmt(v['afterMinusBefore']['min'])+' ～ '+fmt(v['afterMinusBefore']['max'])] for k,v in metrics.items()]))
-    body.append('<p>按时成功率以所有有效购买请求为分母，同时要求响应成功且满足响应期限、订单满足完成期限。百分比指标差值用百分点表示。SQL/事务尝试只用于解释机制。每轮 p99 单独计算；不把多个 p99 平均成总体分位数。业务 SQL 来自 mapper 计数，事务尝试不等于提交。'
-                'Kafka 的 PENDING 仅为受理；完成量以提交证据为准。突发指标只计算突发段请求。</p></section>')
-    body.append('<section id="observations">'+heading('逐轮观测与时间线','无效点仅供诊断，不参与收益比较。'))
-    for directory,r in e.points:
-        state = '测量无效' if not r.get('valid') else '有效 / 达标' if r.get('sloPassed') else '有效 / 未达标'
-        body.append('<details class="observations"><summary>'+text(directory.name)+' · '+state+'</summary>')
-        body.append(table(['发出/计划','完成/有效请求','错误数','HTTP 在途峰值','待完成峰值','排空 ms'], [[
-            f"{r.get('started')}/{r.get('scheduled')}",f"{r.get('completed')}/{r.get('eligible')}",
-            sum(c.get('failed',0) for c in r.get('classes',{}).values()),r.get('peakHttpInFlight'),r.get('peakPendingAccepted'),fmt(r.get('drainMs'))]]))
-        body.append(table(['请求分类','响应 p95 ms','响应 p99 ms','成功响应 p99 ms','错误比例'], [[k,fmt(c.get('responseMs',{}).get('p95')),fmt(c.get('responseMs',{}).get('p99')),fmt(c.get('successfulResponseMs',{}).get('p99')),fmt(c.get('errorRate'))] for k,c in r.get('classes',{}).items()]))
-        body.append('<p>'+text('; '.join(r.get('loadErrors',[])+r.get('correctnessErrors',[])))+'</p>')
-        if r.get('networkErrors',{}).get('groups'):
-            body.append('<pre>'+text(json.dumps(r['networkErrors'],ensure_ascii=False,indent=2))+'</pre>')
-        base = r.get('baseSeconds',0)
-        body.append(charts.timeline(directory/'timeline.csv', base, base+r.get('seconds',0) if base else 0,
-                                   base+r.get('seconds',0)+r.get('recoverySeconds',0)))
-        body.append('</details>')
-    for pattern in ('**/measurement-error.json','**/preparation.json','warmup.json','containers-final.json'):
+def metric_panel(e,key):
+    rows=paired_rows(e.points,e.paths,key)
+    summary=summarize(rows) if e.comparisons else None
+    threshold=(e.policy.get('responseP99Ms') if key=='burst.responseP99Ms' else
+               e.policy.get('completionP99Ms') if key=='burst.completionP99Ms' else None)
+    note='尚无完整有效比较；逐轮观测仅供诊断。'
+    if summary:
+        unit=' 个百分点' if key.endswith('Pct') else ' ms'
+        note=f"{e.names[e.paths[1]]} − {e.names[e.paths[0]]}：配对差值中位数 {fmt(summary['difference'])}{unit}，范围 {fmt(summary['min'])} ～ {fmt(summary['max'])}{unit}。"
+        if key.endswith('Ms') and summary['reduction'] is not None:
+            note+=f"逐轮配对降幅中位数 {fmt(summary['reduction'])}%。"
+    subtitle='每个点代表一轮观测，连线对应同一轮两种方案。'
+    if key in ('burst.onTimeAcceptedPct','burst.onTimeCompletedPct'):
+        limit=e.policy.get('responseP99Ms' if key.endswith('AcceptedPct') else 'completionP99Ms')
+        subtitle=f'期限 {fmt(limit)} ms；以全部突发请求为分母，不隐藏未达期限的轮次。'
+    if key in ('burst.onTimeAcceptedPct','burst.onTimeCompletedPct'):
+        below=[f'第 {i} 轮 {e.names[path]} {fmt(v)}%' for i,a,b in rows for path,v in zip(e.paths,(a,b)) if numeric(v) and v<100]
+        if below: note+=' 未全部按时'+('受理' if key.endswith('AcceptedPct') else '完成')+'：'+'；'.join(below)+'。'
+    return panel(LABELS[key],subtitle,charts.rounds(rows,e.paths,LABELS[key],threshold,key.endswith('Pct'),e.names),text(note),e.paths,e.names)
+
+
+def experiment_report(e):
+    specification=EXPERIMENTS[e.plan]
+    p=e.parameters
+    profile=(f"{p.get('rate','—')} RPS × {p.get('seconds','—')} 秒；90% 重复 / 10% 有效购买"
+             if e.plan=='redis-filtering' else
+             f"{p.get('base_rate','—')} RPS × {p.get('base_seconds','—')} 秒 → {p.get('burst_rate','—')} RPS × {p.get('burst_seconds','—')} 秒 → {p.get('recovery_rate','—')} RPS × {p.get('recovery_seconds','—')} 秒；全部有效购买")
+    body=['<section id="performance">'+heading('性能对照',profile)]
+    body.append(f'<p>{text(e.names[e.paths[0]])} 与 {text(e.names[e.paths[1]])}，每路径 {text(p.get("repeats","—"))} 轮交替配对。</p>')
+    if not e.comparisons:
+        body.append('<p class="warning">尚无完整有效比较。保留观测，不输出收益结论。</p>')
+    body.append('<div class="metrics-grid">')
+    for key in specification['primary']: body.append(metric_panel(e,key))
+    body.append('</div></section>')
+    if e.plan=='kafka-burst':
+        body.append('<section id="cost">'+heading('完成等待与恢复','只计算突发批次；限时完成不等于最终完成，快速受理不等于吞吐提升。')+'<div class="metrics-grid">')
+        for key in specification['cost']:body.append(metric_panel(e,key))
+        body.append('</div><p>恢复时间从突发结束算到突发批次最后一个订单提交，早于突发结束则为 0；未全部完成或证据缺失显示为 —。它不等于停止全部注入后的排空时间。</p></section>')
+        body.append('<section id="timeline">'+heading('突发过程','所有轮次、两种方案使用相同时间轴与纵轴尺度；默认第 1 轮。'))
+        body.append(charts.comparison_timeline(e.points,e.paths,e.names))
+        body.append('<p>未完成请求包含已发出但尚未提交的请求，可比较同步与异步方案。已受理待完成仅表示回复后仍未提交的订单，不代表 Kafka 消息队列长度。实线为未完成请求，虚线为已受理待完成；数值接近时两条线会重合。速率单位为每秒订单数，积压单位为订单数。</p></section>')
+    body.append('<section id="validity">'+heading('数据与质量检查','有效性与服务达标分开判定；未达服务目标仍是实验结果。'))
+    for path in e.paths:
+        rows=[r for _,r in e.points if r['path']==path]
+        if rows:
+            complete=sum(r.get('completed',0) for r in rows);eligible=sum(r.get('eligible',0) for r in rows)
+            errors=sum(c.get('failed',0) for r in rows for c in r.get('classes',{}).values())
+            body.append('<p>'+text(e.names[path])+f'：{sum(bool(r.get("valid")) for r in rows)}/{len(rows)} 个测量点输入与数据有效；最终完成 {complete}/{eligible} 个有效购买；错误数 {errors}。</p>')
+    warm=read_json(e.directory/'warmup.json',{})
+    if warm:body.append('<p>预热：'+text({'completed':'通过','failed':'失败','inconclusive':'未通过'}.get(warm.get('status'),'未完成'))+'。</p>')
+    if warm.get('error'):body.append('<p class="warning">'+text(warm['error'])+'</p>')
+    final=read_json(e.directory/'containers-final.json',{})
+    bad=[r.get('service','未知服务') for r in final.get('containers',[]) if r.get('state',{}).get('OOMKilled') or r.get('restartCount',0) or r.get('state',{}).get('ExitCode',0) or (r.get('service')!='load-runner' and not r.get('state',{}).get('Running',False))]
+    if final:body.append('<p'+(' class="warning"' if bad else '')+'>'+('容器异常：'+text('、'.join(bad)) if bad else '容器检查：未发现重启、OOM 或异常退出。')+'</p>')
+    for pattern in ('**/measurement-error.json','**/preparation.json'):
         for path in e.directory.glob(pattern):
             value=read_json(path,{})
-            if pattern.endswith('preparation.json') and value.get('status') == 'completed': continue
-            body.append('<details><summary>'+text(str(path.relative_to(e.directory)))+'</summary><pre>'+text(json.dumps(value,ensure_ascii=False,indent=2))+'</pre></details>')
-    if e.meta.get('error'): body.append('<p>'+text(e.meta['error'])+'</p>')
-    body.append('<details><summary>实验配置与源码</summary><pre>'+text(json.dumps({'parameters':e.parameters,'policy':e.policy,'source':e.meta.get('source'),'contract':e.meta.get('contract')},ensure_ascii=False,indent=2))+'</pre></details>')
-    body.append(resources(e.directory/'host-watch/samples.jsonl'))
-    body.append('</section>')
+            if pattern.endswith('preparation.json') and value.get('status')=='completed':continue
+            body.append('<p class="warning">'+text(value.get('error') or value.get('errors') or '准备或测量失败，请查看证据包。')+'</p>')
+    if e.meta.get('error'):body.append('<p class="warning">'+text(e.meta['error'])+'</p>')
+    body.append('</section><section id="observations">'+heading('详细数据与统计口径'))
+    body.append('<p>方案列为各轮指标的中位数；配对差值先逐轮相减再取中位数，可能不等于两列中位数相减。比例差值用百分点。缺失数据不补零；无效点不计算收益。</p>')
+    if e.comparisons:
+        keys=specification['primary']+specification.get('cost',())
+        summaries=[(key,summarize(paired_rows(e.points,e.paths,key))) for key in keys]
+        body.append(table(['指标',e.names[e.paths[0]],e.names[e.paths[1]],'配对差值中位数','配对差值范围'],[
+            [LABELS[key],fmt(v['before']),fmt(v['after']),fmt(v['difference']),fmt(v['min'])+' ～ '+fmt(v['max'])] for key,v in summaries if v]))
+    body.append(table(['轮次','方案','输入有效','服务目标','发出 / 计划','最终完成 / 有效购买','错误数'],[
+        [r.get('repeat'),e.names[r['path']],'是' if r.get('valid') else '否','达标' if r.get('sloPassed') else '未达标',f"{r.get('started')}/{r.get('scheduled')}",f"{r.get('completed')}/{r.get('eligible')}",sum(c.get('failed',0) for c in r.get('classes',{}).values())] for _,r in e.points]))
+    for _,r in e.points:
+        errors=r.get('loadErrors',[])+r.get('correctnessErrors',[])
+        if errors:body.append('<p class="warning">'+text(f"第 {r.get('repeat')} 轮 {e.names[r['path']]}："+'; '.join(errors))+'</p>')
+    durations=[]
+    if warm.get('elapsedSeconds') is not None:durations.append(['预热（含准备与核对）',warm['elapsedSeconds']])
+    if e.meta.get('phaseTimings',{}).get('measurementSeconds') is not None:durations.append(['正式测量（含准备与核对）',e.meta['phaseTimings']['measurementSeconds']])
+    if durations:body.append(table(['实验阶段','秒'],durations))
+    body.append('<p>完整请求、提交日志、预热、容器状态、配置和资源采样保存在 performance-evidence；这些检查仍执行，不占用成功报告正文。</p></section>')
     return ''.join(body)

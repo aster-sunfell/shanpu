@@ -81,7 +81,7 @@ Compose 只负责创建 `MYSQL_DATABASE` 指定的空库。表结构由后端启
 
 已有非空数据库必须先核对结构并显式 baseline，再启动后端；操作步骤见 [数据库管理](./DATABASE.md)。原有 MySQL 数据卷继续保留。
 
-资源上限为 0.5 CPU / 384 MiB，buffer pool 为 128 MiB，最多 32 个连接，关闭 Performance Schema 并限制内部临时表。Java 健康接口使用实际 SQL 连接检查数据库。
+共享两个逻辑 CPU，内存上限为 384 MiB，buffer pool 为 128 MiB，最多 32 个连接，关闭 Performance Schema 并限制内部临时表。Java 健康接口使用实际 SQL 连接检查数据库。
 
 ### Redis
 
@@ -97,7 +97,7 @@ Redis 启用密码、AOF 与 `appendfsync everysec`，使用 `redis-data` 持久
 | EXTERNAL | 容器 19092，发布为 `127.0.0.1:${KAFKA_PORT}` | 宿主机 Java、发压端 |
 | CONTROLLER | `kafka:9093` | KRaft 内部通信，不发布 |
 
-宿主机 listener 的 advertised 地址为 `127.0.0.1:${KAFKA_PORT}`。固定 cluster ID、node ID 和数据卷，JVM 堆为 128–192 MiB，容器上限为 0.4 CPU / 384 MiB。不使用反复创建 JVM 的 CLI 健康检查；Kafka 就绪由后端健康接口和压测协议客户端确认。
+宿主机 listener 的 advertised 地址为 `127.0.0.1:${KAFKA_PORT}`。固定 cluster ID、node ID 和数据卷，JVM 堆为 128–192 MiB，共享两个逻辑 CPU，容器内存上限为 384 MiB。不使用反复创建 JVM 的 CLI 健康检查；Kafka 就绪由后端健康接口和压测协议客户端确认。
 
 Spring `KafkaConfig` 在后端启动时声明 `shanpu.seckill.order`（3 分区）和 `shanpu.seckill.order.dlq`（1 分区），副本数均为 1。消费者并发度为 3。Producer 使用幂等发送和 `acks=all`；单节点用于开发联调，不提供节点级容错。
 

@@ -58,33 +58,19 @@ jobs:
         run: echo "BENCH_RUNTIME=$RUNNER_TEMP/shanpu-performance/runtime" >> "$GITHUB_ENV"
       - name: Check runner and allocate disjoint vCPU sets
         run: python3 scripts/experiments/lib/actions.py prepare
+      - name: Restore build dependencies and layers
+        uses: ./.github/actions/experiment-cache
       - name: Build all images before measurement
         timeout-minutes: 25
         run: python3 scripts/experiments/lib/actions.py build
-      - name: Verify fixed k6 profiles and overload classification
-        timeout-minutes: 5
-        run: |
-          mkdir -p artifacts/runner-recovery
-          docker run --rm --network none --cpus 1 --memory 2g --memory-swap 2g --ulimit nofile=8192:8192 --pids-limit 128 \
-            -v "$GITHUB_WORKSPACE/artifacts/runner-recovery:/check" \
-            --entrypoint python3 shanpu-experiment-runner:ci \
-            /workspace/scripts/experiments/checks/k6_recovery.py --output /check --experiment "$BENCH_EXPERIMENT"
-      - name: Preserve load recovery check evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: load-recovery-check
-          path: artifacts/runner-recovery/
-          retention-days: 14
-          if-no-files-found: ignore
+      - name: Stop build worker before measurement
+        run: docker buildx stop
+      - name: Check generator on this machine
+        timeout-minutes: 3
+        run: python3 scripts/experiments/lib/actions.py check-load --experiment "$BENCH_EXPERIMENT"
       - name: Start and verify isolated services
         timeout-minutes: 8
         run: python3 scripts/experiments/lib/actions.py up
-      - name: Preflight selected experiment data and paths, then reset
-        timeout-minutes: 20
-        run: |
-          python3 scripts/experiments/lib/actions.py preflight \
-            --experiment "$BENCH_EXPERIMENT" --minutes 12
       - name: Execute measured experiments and verify evidence
         timeout-minutes: 35
         run: |

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+import shutil
 import sys
 import time
 from host import (atomic_json, HostMonitor, cpu_list, cpu_string, environment, require_start_memory,
@@ -228,6 +229,37 @@ def source_metadata(scope="runner"):
             "gitStatus": command(["git", "status", "--short"]), "sourceSha256": digest.hexdigest()}
 
 
+def build_images(kind, names):
+    cache = os.environ.get('BENCH_BUILD_CACHE')
+    if not cache:
+        command(compose(kind, 'build', *names), capture=False)
+        return
+    root=Path(cache)
+    root.mkdir(parents=True,exist_ok=True)
+    services={}
+    for name in names:
+        previous,fresh=root/name,root/(name+'-new')
+        if fresh.exists(): shutil.rmtree(fresh)
+        build={'cache_to':[f'type=local,dest={fresh},mode=max']}
+        if (previous/'index.json').exists(): build['cache_from']=[f'type=local,src={previous}']
+        services[name]={'build':build}
+    with tempfile.NamedTemporaryFile(mode='w',suffix='.json',dir=RUNTIME) as file:
+        json.dump({'services':services},file);file.flush()
+        try:
+            command(compose(kind,'--file',file.name,'build',*names),capture=False)
+        except subprocess.CalledProcessError:
+            print('Build cache unavailable; rebuilding without cache import/export',flush=True)
+            command(compose(kind,'build',*names),capture=False)
+            return
+    for name in names:
+        previous,fresh=root/name,root/(name+'-new')
+        if not (fresh/'index.json').exists():
+            print('Build completed without cache export: '+name,flush=True)
+            continue
+        if previous.exists(): shutil.rmtree(previous)
+        fresh.rename(previous)
+
+
 def build():
     require_memory(1024)
     # Build never overlaps a running target stack on the same Docker host.
@@ -245,14 +277,16 @@ def build():
                     "mkdir -p /output/docker && "
                     "cp backend/docker/java.options /output/docker/java.options && "
                     "cp backend/docker/entrypoint.sh /output/docker/entrypoint.sh")
+    m2 = os.environ.get('BENCH_M2')
+    if m2: Path(m2).mkdir(parents=True, exist_ok=True)
     command(["docker", "run", "--rm", "--name", "shanpu-experiment-build", "--cpus", "2",
              "--memory", "768m", "--memory-swap", "768m", "--pids-limit", "128", "--ulimit", "nofile=8192:8192",
              "-e", "MAVEN_OPTS=-Xms64m -Xmx384m -XX:ActiveProcessorCount=2",
              "-v", f"{ROOT}:/source:ro", "-v", f"{output}:/output",
-             "-v", "shanpu-experiment-m2:/root/.m2", "maven:3.9-eclipse-temurin-17",
+             "-v", f"{m2 or 'shanpu-experiment-m2'}:/root/.m2", "maven:3.9-eclipse-temurin-17",
              "sh", "-c", build_script], capture=False)
-    command(compose("sut", "build", "backend", "frontend"), capture=False)
-    command(compose("runner", "build"), capture=False)
+    build_images("sut", ("backend", "frontend"))
+    build_images("runner", ("load-runner",))
     if source["sourceSha256"] != source_metadata()["sourceSha256"] or sut_source["sourceSha256"] != source_metadata("sut")["sourceSha256"]:
         raise RuntimeError("Sources changed during build; build again to capture a consistent image")
     (RUNTIME / "source.json").write_text(json.dumps(source, indent=2) + "\n")
@@ -412,13 +446,12 @@ def run_stage(arguments, deadline, *, preflight=False):
                 if values[-1]['State'].get('OOMKilled'):
                     raise RuntimeError('Load runner was OOM-killed')
                 rows.append({'service': 'load-runner', 'resources': container_resources(values[-1])})
-                if preflight:
-                    sample = preflight_memory(rows, 64 if memory_observations == 0 else 32)
-                    sample['timeMs'] = int(time.time()*1000)
-                    with (result_dir/'memory-checks.jsonl').open('a') as log:
-                        log.write(json.dumps(sample)+'\n')
-                    memory_observations += 1
-                    if sample.get('error'): raise RuntimeError(sample['error'])
+                sample = preflight_memory(rows, 64 if memory_observations == 0 else 32)
+                sample['timeMs'] = int(time.time()*1000)
+                with (result_dir/'memory-checks.jsonl').open('a') as log:
+                    log.write(json.dumps(sample)+'\n')
+                memory_observations += 1
+                if sample.get('error'): raise RuntimeError(sample['error'])
                 return rows
 
             def stop(ids):
@@ -451,98 +484,69 @@ def run_stage(arguments, deadline, *, preflight=False):
     return result_dir
 
 
-def experiment_parameters(experiment):
-    from protocol import parse_args, VERSION
-    return {'protocol': VERSION, **vars(parse_args([experiment]))}
-
-
-def reset_after_preflight(previous):
-    """Preserve diagnostics, then replace only this job's dedicated SUT volumes."""
-    cleanup()
-    values = initialize()
-    values['SUT_INSTANCE_ID'] = secrets.token_hex(12)
-    ENV_FILE.write_text(''.join(f'{key}={value}\n' for key, value in values.items()))
-    print(f"::add-mask::{values['SUT_INSTANCE_ID']}", flush=True)
-    start_services()
-    current = verify()
-    if current['instanceId'] == previous['instanceId']:
-        raise RuntimeError('Preflight reset did not replace the SUT instance')
-    fields = ('service', 'imageId', 'cpuLimit', 'cpuModel', 'memoryLimitMiB', 'cpuset')
-    before = [{key: row.get(key) for key in fields} for row in previous['services']]
-    after = [{key: row.get(key) for key in fields} for row in current['services']]
-    if before != after:
-        raise RuntimeError('Images or resource limits changed after preflight')
+def verify_clean_start():
+    """Check this job's live, unused environment immediately before warmup."""
+    target = verify()
+    if target['instanceId'] != initialize()['SUT_INSTANCE_ID']:
+        raise RuntimeError('Startup identity does not match this job')
     tables = BUSINESS_TABLES
     query = ' UNION ALL '.join(f"SELECT '{name}',COUNT(*) FROM {name}" for name in tables)
     result = command(compose('sut', 'exec', '-T', 'mysql', 'sh', '-c',
                             'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot '
-                            '--database="${MYSQL_DATABASE:?MYSQL_DATABASE is required for reset verification}" '
+                            '--database="${MYSQL_DATABASE:?MYSQL_DATABASE is required for startup verification}" '
                             '--batch --skip-column-names --execute "$1"',
                             'sh', query), timeout=30)
     counts = {name: int(count) for name, count in (line.split('\t') for line in result.splitlines())}
     if set(counts) != set(tables) or any(counts.values()):
-        raise RuntimeError('Preflight reset left business rows in the formal measurement database')
+        raise RuntimeError('Initial environment contains business rows in the formal measurement database')
     command(compose('sut', 'exec', '-T', 'backend', 'sh', '-c', 'test ! -s /evidence/commits.jsonl'), timeout=10)
     redis_size = command(compose('sut', 'exec', '-T', 'redis', 'sh', '-c',
                                 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli DBSIZE'), timeout=10)
     if redis_size.strip() != '0':
-        raise RuntimeError('Preflight reset left Redis data in the formal environment')
-    return {'status': 'completed', 'instanceId': current['instanceId'], 'emptyTables': counts,
+        raise RuntimeError('Initial environment contains Redis data in the formal environment')
+    return {'status': 'completed', 'instanceId': target['instanceId'], 'emptyTables': counts,
             'emptyJournal': True, 'emptyRedis': True}
 
 
-def run_preflight(experiment, minutes):
-    parameters = experiment_parameters(experiment)
-    if not 1 <= minutes <= 12:
-        raise RuntimeError('Preflight requires a 1–12 minute budget')
-    marker = RUNTIME/'preflight-ready.json'
+
+def run_fixture_check(experiment, minutes):
+    """Full fixture growth/probe regression, never part of a performance run."""
+    if not 1 <= minutes <= 12: raise RuntimeError('Fixture regression requires a 1–12 minute budget')
+    verify_clean_start()
+    return run_stage([experiment], time.monotonic()+minutes*60, preflight=True)
+
+
+def check_generator(experiment):
+    output=REPORTS/'generator-check'
+    output.mkdir(parents=True,exist_ok=True)
+    pins=json.loads((RUNTIME/'cpu-affinity.json').read_text())
+    source=source_metadata()['sourceSha256']
+    marker=output/'check.json'
     marker.unlink(missing_ok=True)
-    previous = verify()
-    directory = REPORTS/'preflight'/f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT','1')}-preflight"
-    arguments = [experiment]
-    deadline = min(time.monotonic()+minutes*60, json.loads((RUNTIME/'deadline.json').read_text())['monotonic'])
-    suite = json.loads((REPORTS/'suite.json').read_text())
-    suite.update(mode=experiment, scope='validation', phase='preflight')
-    try:
-        run_stage(arguments, deadline, preflight=True)
-        collect(directory/'diagnostics')
-        reset = reset_after_preflight(previous)
-        meta = json.loads((directory/'manifest.json').read_text())
-        meta['reset'] = reset
-        atomic_json(directory/'manifest.json', meta)
-        atomic_json(marker, {'status': 'completed', 'parameters': parameters, 'actions': actions_context(),
-                            'source': json.loads((RUNTIME/'source.json').read_text())['sourceSha256'], 'reset': reset})
-        print('Preflight passed; fresh SUT and empty business tables verified before formal measurements', flush=True)
-    except BaseException as error:
-        suite.update(status='failed', error='Preflight/reset failed: '+str(error))
-        if (directory/'manifest.json').exists():
-            meta = json.loads((directory/'manifest.json').read_text())
-            meta.update(status='failed', error=str(error))
-            atomic_json(directory/'manifest.json', meta)
-        raise
-    finally:
-        atomic_json(REPORTS/'suite.json', suite)
+    command(['docker','run','--rm','--network','none','--cpus','1','--cpuset-cpus',pins['runner'],
+             '--memory','2g','--memory-swap','2g','--pids-limit','128','--ulimit','nofile=8192:8192',
+             '--user',f'{os.getuid()}:{os.getgid()}', '-v',f'{output}:/check',
+             '--entrypoint','python3','shanpu-experiment-runner:ci',
+             '/workspace/scripts/experiments/checks/k6_recovery.py','--output','/check','--experiment',experiment,'--short'],capture=False)
+    result=json.loads(marker.read_text())
+    if result.get('status')!='passed': raise RuntimeError('Current machine generator check failed')
+    result.update(sourceSha256=source,machineId=machine_id(),actions=actions_context(),cpuset=pins['runner'])
+    atomic_json(marker,result)
 
 
-def require_preflight(parameters):
+def require_generator_check(experiment):
     try:
-        marker = json.loads((RUNTIME/'preflight-ready.json').read_text())
-        source = json.loads((RUNTIME/'source.json').read_text())['sourceSha256']
-        if (marker['status'] != 'completed' or marker['parameters'] != parameters
-                or marker['actions'] != actions_context() or marker['source'] != source
-                or marker['reset']['status'] != 'completed'
-                or marker['reset']['instanceId'] != initialize()['SUT_INSTANCE_ID']
-                or marker['reset']['emptyJournal'] is not True or marker['reset']['emptyRedis'] is not True
-                or set(marker['reset']['emptyTables']) != set(BUSINESS_TABLES)
-                or any(marker['reset']['emptyTables'].values())):
-            raise ValueError('Preflight parameters, source, job or clean environment no longer match')
-        (RUNTIME/'preflight-ready.json').unlink()
-    except (OSError, KeyError, ValueError) as error:
-        raise RuntimeError('Successful preflight and verified clean reset are required before measurement: '+str(error)) from error
+        marker=json.loads((REPORTS/'generator-check/check.json').read_text())
+        pins=json.loads((RUNTIME/'cpu-affinity.json').read_text())
+        if (marker['status']!='passed' or marker['mode']!='machine-check' or marker['experiment']!=experiment
+                or marker['sourceSha256']!=source_metadata()['sourceSha256'] or marker['machineId']!=machine_id()
+                or marker['actions']!=actions_context() or marker['cpuset']!=pins['runner']):
+            raise ValueError('Generator evidence belongs to another source, experiment, job or CPU allocation')
+    except (OSError,KeyError,ValueError) as error:
+        raise RuntimeError('Current machine generator verification is required: '+str(error)) from error
 
 
 def run_experiment(experiment, minutes):
-    parameters = experiment_parameters(experiment)
     if not 1 <= minutes <= 45:
         raise RuntimeError('Measurement deadline must be between 1 and 45 minutes')
     deadline = min(time.monotonic()+minutes*60, json.loads((RUNTIME/'deadline.json').read_text())['monotonic'])
@@ -550,7 +554,9 @@ def run_experiment(experiment, minutes):
     suite.update(mode=experiment, scope='performance', phase='measurement')
     atomic_json(REPORTS/'suite.json', suite)
     try:
-        require_preflight(parameters)
+        require_generator_check(experiment)
+        startup = verify_clean_start()
+        atomic_json(REPORTS/"startup.json", startup)
         directory = run_stage([experiment], deadline)
         suite['stages'] = [str(directory.relative_to(REPORTS))]
         value = json.loads((directory/'experiment.json').read_text())
@@ -612,28 +618,40 @@ def cleanup():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['prepare', 'build', 'up', 'preflight', 'run', 'collect', 'cleanup'])
+    parser.add_argument('action', choices=['prepare', 'build', 'check-load', 'up', 'fixture-check', 'run', 'collect', 'cleanup'])
     parser.add_argument('--experiment', choices=['redis-filtering', 'kafka-burst'], default='redis-filtering')
     parser.add_argument('--minutes', type=int, default=30)
     args = parser.parse_args()
     require_actions()
     os.environ['BENCH_ROOT'] = str(ROOT)
-    if args.action == 'prepare':
-        prepare_actions()
-    elif args.action == 'build':
-        initialize()
-        check_engine()
-        build()
-    elif args.action == 'up':
-        start_services()
-    elif args.action == 'preflight':
-        run_preflight(args.experiment, args.minutes)
-    elif args.action == 'run':
-        run_experiment(args.experiment, args.minutes)
-    elif args.action == 'collect':
-        collect()
-    elif args.action == 'cleanup':
-        cleanup()
+    started=time.monotonic()
+    status='failed'
+    try:
+        if args.action == 'prepare':
+            prepare_actions()
+        elif args.action == 'build':
+            initialize()
+            check_engine()
+            build()
+        elif args.action == 'check-load':
+            check_generator(args.experiment)
+        elif args.action == 'up':
+            start_services()
+        elif args.action == 'fixture-check':
+            run_fixture_check(args.experiment, args.minutes)
+        elif args.action == 'run':
+            run_experiment(args.experiment, args.minutes)
+        elif args.action == 'collect':
+            collect()
+        elif args.action == 'cleanup':
+            cleanup()
+        status='completed'
+    finally:
+        path=REPORTS/'timings.json'
+        rows=json.loads(path.read_text()) if path.exists() else []
+        rows.append({'stage':args.action,'seconds':round(time.monotonic()-started,3),'status':status})
+        atomic_json(path,rows)
+
 
 
 if __name__ == '__main__':

@@ -35,7 +35,7 @@ class ReportTest(unittest.TestCase):
             render(root,root/'html')
             html=(root/'html/index.html').read_text()
             self.assertIn('Kafka 削峰实验报告',html)
-            self.assertIn('后方案减前方案：-2.5',html)
+            self.assertIn('Kafka 异步下单 − Redis 同步下单：配对差值中位数 -2.5 个百分点',html)
             self.assertIn('订单完成',html)
             self.assertNotIn('每千请求业务 SQL 调用',html)
             self.assertNotIn('<script src=',html)

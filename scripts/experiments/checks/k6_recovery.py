@@ -66,7 +66,7 @@ class HttpQueue:
         self.loop.close()
 
 
-def check(output, experiment):
+def check(output, experiment, short=False):
     output.mkdir(parents=True, exist_ok=True)
     args = parse_args(['kafka-burst'])
     server = HttpQueue()
@@ -125,23 +125,25 @@ def check(output, experiment):
         # Actual default counts, durations and fixed VU allocation; only HTTP business
         # behavior is controlled. This validates the generator, not service performance.
         selected = list(matrix(parse_args([experiment])))[-1]
-        measured = execute(selected, 'fixed-profile')
-        assert measured['valid'], measured['loadErrors']
-        if experiment == 'kafka-burst': assert measured['burst']['requests'] == selected['rate']*selected['seconds']
+        if not short:
+            measured = execute(selected, 'fixed-profile')
+            assert measured['valid'], measured['loadErrors']
+            if experiment == 'kafka-burst': assert measured['burst']['requests'] == selected['rate']*selected['seconds']
         delayed = execute({**selected,'workload':'steady','baseSeconds':0,'recoverySeconds':0,
                            'seconds':15,'rate':800,'scheduled':12000,'fixtureDelaySeconds':1}, 'delayed-800rps')
         assert delayed['valid'], delayed['loadErrors']
-        burst = next(p for p in matrix(args) if p['path'] == 'C')
-        limited = execute({'plan': 'kafka-burst', 'path': 'B', 'rate': 800, 'seconds': 3,
-                           'baseSeconds': 0, 'baseRate': 0, 'recoverySeconds': 0,
-                           'workload': 'steady', 'repeat': 1, 'vus': 20, 'scheduled': 2400, 'fixtureDelaySeconds':.1}, 'overload')
-        assert limited['vuExhausted'] and safe_load_failure(limited), limited['loadErrors']
-        recovered = execute({**burst, 'workload': 'steady', 'baseSeconds': 0, 'seconds': 2,
-                             'recoverySeconds': 0, 'rate': 50, 'scheduled': 100}, 'after-overload')
-        assert recovered['valid'], recovered['loadErrors']
+        if not short:
+            burst = next(p for p in matrix(args) if p['path'] == 'C')
+            limited = execute({'plan': 'kafka-burst', 'path': 'B', 'rate': 800, 'seconds': 3,
+                               'baseSeconds': 0, 'baseRate': 0, 'recoverySeconds': 0,
+                               'workload': 'steady', 'repeat': 1, 'vus': 20, 'scheduled': 2400, 'fixtureDelaySeconds':.1}, 'overload')
+            assert limited['vuExhausted'] and safe_load_failure(limited), limited['loadErrors']
+            recovered = execute({**burst, 'workload': 'steady', 'baseSeconds': 0, 'seconds': 2,
+                                 'recoverySeconds': 0, 'rate': 50, 'scheduled': 100}, 'after-overload')
+            assert recovered['valid'], recovered['loadErrors']
         write_json(output/'check.json', {'status': 'passed', 'scope': 'validation',
                    'description': 'Real default k6 profiles and production evidence; controlled HTTP queue, no business performance claims',
-                   'experiment': experiment, 'verifiedEnvelope':{'rps':800,'responseDelayMs':1000,'vus':1200}, 'observedPoints': len(observed), 'resources': runner_usage()})
+                   'experiment': experiment, 'mode':'machine-check' if short else 'regression', 'verifiedEnvelope':{'rps':800,'responseDelayMs':1000,'vus':1200}, 'observedPoints': len(observed), 'resources': runner_usage()})
     finally: server.close()
 
 
@@ -149,9 +151,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--experiment', choices=['redis-filtering','kafka-burst'], default='redis-filtering')
+    parser.add_argument('--short', action='store_true', help='15s delayed-load check on the current machine; no repeated full profile or artificial overload')
     options = parser.parse_args()
     try:
-        check(options.output.resolve(), options.experiment)
+        check(options.output.resolve(), options.experiment, options.short)
     except Exception as error:
         options.output.mkdir(parents=True, exist_ok=True)
         write_json(options.output/'check.json', {'status': 'failed', 'scope': 'validation', 'error': str(error)})

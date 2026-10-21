@@ -4,7 +4,7 @@ from html import escape
 import math
 from pathlib import Path
 
-NAMES = {'A': '数据库同步', 'B': 'Redis 同步', 'C': 'Kafka 异步'}
+from report_metrics import NAMES
 COLORS = {'A': '#6d7e96', 'B': '#168b80', 'C': '#7961cc'}
 
 
@@ -42,49 +42,88 @@ def svg(body, label, height=300):
     return f'<svg viewBox="0 0 600 {height}" role="img" aria-label="{escape(label)}">{body}</svg>'
 
 
-def legend(paths):
-    return '<div class="legend">'+''.join(f'<span style="--c:{COLORS[p]}">{NAMES[p]}</span>' for p in paths)+'</div>'
+def legend(paths, names=None):
+    names=names or NAMES
+    return '<div class="legend">'+''.join(f'<span style="--c:{COLORS[p]}">{names[p]}</span>' for p in paths)+'</div>'
 
 
 def empty(title, reason):
     return f'<div class="empty-state"><div><div class="empty-ring">—</div><strong>{escape(title)}</strong><p>{escape(reason)}</p></div></div>'
 
 
-def paired(values, paths, label):
-    if not values: return empty('尚无完整有效对照', '保留每点观测；不从无效或不完整配对计算收益。')
-    top, ticks = axis(max(v['max'] for v in values)*1.15)
-    y = lambda v: 244-v/top*190
-    body = txt(53,25,label,10)
-    for tick in ticks: body += line(58,y(tick),552,y(tick))+txt(46,y(tick)+4,fmt(tick),10,anchor='end')
-    for x, path, value in zip((210,400), paths, values):
-        body += f'<rect x="{x-40}" y="{y(value["p50"])}" width="80" height="{244-y(value["p50"])}" fill="{COLORS[path]}" opacity=".8"/>'
-        body += line(x,y(value['min']),x,y(value['max']),COLORS[path],width=2)
-        body += txt(x,268,NAMES[path],11,anchor='middle')+txt(x,y(value['max'])-12,fmt(value['p50']),11,anchor='middle')
-    return svg(body,label+' · 中位数与范围')
+def polyline(points, color, dash='', width=2):
+    return '<polyline fill="none" stroke="'+color+'" stroke-width="'+str(width)+'" stroke-dasharray="'+dash+'" points="'+' '.join(f'{x:g},{y:g}' for x,y in points)+'"/>'
 
 
-def polyline(points, color):
-    return '<polyline fill="none" stroke="'+color+'" stroke-width="2" points="'+' '.join(f'{x:g},{y:g}' for x,y in points)+'"/>'
+def rounds(rows, paths, label, threshold=None, percentage=False, names=None):
+    names=names or NAMES
+    values=[v for _,a,b in rows for v in (a,b) if numeric(v)]
+    if not values: return empty('缺少逐轮数据','缺失指标不补零，也不从全程指标替代突发指标。')
+    top,ticks=(100,[0,25,50,75,100]) if percentage else axis(max(values+[threshold or 0])*1.12)
+    y=lambda v:244-v/top*190
+    body=txt(54,20,label,10)
+    for tick in ticks: body+=line(58,y(tick),552,y(tick))+txt(46,y(tick)+4,fmt(tick),10,anchor='end')
+    if threshold is not None:
+        body+=line(58,y(threshold),552,y(threshold),'#b2781f','5 4')+txt(550,y(threshold)-8,'期限 '+fmt(threshold)+' ms',9,anchor='end')
+    for index,(repeat,a,b) in enumerate(rows):
+        x=110+index*390/max(len(rows)-1,1)
+        if numeric(a) and numeric(b): body+=line(x-20,y(a),x+20,y(b),'#b8c3ce',width=2)
+        for offset,path,v in zip((-20,20),paths,(a,b)):
+            if numeric(v):
+                body+=dot(x+offset,y(v),COLORS[path],f'第 {repeat} 轮 · {names[path]}: {fmt(v)}')
+                body+=txt(x+offset,y(v)+(-10 if offset<0 else 17),fmt(v),10,COLORS[path],anchor='middle')
+        body+=txt(x,282,f'第 {repeat} 轮',11,anchor='middle')
+    return svg(body,label+' · 全部配对轮次')
 
 
-def timeline(path, base=0, burst_end=0, end=0):
-    if not path.exists(): return empty('时间线缺失', '缺失数据不显示为零。')
-    with path.open() as file: rows = list(csv.DictReader(file))
-    if not rows: return empty('时间线为空', '缺失数据不显示为零。')
-    fields = [('started','请求发出','#6d7e96'), ('completed','订单完成','#168b80'), ('pendingAccepted','已受理待完成','#7961cc')]
-    body = ''
-    # Rates and backlog use separate axes/charts to avoid equating orders with orders/s.
-    for selected, title in ((fields[:2], '请求 / 完成数每秒'), (fields[2:], '已受理待完成订单数')):
-        top,ticks = axis(max(float(row[key]) for row in rows for key,_,_ in selected)*1.15)
-        duration = max(float(r['second']) for r in rows) or 1
-        x = lambda v: 58+v/duration*490
-        y = lambda v: 243-v/top*185
-        plot = txt(52,25,title,10)
-        for tick in ticks: plot += line(58,y(tick),552,y(tick))+txt(46,y(tick)+4,fmt(tick),10,anchor='end')
-        for t,label in ((base,'突发开始'),(burst_end,'恢复低流量'),(end,'停止注入')):
-            if t > 0: plot += line(x(t),47,x(t),243,'#d4cde6','4 5')+txt(x(t),39,label,9,anchor='middle')
-        for key,label,color in selected:
-            plot += polyline([(x(float(r['second'])),y(float(r[key]))) for r in rows],color)
-        plot += txt(58,280,' / '.join(label for _,label,_ in selected),10)+txt(550,280,fmt(duration)+' s',10,anchor='end')
-        body += svg(plot,title)
-    return body
+def comparison_timeline(points, paths, names=None):
+    """Same scales across all rounds and paths; never select the best-looking run."""
+    names=names or NAMES
+    data=[]
+    for directory,row in points:
+        file=directory/'timeline.csv'
+        if file.exists():
+            with file.open() as stream: rows=list(csv.DictReader(stream))
+            required=('second','started','completed','outstanding','pendingAccepted')
+            try:
+                if rows and all(numeric(float(r[key])) and float(r[key])>=0 for r in rows for key in required):
+                    data.append((row,rows))
+            except (KeyError,ValueError):
+                pass  # Missing/corrupt time series is shown as unavailable, never zero.
+
+    if not data: return empty('时间线缺失','原始证据未包含时间线。')
+    duration=max(float(r['second']) for _,rows in data for r in rows) or 1
+    rate_top,rate_ticks=axis(max(float(r[k]) for _,rows in data for r in rows for k in ('started','completed'))*1.1)
+    pending_top,pending_ticks=axis(max(float(r['outstanding']) for _,rows in data for r in rows)*1.1)
+    repeats=sorted({r['repeat'] for r,_ in data})
+    html='<div class="round-selector"><label>查看轮次 <select data-round-select>' + ''.join(f'<option value="{i}">第 {i} 轮</option>' for i in repeats)+'</select></label></div>'
+    for repeat in repeats:
+        html+=f'<div class="timeline-variant" data-round="{repeat}"><h3>第 {repeat} 轮</h3><div class="timeline-grid">'
+        selected=[(r,rows) for r,rows in data if r['repeat']==repeat]
+        for pending in (False,True):
+            top,ticks=(pending_top,pending_ticks) if pending else (rate_top,rate_ticks)
+            for path in paths:
+                entry=next(((r,rows) for r,rows in selected if r['path']==path),None)
+                if not entry:
+                    html+=empty(names[path]+'时间线缺失','不以其他轮次代替。');continue
+                row,rows=entry
+                x=lambda v:58+v/duration*490
+                y=lambda v:243-v/top*185
+                label=names[path]+(' · 未完成请求 / 个' if pending else ' · 到达与完成 / 每秒')
+                plot=txt(58,20,label,11)
+                for tick in ticks: plot+=line(58,y(tick),552,y(tick))+txt(46,y(tick)+4,fmt(tick),10,anchor='end')
+                for t,label in ((row.get('baseSeconds',0),'突发开始'),(row.get('baseSeconds',0)+row.get('seconds',0),'恢复低流量'),(row.get('baseSeconds',0)+row.get('seconds',0)+row.get('recoverySeconds',0),'停止注入')):
+                    plot+=line(x(t),50,x(t),243,'#d4cde6','4 5')+txt(x(t),39,label,9,anchor='middle')
+                fields=[('outstanding','未完成请求',COLORS[path]),('pendingAccepted','已受理待完成','#b2781f')] if pending else [('started','请求到达','#6d7e96'),('completed','订单完成',COLORS[path])]
+                legend_items=[]
+                for i,(key,label,color) in enumerate(fields):
+                    dash='6 4' if i else ''
+                    width=2 if i else 3
+                    plot+=polyline([(x(float(r['second'])),y(float(r[key]))) for r in rows],color,dash,width)
+                    swatch=f'<svg viewBox="0 0 30 12" aria-hidden="true">{line(1,6,29,6,color,dash,width)}</svg>'
+                    legend_items.append('<span>'+swatch+escape(label)+'</span>')
+                chart_legend='<div class="timeline-legend" aria-label="图例">'+''.join(legend_items)+'</div>'
+                for t in range(0,int(duration)+1,10):plot+=txt(x(t),259,str(t)+'s',9,anchor='middle')
+                html+='<div class="panel timeline-panel">'+chart_legend+'<div class="chart">'+svg(plot,names[path]+(' 未完成请求' if pending else ' 到达与完成'),height=275)+'</div></div>'
+        html+='</div></div>'
+    return html

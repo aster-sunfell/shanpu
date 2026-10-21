@@ -1,0 +1,21 @@
+name: Experiment build cache
+description: Cache dependencies and BuildKit layers, never business data or measurement results
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v3
+    - name: Set cache directories
+      shell: bash
+      run: |
+        echo "BENCH_M2=$RUNNER_TEMP/shanpu-build-cache/m2" >> "$GITHUB_ENV"
+        echo "BENCH_BUILD_CACHE=$RUNNER_TEMP/shanpu-build-cache/layers" >> "$GITHUB_ENV"
+    - uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/shanpu-build-cache/m2
+        key: maven17-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pom.xml', 'backend/pom.xml', 'experiments/**/pom.xml') }}
+        restore-keys: maven17-${{ runner.os }}-${{ runner.arch }}-
+    - uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/shanpu-build-cache/layers
+        key: experiment-layers-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pom.xml', 'backend/**', 'frontend/**', 'experiments/**', 'scripts/experiments/**', 'deploy/**') }}
+        restore-keys: experiment-layers-v1-${{ runner.os }}-${{ runner.arch }}-

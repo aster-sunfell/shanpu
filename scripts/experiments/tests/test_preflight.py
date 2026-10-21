@@ -25,7 +25,7 @@ class PreflightTest(unittest.TestCase):
             self.assertEqual(int((total+30000)*1.2),value['seedUsers'])
             self.assertEqual(batch,value['batchUsers'])
             self.assertEqual(5,value['probeRate'])
-        self.assertNotEqual(actions.experiment_parameters('redis-filtering'),actions.experiment_parameters('kafka-burst'))
+        self.assertNotEqual(vars(parse_args(['redis-filtering'])),vars(parse_args(['kafka-burst'])))
 
     def resources(self, current=300, inactive=0, events='max 0\noom 0\noom_kill 0'):
         return [{'service': 'mysql', 'memoryLimitMiB': 384, 'resources': {
@@ -128,79 +128,7 @@ class PreflightTest(unittest.TestCase):
             counts=preflight.verify_fixture(directory,{'scheduled':10,'path':'C','workload':'steady'})
             self.assertEqual({'users':11,'orders':1,'logs':1},counts)
 
-    def test_missing_or_stale_preflight_blocks_formal_measurement_and_valid_marker_is_single_use(self):
-        with tempfile.TemporaryDirectory() as temp, patch.object(actions, 'RUNTIME', Path(temp)), \
-                patch.object(actions, 'actions_context', return_value={'runId': '123'}), \
-                patch.object(actions, 'initialize', return_value={'SUT_INSTANCE_ID': 'fresh'}):
-            root = Path(temp)
-            parameters = actions.experiment_parameters('redis-filtering')
-            (root/'source.json').write_text(json.dumps({'sourceSha256': 'source'}))
-            marker = {'status': 'completed', 'parameters': parameters, 'actions': {'runId': '123'}, 'source': 'source',
-                      'reset': {'status': 'completed', 'instanceId': 'fresh', 'emptyJournal': True, 'emptyRedis': True,
-                                'emptyTables': dict.fromkeys(actions.BUSINESS_TABLES, 0)}}
-            with self.assertRaises(RuntimeError): actions.require_preflight(parameters)
-            for change in ({'actions': {'runId': 'old'}}, {'source': 'old'}, {'parameters': {}},
-                           {'reset': {**marker['reset'], 'instanceId': 'preflight'}},
-                           {'reset': {**marker['reset'], 'emptyJournal': False}},
-                           {'reset': {**marker['reset'], 'emptyTables': {'t_user': 0}}}):
-                with self.subTest(change=change):
-                    (root/'preflight-ready.json').write_text(json.dumps({**marker, **change}))
-                    with self.assertRaises(RuntimeError): actions.require_preflight(parameters)
-            (root/'preflight-ready.json').write_text(json.dumps(marker))
-            actions.require_preflight(parameters)
-            self.assertFalse((root/'preflight-ready.json').exists())
-
-    def test_formal_suite_never_starts_a_stage_without_preflight(self):
-        with tempfile.TemporaryDirectory() as temp, patch.object(actions, 'RUNTIME', Path(temp)), \
-                patch.object(actions, 'REPORTS', Path(temp)), patch.object(actions, 'run_stage') as stage:
-            root = Path(temp)
-            (root/'suite.json').write_text(json.dumps({'status': 'running', 'stages': []}))
-            (root/'deadline.json').write_text(json.dumps({'monotonic': time.monotonic()+1000}))
-            with self.assertRaisesRegex(RuntimeError, 'preflight'):
-                actions.run_experiment('redis-filtering', 10)
-            stage.assert_not_called()
-            self.assertEqual('failed', json.loads((root/'suite.json').read_text())['status'])
-
-    def test_reset_replaces_instance_and_verifies_empty_database_redis_and_journal(self):
-        for residual in (False, True):
-            with self.subTest(residual=residual), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
-                previous = {'instanceId': 'old', 'services': [{'service': 'mysql', 'imageId': 'same'}]}
-                current = {**previous, 'instanceId': 'new'}
-                counts = '\n'.join(f'{name}\t{int(residual and name=="t_order")}' for name in actions.BUSINESS_TABLES)
-                with patch.object(actions, 'ENV_FILE', root/'sut.env'), \
-                        patch.object(actions, 'cleanup') as cleanup, patch.object(actions, 'start_services') as start, \
-                        patch.object(actions, 'verify', return_value=current), patch('builtins.print'), \
-                        patch.object(actions, 'initialize', return_value={'SUT_INSTANCE_ID': 'old'}), \
-                        patch.object(actions, 'compose', side_effect=lambda *a: list(a)), \
-                        patch.object(actions, 'command', side_effect=[counts, '', '0']) as command:
-                    if residual:
-                        with self.assertRaisesRegex(RuntimeError, 'business rows'): actions.reset_after_preflight(previous)
-                    else:
-                        result = actions.reset_after_preflight(previous)
-                        self.assertTrue(result['emptyRedis'] and result['emptyJournal'])
-                        self.assertEqual(3, command.call_count)
-                    cleanup.assert_called_once()
-                    start.assert_called_once()
-
-    def test_reset_failure_never_creates_ready_marker(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            directory = root/'preflight/123-1-preflight'
-            directory.mkdir(parents=True)
-            (directory/'manifest.json').write_text(json.dumps({'status': 'completed'}))
-            (root/'suite.json').write_text(json.dumps({'status': 'running', 'stages': []}))
-            (root/'deadline.json').write_text(json.dumps({'monotonic': time.monotonic()+1000}))
-            with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
-                    patch.dict(os.environ, {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}), \
-                    patch.object(actions, 'verify'), patch.object(actions, 'run_stage'), patch.object(actions, 'collect'), \
-                    patch.object(actions, 'reset_after_preflight', side_effect=RuntimeError('reset failed')):
-                with self.assertRaisesRegex(RuntimeError, 'reset failed'):
-                    actions.run_preflight('redis-filtering', 5)
-            self.assertFalse((root/'preflight-ready.json').exists())
-            self.assertEqual('failed', json.loads((directory/'manifest.json').read_text())['status'])
-
-    def test_reset_mysql_shell_selects_configured_database_and_requires_it(self):
+    def test_initial_mysql_shell_selects_configured_database_and_requires_it(self):
         # Execute the real sh command with a fake mysql binary, rather than
         # returning table counts without checking how the CLI was invoked.
         for database in ('shanpu_bench', 'database with spaces', None):
@@ -235,47 +163,22 @@ print(os.environ['EMPTY_TABLE_COUNTS'])
 
                 previous = {'instanceId': 'old', 'services': []}
                 with patch.object(actions, 'ENV_FILE', root/'sut.env'), patch.object(actions, 'cleanup'), \
-                        patch.object(actions, 'start_services'), patch.object(actions, 'verify', return_value={**previous, 'instanceId': 'new'}), \
+                        patch.object(actions, 'start_services'), patch.object(actions, 'verify', return_value=previous), \
                         patch.object(actions, 'initialize', return_value={'SUT_INSTANCE_ID': 'old'}), \
                         patch.object(actions, 'compose', side_effect=lambda *a: list(a)), \
                         patch.object(actions, 'command', side_effect=command), patch('builtins.print'):
                     if database is None:
-                        with self.assertRaises(subprocess.CalledProcessError): actions.reset_after_preflight(previous)
+                        with self.assertRaises(subprocess.CalledProcessError): actions.verify_clean_start()
                         self.assertFalse((root/'mysql-call.json').exists())
                     else:
                         self.assertEqual(dict.fromkeys(actions.BUSINESS_TABLES, 0),
-                                         actions.reset_after_preflight(previous)['emptyTables'])
+                                         actions.verify_clean_start()['emptyTables'])
                         call = json.loads((root/'mysql-call.json').read_text())
                         self.assertIn('--database='+database, call['args'])
                         self.assertTrue(call['passwordInEnv'])
                         self.assertNotIn(env['MYSQL_ROOT_PASSWORD'], ' '.join(call['args']))
                         query = call['args'][call['args'].index('--execute')+1]
                         for table in actions.BUSINESS_TABLES: self.assertIn('FROM '+table, query)
-
-    def test_success_archives_preflight_before_reset_and_issues_marker_for_new_environment(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            directory = root/'preflight/123-1-preflight'
-            directory.mkdir(parents=True)
-            (directory/'manifest.json').write_text(json.dumps({'status': 'completed'}))
-            (root/'suite.json').write_text(json.dumps({'status': 'running', 'stages': []}))
-            (root/'source.json').write_text(json.dumps({'sourceSha256': 'source'}))
-            (root/'deadline.json').write_text(json.dumps({'monotonic': time.monotonic()+1000}))
-            reset = {'status': 'completed', 'instanceId': 'new', 'emptyJournal': True, 'emptyRedis': True,
-                     'emptyTables': dict.fromkeys(actions.BUSINESS_TABLES, 0)}
-            order = []
-            with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
-                    patch.dict(os.environ, {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}), \
-                    patch.object(actions, 'actions_context', return_value={'runId': '123'}), \
-                    patch.object(actions, 'initialize', return_value={'SUT_INSTANCE_ID': 'new'}), \
-                    patch.object(actions, 'verify'), patch('builtins.print'), \
-                    patch.object(actions, 'run_stage', side_effect=lambda *a, **kw: order.append('preflight')), \
-                    patch.object(actions, 'collect', side_effect=lambda *a: order.append('archive')), \
-                    patch.object(actions, 'reset_after_preflight', side_effect=lambda *a: order.append('reset') or reset):
-                actions.run_preflight('redis-filtering', 5)
-                self.assertEqual(['preflight', 'archive', 'reset'], order)
-                self.assertEqual('validation', json.loads((root/'suite.json').read_text())['scope'])
-                actions.require_preflight(actions.experiment_parameters('redis-filtering'))
 
     def test_real_probe_orchestration_preserves_validation_scope_and_stops_after_a_bad_probe(self):
         for failure in (None, 'warmup-load', 'probe-load', 'warmup-correctness', 'probe-correctness',

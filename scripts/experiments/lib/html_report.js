@@ -78,3 +78,13 @@ resizeNavigation();
 if (location.hash) navigate(location.hash.slice(1), false); else setCurrent('overview');
 
 }
+
+// Native select remains keyboard-accessible. Without JS all rounds stay visible.
+document.querySelectorAll('[data-round-select]').forEach(select => {
+ const section = select.closest('section');
+ const update = () => section.querySelectorAll('[data-round]').forEach(panel => {
+  panel.hidden = panel.dataset.round !== select.value;
+ });
+ select.addEventListener('change', update);
+ update();
+});

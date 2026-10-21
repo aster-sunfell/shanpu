@@ -173,7 +173,10 @@ def _prepare(config, product_id, private, directory, token, api, require_idle, p
         time.sleep(.2)
     require_idle(token)
     progress('snapshot')
-    return snapshot(config, directory, 'before')
+    result = snapshot(config, directory, 'before')
+    from fixture_check import verify_fixture
+    verify_fixture(directory, config)
+    return result
 
 
 def release_redis(private, config):
