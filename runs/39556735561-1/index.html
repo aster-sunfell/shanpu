@@ -1,0 +1,125 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>未执行的阶段与原因</title><style>
+:root{color-scheme:light;--ink:#172d3c;--muted:#526a79;--line:#d5e0e6;--accent:#096b65}
+*{box-sizing:border-box}body{margin:0;background:#f3f6f8;color:var(--ink);font:15px/1.65 system-ui,sans-serif}
+main{max-width:1240px;margin:auto;padding:36px 24px}h1{font-size:32px;line-height:1.25}h2{margin-top:32px}
+a{color:var(--accent)}section,.card,details{background:white;border:1px solid var(--line);border-radius:10px;padding:20px;margin:16px 0}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card{margin:0}.big{font-size:25px;font-weight:650}
+.muted{color:var(--muted)}.warning{background:#fff4df;border-left:5px solid #b97600;padding:14px}.failed{color:#a32e2e}
+.scroll{overflow:auto}table{border-collapse:collapse;min-width:760px;width:100%;font-size:14px}td,th{text-align:left;padding:9px;border-bottom:1px solid var(--line)}
+th{background:#edf3f6;white-space:nowrap}code{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6f8;padding:12px}
+summary{cursor:pointer;font-weight:600}svg{max-width:100%;height:auto}input{padding:10px;border:1px solid var(--line);border-radius:6px;width:100%;max-width:380px}
+footer{margin-top:30px;color:var(--muted)}.chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+</style></head><body><main><h1>闪铺压测报告</h1><p class="muted">GitHub Actions · full · run 39556735561 / attempt 1</p><div class="cards"><div class="card"><div class="muted">执行状态</div><div class="big">failed</div></div><div class="card"><div class="muted">用途</div><div class="big">performance</div></div><div class="card"><div class="muted">被测端配额</div><div class="big">2 vCPU</div></div><div class="card"><div class="muted">发压端配额</div><div class="big">1 vCPU</div></div></div><p class="warning">运行未完整完成。已有证据供排查，不能以部分结果声称完整实验成功。</p><p>Commit：<code>29cfe67a78a4a1ae920c804c0de6c9865c1ee04b</code></p><p><a href="https://github.com/aster-sunfell/shanpu/actions/runs/39556735561">打开 Actions 运行及完整证据下载</a>（artifacts 有保留期限，下载可能需要登录 GitHub）</p><section><h2>环境准备阶段未产生测量点</h2><p>请查看 Actions 日志和 diagnostics。没有性能数据。</p></section><details><summary>运行环境和 CPU 分配</summary><pre>{
+  &quot;actions&quot;: {
+    &quot;runId&quot;: &quot;39556735561&quot;,
+    &quot;attempt&quot;: &quot;1&quot;,
+    &quot;job&quot;: &quot;performance&quot;,
+    &quot;repository&quot;: &quot;aster-sunfell/shanpu&quot;,
+    &quot;commit&quot;: &quot;29cfe67a78a4a1ae920c804c0de6c9865c1ee04b&quot;,
+    &quot;ref&quot;: &quot;refs/heads/main&quot;,
+    &quot;runUrl&quot;: &quot;https://github.com/aster-sunfell/shanpu/actions/runs/39556735561&quot;,
+    &quot;runnerImage&quot;: &quot;ubuntu24&quot;,
+    &quot;runnerImageVersion&quot;: &quot;20261012.334.1&quot;
+  },
+  &quot;cpuAllocation&quot;: {
+    &quot;sut&quot;: &quot;0,1&quot;,
+    &quot;runner&quot;: &quot;2&quot;,
+    &quot;reserved&quot;: &quot;3&quot;,
+    &quot;crossGroupSmt&quot;: [],
+    &quot;topology&quot;: [
+      {
+        &quot;cpu&quot;: 0,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 1,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 2,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      },
+      {
+        &quot;cpu&quot;: 3,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      }
+    ],
+    &quot;isolation&quot;: &quot;disjoint-vCPU-sets; physical host resources remain shared&quot;
+  },
+  &quot;host&quot;: {
+    &quot;kernel&quot;: &quot;6.17.0-1022-azure&quot;,
+    &quot;platform&quot;: &quot;Linux-6.17.0-1022-azure-x86_64-with-glibc2.39&quot;,
+    &quot;cpuModel&quot;: &quot;AMD EPYC 9V74 80-Core Processor&quot;,
+    &quot;availableCpus&quot;: [
+      0,
+      1,
+      2,
+      3
+    ],
+    &quot;cpuTopology&quot;: [
+      {
+        &quot;cpu&quot;: 0,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 1,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 2,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      },
+      {
+        &quot;cpu&quot;: 3,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      }
+    ],
+    &quot;memoryBytes&quot;: 16766414848
+  },
+  &quot;targetBudget&quot;: {
+    &quot;cpuLimit&quot;: 2.0,
+    &quot;containerMemoryMiB&quot;: 1632,
+    &quot;hostReserveMiB&quot;: 416,
+    &quot;machineMemoryMiB&quot;: 2048
+  }
+}</pre></details><footer>闪铺 · GitHub Actions 单机受限资源测量。vCPU 配额不能等同于独占物理核或线上容量。</footer></main></body></html>
