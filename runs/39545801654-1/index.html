@@ -1,0 +1,823 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>未执行的阶段与原因</title><style>
+:root{color-scheme:light;--ink:#172d3c;--muted:#526a79;--line:#d5e0e6;--accent:#096b65}
+*{box-sizing:border-box}body{margin:0;background:#f3f6f8;color:var(--ink);font:15px/1.65 system-ui,sans-serif}
+main{max-width:1240px;margin:auto;padding:36px 24px}h1{font-size:32px;line-height:1.25}h2{margin-top:32px}
+a{color:var(--accent)}section,.card,details{background:white;border:1px solid var(--line);border-radius:10px;padding:20px;margin:16px 0}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card{margin:0}.big{font-size:25px;font-weight:650}
+.muted{color:var(--muted)}.warning{background:#fff4df;border-left:5px solid #b97600;padding:14px}.failed{color:#a32e2e}
+.scroll{overflow:auto}table{border-collapse:collapse;min-width:760px;width:100%;font-size:14px}td,th{text-align:left;padding:9px;border-bottom:1px solid var(--line)}
+th{background:#edf3f6;white-space:nowrap}code{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6f8;padding:12px}
+summary{cursor:pointer;font-weight:600}svg{max-width:100%;height:auto}input{padding:10px;border:1px solid var(--line);border-radius:6px;width:100%;max-width:380px}
+footer{margin-top:30px;color:var(--muted)}.chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+</style></head><body><main><h1>闪铺压测报告</h1><p class="muted">GitHub Actions · full · run 39545801654 / attempt 1</p><div class="cards"><div class="card"><div class="muted">执行状态</div><div class="big">failed</div></div><div class="card"><div class="muted">用途</div><div class="big">performance</div></div><div class="card"><div class="muted">被测端配额</div><div class="big">2 vCPU</div></div><div class="card"><div class="muted">发压端配额</div><div class="big">1 vCPU</div></div></div><p class="warning">运行未完整完成。已有证据供排查，不能以部分结果声称完整实验成功。</p><p class="failed">Command &#x27;[&#x27;docker&#x27;, &#x27;start&#x27;, &#x27;--attach&#x27;, &#x27;ab6b7bf88ac83ac559d27a7ca71a5e70da914f912303572d012a1687731fa5ba&#x27;]&#x27; returned non-zero exit status 1.</p><p>Commit：<code>f3f16385307d47d62c903e4453c7af57bfcef1be</code></p><p><a href="https://github.com/aster-sunfell/shanpu/actions/runs/39545801654">打开 Actions 运行及完整证据下载</a>（artifacts 有保留期限，下载可能需要登录 GitHub）</p><section><h2>真实环境预检</h2><p class="warning">用途：validation。预检验证造数、低速预热与请求核对及运行资源，不输出容量或性能提升结论。最高档压力由正式容量实验逐级探索。</p><p>状态：<strong>completed</strong></p><details><summary>预检数据规模与业务核对</summary><pre>{
+  &quot;status&quot;: &quot;completed&quot;,
+  &quot;scope&quot;: &quot;validation&quot;,
+  &quot;seeds&quot;: [
+    {
+      &quot;point&quot;: &quot;seed-001-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-002-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-003-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-004-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-005-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-006-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-007-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-008-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-009-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-010-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-011-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-012-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-013-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-014-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-015-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-016-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-017-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-018-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-019-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-020-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-021-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-022-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-023-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-024-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-025-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-026-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-027-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-028-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-029-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-030-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-031-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-032-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-033-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-034-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-035-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-036-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-037-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-038-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-039-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-040-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-041-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-042-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-043-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-044-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-045-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-046-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-047-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-048-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-049-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 24001,
+        &quot;orders&quot;: 21601,
+        &quot;logs&quot;: 21601
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-050-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    }
+  ],
+  &quot;probes&quot;: [
+    {
+      &quot;phase&quot;: &quot;warmup&quot;,
+      &quot;path&quot;: &quot;A&quot;,
+      &quot;rate&quot;: 5,
+      &quot;seconds&quot;: 10,
+      &quot;scheduled&quot;: 50,
+      &quot;started&quot;: 50,
+      &quot;completed&quot;: 5,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;errors&quot;: []
+    },
+    {
+      &quot;phase&quot;: &quot;probe&quot;,
+      &quot;path&quot;: &quot;A&quot;,
+      &quot;rate&quot;: 5,
+      &quot;seconds&quot;: 10,
+      &quot;scheduled&quot;: 50,
+      &quot;started&quot;: 50,
+      &quot;completed&quot;: 5,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;errors&quot;: []
+    },
+    {
+      &quot;phase&quot;: &quot;warmup&quot;,
+      &quot;path&quot;: &quot;B&quot;,
+      &quot;rate&quot;: 5,
+      &quot;seconds&quot;: 10,
+      &quot;scheduled&quot;: 50,
+      &quot;started&quot;: 50,
+      &quot;completed&quot;: 5,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;errors&quot;: []
+    },
+    {
+      &quot;phase&quot;: &quot;probe&quot;,
+      &quot;path&quot;: &quot;B&quot;,
+      &quot;rate&quot;: 5,
+      &quot;seconds&quot;: 10,
+      &quot;scheduled&quot;: 50,
+      &quot;started&quot;: 50,
+      &quot;completed&quot;: 5,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;errors&quot;: []
+    },
+    {
+      &quot;phase&quot;: &quot;warmup&quot;,
+      &quot;path&quot;: &quot;C&quot;,
+      &quot;rate&quot;: 5,
+      &quot;seconds&quot;: 10,
+      &quot;scheduled&quot;: 50,
+      &quot;started&quot;: 50,
+      &quot;completed&quot;: 50,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;errors&quot;: []
+    },
+    {
+      &quot;phase&quot;: &quot;probe&quot;,
+      &quot;path&quot;: &quot;C&quot;,
+      &quot;rate&quot;: 5,
+      &quot;seconds&quot;: 10,
+      &quot;scheduled&quot;: 50,
+      &quot;started&quot;: 50,
+      &quot;completed&quot;: 50,
+      &quot;status&quot;: &quot;completed&quot;,
+      &quot;errors&quot;: []
+    }
+  ],
+  &quot;dataset&quot;: {
+    &quot;initialLadderRequests&quot;: 990000,
+    &quot;seedUsers&quot;: 1188000,
+    &quot;planRates&quot;: {
+      &quot;redis-filtering&quot;: [
+        200,
+        250,
+        300,
+        350,
+        400
+      ],
+      &quot;kafka-buffering&quot;: [
+        200,
+        225,
+        250,
+        275,
+        300
+      ]
+    },
+    &quot;batchUsers&quot;: 24000,
+    &quot;probeRate&quot;: 5,
+    &quot;warmupSeconds&quot;: 10,
+    &quot;probeSeconds&quot;: 10,
+    &quot;coverage&quot;: &quot;Initial capacity ladders plus 20%; not all refinements, burst sizes or long-duration effects&quot;
+  },
+  &quot;elapsedSeconds&quot;: 468.996
+}</pre></details><details><summary>清理并重建后的环境核验</summary><pre>{
+  &quot;status&quot;: &quot;completed&quot;,
+  &quot;instanceId&quot;: &quot;[REDACTED]&quot;,
+  &quot;emptyTables&quot;: {
+    &quot;t_user&quot;: 0,
+    &quot;t_product&quot;: 0,
+    &quot;t_seckill_activity&quot;: 0,
+    &quot;t_order&quot;: 0,
+    &quot;t_point_log&quot;: 0,
+    &quot;t_order_dlq_log&quot;: 0
+  },
+  &quot;emptyJournal&quot;: true,
+  &quot;emptyRedis&quot;: true
+}</pre></details><details><summary>MySQL 实际配置与版本</summary><pre>{
+  &quot;innodb_buffer_pool_size&quot;: &quot;134217728&quot;,
+  &quot;innodb_flush_log_at_trx_commit&quot;: &quot;2&quot;,
+  &quot;innodb_log_buffer_size&quot;: &quot;8388608&quot;,
+  &quot;max_connections&quot;: &quot;32&quot;,
+  &quot;max_heap_table_size&quot;: &quot;4194304&quot;,
+  &quot;performance_schema&quot;: &quot;OFF&quot;,
+  &quot;table_open_cache&quot;: &quot;128&quot;,
+  &quot;temptable_max_mmap&quot;: &quot;0&quot;,
+  &quot;temptable_max_ram&quot;: &quot;16777216&quot;,
+  &quot;thread_cache_size&quot;: &quot;4&quot;,
+  &quot;tmp_table_size&quot;: &quot;4194304&quot;,
+  &quot;version&quot;: &quot;8.0.46&quot;
+}</pre></details><details><summary>结束时容器状态（清理前）</summary><pre>{
+  &quot;timeMs&quot;: 1792558542354,
+  &quot;containers&quot;: [
+    {
+      &quot;service&quot;: &quot;backend&quot;,
+      &quot;imageId&quot;: &quot;sha256:0d6f3955904b8cf528958313a70356e50b892c7a3e92fc797b5821be5bdb8daf&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T04:47:29.534852203Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;mysql&quot;,
+      &quot;imageId&quot;: &quot;sha256:6cd09145362dfe6831b14545de3d5fd6cc75c37cfd6ef8561429c1fc73518b39&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T04:47:13.801144417Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;redis&quot;,
+      &quot;imageId&quot;: &quot;sha256:f84b0c4678011602b9b98c227a4dcd5468bf8b088b02fdd4165cb7758bad8058&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T04:47:13.800723771Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;kafka&quot;,
+      &quot;imageId&quot;: &quot;sha256:6d8457e841c10f58f952cb3942a38b6b3c21015b643e3dd010aea37cc0b89055&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T04:47:13.801261964Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;load-runner&quot;,
+      &quot;imageId&quot;: &quot;sha256:b508cad4ee2f45895b0b5ce2b747df125ec1b1ea012d21893e41b68ec78b7b08&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;exited&quot;,
+        &quot;Running&quot;: false,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T04:47:53.142032621Z&quot;,
+        &quot;FinishedAt&quot;: &quot;2026-10-21T04:55:42.271732787Z&quot;
+      }
+    }
+  ]
+}</pre></details><p>MySQL 工作集估算峰值：248.23 MiB；估算最小余量：135.77 MiB。扣除 inactive_file 的估算不保证实际可分配内存。</p><details><summary>容器资源采样</summary><p>下图为采样峰值，可能遗漏采样间隔内的瞬时峰值。CPU throttle 是计数差，不代表完整 CPU 利用率。</p><svg role="img" aria-label="采样内存峰值" viewBox="0 0 520 195"><text x="8" y="19" font-size="14" font-weight="600">采样内存峰值 · MiB</text><text x="8" y="49" font-size="12">backend</text><rect x="132" y="36" width="200.48" height="18" rx="3" fill="#14867c"/><text x="340.48" y="49" font-size="12">274.95</text><text x="8" y="77" font-size="12">mysql</text><rect x="132" y="64" width="280.00" height="18" rx="3" fill="#14867c"/><text x="420.00" y="77" font-size="12">384.00</text><text x="8" y="105" font-size="12">redis</text><rect x="132" y="92" width="8.38" height="18" rx="3" fill="#14867c"/><text x="148.38" y="105" font-size="12">11.49</text><text x="8" y="133" font-size="12">kafka</text><rect x="132" y="120" width="129.44" height="18" rx="3" fill="#14867c"/><text x="269.44" y="133" font-size="12">177.52</text><text x="8" y="161" font-size="12">load-runner</text><rect x="132" y="148" width="279.28" height="18" rx="3" fill="#14867c"/><text x="419.28" y="161" font-size="12">383.02</text></svg><ul><li>backend：CPU nr_throttled 增量 38</li><li>mysql：CPU nr_throttled 增量 2430</li><li>redis：CPU nr_throttled 增量 378</li><li>kafka：CPU nr_throttled 增量 6</li><li>load-runner：CPU nr_throttled 增量 0</li></ul></details></section><section><h2>redis-filtering / capacity</h2><p>状态：<strong>failed</strong></p><p class="warning">本阶段未完整完成，不能用于容量提升或突发基线。</p><p class="failed">Backend observation failed three times consecutively</p><p class="failed">Command &#x27;[&#x27;docker&#x27;, &#x27;start&#x27;, &#x27;--attach&#x27;, &#x27;ab6b7bf88ac83ac559d27a7ca71a5e70da914f912303572d012a1687731fa5ba&#x27;]&#x27; returned non-zero exit status 1.</p><details><summary>容量搜索预算与停止原因</summary><pre>{
+  &quot;budgetMinutes&quot;: 50,
+  &quot;rounds&quot;: {
+    &quot;A&quot;: {
+      &quot;expand&quot;: 0,
+      &quot;refine&quot;: 0
+    },
+    &quot;B&quot;: {
+      &quot;expand&quot;: 0,
+      &quot;refine&quot;: 0
+    }
+  },
+  &quot;history&quot;: [],
+  &quot;stopReason&quot;: null
+}</pre></details><h3>稳定容量区间</h3><ul><li><strong>A</strong>：阶段未完成，仅保留观测点</li><li><strong>B</strong>：阶段未完成，仅保留观测点</li></ul><details><summary>SLO 和样本要求</summary><pre>{
+  &quot;responseP99Ms&quot;: 500,
+  &quot;completionP99Ms&quot;: 5000,
+  &quot;maxErrorRate&quot;: 0.001,
+  &quot;minSamples&quot;: 1000,
+  &quot;generatorLagP99Ms&quot;: 100,
+  &quot;backlogGrowthSeconds&quot;: 0.25,
+  &quot;backlogSlopeFraction&quot;: 0.005
+}</pre></details><details><summary>结束时容器状态（清理前）</summary><pre>{
+  &quot;timeMs&quot;: 1792558619644,
+  &quot;containers&quot;: [
+    {
+      &quot;service&quot;: &quot;backend&quot;,
+      &quot;imageId&quot;: &quot;sha256:0d6f3955904b8cf528958313a70356e50b892c7a3e92fc797b5821be5bdb8daf&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T04:56:01.467773369Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;mysql&quot;,
+      &quot;imageId&quot;: &quot;sha256:6cd09145362dfe6831b14545de3d5fd6cc75c37cfd6ef8561429c1fc73518b39&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T04:55:45.760272119Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;redis&quot;,
+      &quot;imageId&quot;: &quot;sha256:f84b0c4678011602b9b98c227a4dcd5468bf8b088b02fdd4165cb7758bad8058&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T04:55:45.760459462Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;kafka&quot;,
+      &quot;imageId&quot;: &quot;sha256:6d8457e841c10f58f952cb3942a38b6b3c21015b643e3dd010aea37cc0b89055&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T04:55:45.759627976Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;load-runner&quot;,
+      &quot;imageId&quot;: &quot;sha256:b508cad4ee2f45895b0b5ce2b747df125ec1b1ea012d21893e41b68ec78b7b08&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;exited&quot;,
+        &quot;Running&quot;: false,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 1,
+        &quot;StartedAt&quot;: &quot;2026-10-21T04:56:20.236783204Z&quot;,
+        &quot;FinishedAt&quot;: &quot;2026-10-21T04:56:59.590187766Z&quot;
+      }
+    }
+  ]
+}</pre></details><details><summary>MySQL 实际配置与版本</summary><pre>{
+  &quot;innodb_buffer_pool_size&quot;: &quot;134217728&quot;,
+  &quot;innodb_flush_log_at_trx_commit&quot;: &quot;2&quot;,
+  &quot;innodb_log_buffer_size&quot;: &quot;8388608&quot;,
+  &quot;max_connections&quot;: &quot;32&quot;,
+  &quot;max_heap_table_size&quot;: &quot;4194304&quot;,
+  &quot;performance_schema&quot;: &quot;OFF&quot;,
+  &quot;table_open_cache&quot;: &quot;128&quot;,
+  &quot;temptable_max_mmap&quot;: &quot;0&quot;,
+  &quot;temptable_max_ram&quot;: &quot;16777216&quot;,
+  &quot;thread_cache_size&quot;: &quot;4&quot;,
+  &quot;tmp_table_size&quot;: &quot;4194304&quot;,
+  &quot;version&quot;: &quot;8.0.46&quot;
+}</pre></details><details><summary>容器资源采样</summary><p>下图为采样峰值，可能遗漏采样间隔内的瞬时峰值。CPU throttle 是计数差，不代表完整 CPU 利用率。</p><svg role="img" aria-label="采样内存峰值" viewBox="0 0 520 195"><text x="8" y="19" font-size="14" font-weight="600">采样内存峰值 · MiB</text><text x="8" y="49" font-size="12">backend</text><rect x="132" y="36" width="280.00" height="18" rx="3" fill="#14867c"/><text x="420.00" y="49" font-size="12">297.22</text><text x="8" y="77" font-size="12">mysql</text><rect x="132" y="64" width="275.06" height="18" rx="3" fill="#14867c"/><text x="415.06" y="77" font-size="12">291.98</text><text x="8" y="105" font-size="12">redis</text><rect x="132" y="92" width="5.81" height="18" rx="3" fill="#14867c"/><text x="145.81" y="105" font-size="12">6.17</text><text x="8" y="133" font-size="12">kafka</text><rect x="132" y="120" width="154.92" height="18" rx="3" fill="#14867c"/><text x="294.92" y="133" font-size="12">164.45</text><text x="8" y="161" font-size="12">load-runner</text><rect x="132" y="148" width="128.83" height="18" rx="3" fill="#14867c"/><text x="268.83" y="161" font-size="12">136.75</text></svg><ul><li>backend：CPU nr_throttled 增量 311</li><li>mysql：CPU nr_throttled 增量 1</li><li>redis：CPU nr_throttled 增量 5</li><li>kafka：CPU nr_throttled 增量 0</li><li>load-runner：CPU nr_throttled 增量 0</li></ul></details></section><details><summary>运行环境和 CPU 分配</summary><pre>{
+  &quot;actions&quot;: {
+    &quot;runId&quot;: &quot;39545801654&quot;,
+    &quot;attempt&quot;: &quot;1&quot;,
+    &quot;job&quot;: &quot;performance&quot;,
+    &quot;repository&quot;: &quot;aster-sunfell/shanpu&quot;,
+    &quot;commit&quot;: &quot;f3f16385307d47d62c903e4453c7af57bfcef1be&quot;,
+    &quot;ref&quot;: &quot;refs/heads/main&quot;,
+    &quot;runUrl&quot;: &quot;https://github.com/aster-sunfell/shanpu/actions/runs/39545801654&quot;,
+    &quot;runnerImage&quot;: &quot;ubuntu24&quot;,
+    &quot;runnerImageVersion&quot;: &quot;20261018.339.1&quot;
+  },
+  &quot;cpuAllocation&quot;: {
+    &quot;sut&quot;: &quot;0,1&quot;,
+    &quot;runner&quot;: &quot;2&quot;,
+    &quot;reserved&quot;: &quot;3&quot;,
+    &quot;crossGroupSmt&quot;: [],
+    &quot;topology&quot;: [
+      {
+        &quot;cpu&quot;: 0,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 1,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 2,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      },
+      {
+        &quot;cpu&quot;: 3,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      }
+    ],
+    &quot;isolation&quot;: &quot;disjoint-vCPU-sets; physical host resources remain shared&quot;
+  },
+  &quot;host&quot;: {
+    &quot;kernel&quot;: &quot;7.0.0-1017-azure&quot;,
+    &quot;platform&quot;: &quot;Linux-7.0.0-1017-azure-x86_64-with-glibc2.39&quot;,
+    &quot;cpuModel&quot;: &quot;AMD EPYC 9V45 96-Core Processor&quot;,
+    &quot;availableCpus&quot;: [
+      0,
+      1,
+      2,
+      3
+    ],
+    &quot;cpuTopology&quot;: [
+      {
+        &quot;cpu&quot;: 0,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 1,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 2,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      },
+      {
+        &quot;cpu&quot;: 3,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      }
+    ],
+    &quot;memoryBytes&quot;: 16760344576
+  },
+  &quot;targetBudget&quot;: {
+    &quot;cpuLimit&quot;: 2.0,
+    &quot;containerMemoryMiB&quot;: 1440,
+    &quot;hostReserveMiB&quot;: 608,
+    &quot;machineMemoryMiB&quot;: 2048
+  }
+}</pre></details><footer>闪铺 · GitHub Actions 单机受限资源测量。vCPU 配额不能等同于独占物理核或线上容量。</footer></main></body></html>
