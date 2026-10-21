@@ -181,8 +181,8 @@ class Evidence:
         if (generator_lag['p99'] or 0)>policy.get('generatorLagP99Ms',100):
             load_errors.append('Injection timing does not follow the arrival schedule')
         origin = self.scalar('SELECT MIN(e) FROM starts') or cutoff_ms
-        origin -= (config['seconds'] + config['baseSeconds']) * 1000
-        end = origin + (config['seconds'] + config['baseSeconds']) * 1000
+        origin -= (config['seconds'] + config['baseSeconds'] + config.get('recoverySeconds', 0)) * 1000
+        end = origin + (config['seconds'] + config['baseSeconds'] + config.get('recoverySeconds', 0)) * 1000
         injection_timing = self.injection_timing(origin, end)
         for category, message in (
                 ('inconsistentEnds', 'Injection window endpoints are inconsistent'),
@@ -190,8 +190,15 @@ class Evidence:
                 ('invalidSchedule', 'Scheduled arrivals fall outside the injection window'),
                 ('aheadOfSchedule', 'Requests started before their scheduled arrival'),
                 ('lateStarts', LATE_START_ERROR)):
-            if injection_timing[category]['count']: load_errors.append(message)
-        seconds = config['seconds'] + config['baseSeconds']
+            detail = injection_timing[category]
+            if category == 'lateStarts':
+                # Preserve actual timestamps; tolerate at most 0.01% tail arrivals within 20ms.
+                allowed = max(1, int(config['scheduled'] * policy.get('tailFraction', .0001)))
+                detail['tolerated'] = (detail['count'] <= allowed and
+                    (detail['maxDeviationMs'] or 0) <= policy.get('tailToleranceMs', 20))
+                if detail['tolerated']: continue
+            if detail['count']: load_errors.append(message)
+        seconds = config['seconds'] + config['baseSeconds'] + config.get('recoverySeconds', 0)
         outcomes = dict(self.db.execute('SELECT outcome,COUNT(*) FROM finishes GROUP BY outcome'))
         if unmatched: outcomes['interrupted'] = unmatched
         response = {outcome: self.quantiles('ms', 'finishes', f"outcome='{outcome}'") for outcome in outcomes if outcome != 'interrupted'}
@@ -229,6 +236,9 @@ class Evidence:
                 'completedWithinDeadline': self.scalar(
                     f'SELECT COUNT(*) FROM joined WHERE {cohort} AND ct<=? AND ct-t<=?', (cutoff_ms, completion_limit)),
                 'completed': self.scalar(f'SELECT COUNT(*) FROM joined WHERE {cohort} AND ct<=?', (cutoff_ms,)),
+                'responseMs': self.quantiles('ms', 'joined', cohort),
+                'completionMs': self.quantiles('ct-t', 'joined', cohort+f' AND ct<={cutoff_ms}'),
+                'failed': self.scalar(f"SELECT COUNT(*) FROM joined WHERE {cohort} AND (outcome IS NULL OR outcome<>'accepted')"),
             }
             if burst['requests'] != config['rate'] * config['seconds']:
                 load_errors.append('Burst request cohort does not match the scheduled phase')

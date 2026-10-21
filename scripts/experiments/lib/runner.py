@@ -18,12 +18,10 @@ import urllib.request
 
 import transport
 import observation
-import adaptive_search
 from analysis import Evidence, save_result, write_json
 from fixtures import POINTS, PRICE, create_users, credential, prepare, snapshot, check_disk, release_redis
 from protocol import (VERSION, parse_args, matrix, budgeted_matrix, policy, context_contract,
-                      validate_baseline, capacities, read_baseline, report, validate_deployment,
-                      search_candidates, point_fits_budget, baseline_readiness)
+                      report, validate_deployment, comparisons)
 from host import check_host_health, container_resources
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -209,6 +207,14 @@ def verify_k6_load(result, log_path, return_code):
     result['sloPassed'] &= result['valid']
 
 
+def safe_load_failure(value):
+    allowed = {'Offered load not achieved', 'Injection timing does not follow the arrival schedule',
+               'k6 exhausted its fixed VU pool (Insufficient VUs); arrivals were dropped',
+               'Requests started after the injection window', 'Burst request cohort does not match the scheduled phase'}
+    return (bool(value.get('loadErrors')) and not value.get('correctnessErrors')
+            and not value.get('unresolvedCount') and set(value['loadErrors']) <= allowed)
+
+
 def measure(config, private, directory, token, args):
     check_host_health()
     before_metrics = require_idle(token)
@@ -228,7 +234,7 @@ def measure(config, private, directory, token, args):
         with Sampler(directory, token) as sampler, (directory / 'k6.out').open('w') as output:
             process = subprocess.Popen(invocation, stdout=output, stderr=subprocess.STDOUT, cwd=ROOT, env=child_env)
             try:
-                deadline = time.monotonic() + config['seconds'] + config['baseSeconds'] + config['requestTimeout'] + 120
+                deadline = time.monotonic() + config['seconds'] + config['baseSeconds'] + config.get('recoverySeconds', 0) + config['requestTimeout'] + 120
                 while process.poll() is None:
                     try:
                         check_host_health()
@@ -298,7 +304,7 @@ def measure(config, private, directory, token, args):
                    'missing':max(0,config['scheduled']-result['started']), 'vus':config['vus'],
                    'vuExhausted':result['vuExhausted'], 'metricsAggregation':'disabled; disk evidence and k6 warnings are authoritative'})
         result.update(phase=config.get('phase', 'confirmation'), scope='validation' if args.validation_only else 'performance',
-                      repeat=config['repeat'], seconds=config['seconds'], baseRate=config['baseRate'], baseSeconds=config['baseSeconds'], k6ExitCode=process.returncode,
+                      repeat=config['repeat'], seconds=config['seconds'], baseRate=config['baseRate'], baseSeconds=config['baseSeconds'], recoveryRate=config.get('recoveryRate', 0), recoverySeconds=config.get('recoverySeconds', 0), k6ExitCode=process.returncode,
                       wallSeconds=round(time.monotonic()-started, 3), backendDelta=delta(before_metrics, after_metrics))
         if abs(drift)>50 or abs(after_metrics['runnerClock']['offsetEstimateMs'])>50+after_metrics['runnerClock']['uncertaintyMs']:
             result['correctnessErrors'].append('Clock shifted during the point or target/load clocks diverged')
@@ -327,7 +333,7 @@ def measure(config, private, directory, token, args):
 def manifest(args, target, load_host):
     source = json.loads((RUNTIME / 'source.json').read_text())
     parameters = {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items()}
-    return {'schemaVersion': VERSION, 'plan': args.plan, 'stage': args.stage,
+    return {'schemaVersion': VERSION, 'plan': args.plan, 'stage': 'experiment',
             'scope': 'validation' if args.validation_only else 'performance', 'status': 'running', 'deployment': args.deployment,
             'startedAtMs': int(time.time()*1000), 'parameters': parameters, 'policy': policy(args),
             'target': target, 'loadHost': load_host, 'source': source,
@@ -342,17 +348,17 @@ def manifest(args, target, load_host):
             'limitations': ['GitHub-hosted vCPUs share storage, caches, kernel and host scheduling; quotas do not emulate dedicated physical cores'] + ['Single-broker results have no availability/durability claim',
                            'After-commit observation includes callback delay and residual clock error',
                            'Resource quotas are per service; idle quota is not borrowed by other services',
-                           'SUT Redis memory bounds fixture working sets; fixture failures are not capacity results',
+                           'SUT Redis memory bounds fixture working sets; fixture failures are not service performance results',
                            'After-commit journal flushes, mapper/AOP counters and sampling add measurement overhead',
                            'Global MySQL counters include observer queries; results describe this instrumented deployment']}
 
 
 def warm_runtime(args, product_id, private, directory, token):
-    """Warm the retained process after reset; these points never enter capacity results."""
+    """Warm the retained process after reset; these points never enter measured comparisons."""
     selected = copy.copy(args)
     selected.validation_only = True
     selected.drain_seconds = min(args.drain_seconds, 30)
-    rates = sorted({min(min(args.rates), rate) for rate in (25, 50, 100)})
+    rates = [min(args.rate if args.plan == 'redis-filtering' else args.base_rate, 50)]
     paths = ('A', 'B') if args.plan == 'redis-filtering' else ('B', 'C')
     summary = {'scope': 'validation', 'status': 'running', 'points': []}
     write_json(directory/'warmup.json', summary)
@@ -369,7 +375,7 @@ def warm_runtime(args, product_id, private, directory, token):
                          'repeat': 1, 'rate': rate, 'seconds': 10, 'baseSeconds': 0, 'baseRate': 1,
                          'vus': args.vus, 'requestTimeout': args.request_timeout, 'points': POINTS,
                          'scheduled': rate*10, 'userPrefix': 'x'+secrets.token_hex(6)}
-                print(f'Runtime warmup {name}: {rate} RPS, 10s (validation; excluded from capacity)', flush=True)
+                print(f'Runtime warmup {name}: {rate} RPS, 10s (validation; excluded from comparisons)', flush=True)
                 prepare(point, product_id, private/'warmup'/name, output, token, api, require_idle)
                 value = measure(point, private/'warmup'/name, output, token, selected)
                 errors = list(value['loadErrors'])+list(value['correctnessErrors'])
@@ -394,15 +400,7 @@ def main(argv=None):
     args = parse_args(argv)
     points = budgeted_matrix(args)
     if args.dry_run:
-        print(json.dumps({'scope': 'validation' if args.validation_only else 'performance',
-                          'deployment': args.deployment,
-                          'policy': policy(args), 'capacitySearch': args.capacity_search,
-                          'fixedStartRps': args.rates[0] if args.capacity_search == 'fixed-start-probe-confirm' else None,
-                          'probeSeconds': args.probe_seconds, 'probeStepsPerPath': args.probe_steps,
-                          'initialMeasurements': points if args.capacity_search == 'ladder' or args.validation_only or args.stage == 'burst' else [],
-                          'expansionRoundsPerPath': args.expand_steps if args.stage == 'capacity' and args.capacity_search == 'ladder' else 0,
-                          'capacityBudgetMinutes': args.search_minutes,
-                          'refinementRounds': args.refine_steps if args.stage == 'capacity' else 0}, ensure_ascii=False, indent=2))
+        print(json.dumps({'scope': 'validation' if args.validation_only else 'performance', 'policy': policy(args), 'measurements': points}, ensure_ascii=False, indent=2))
         return 0
     if os.environ.get('BENCH_CONTAINER') != '1' or os.environ.get('GITHUB_ACTIONS') != 'true': raise RuntimeError('Use the resource-limited load-runner container')
     target = json.loads((RUNTIME / 'target.json').read_text())
@@ -440,16 +438,9 @@ def main(argv=None):
             meta['contract'] = context_contract(target, {**metrics['settings'], 'localCacheEnabled': metrics['localCacheEnabled']},
                                                 meta['source']['sourceSha256'], load_host, args, meta['mysqlSettings'])
             write_json(directory / 'backend-settings.json', metrics)
-            if args.baseline_report:
-                baseline = read_baseline(args.baseline_report)
-                validate_baseline(baseline, args, meta['contract'])
-                write_json(directory / 'baseline.json', baseline)
             product_id = int(sql(f"INSERT INTO t_product(title,price,stock,status) VALUES ('experiment-{name}',{PRICE},0,1); SELECT LAST_INSERT_ID();").strip())
             meta['productId'] = product_id
-            if args.stage == 'capacity':
-                warm_runtime(args, product_id, private, directory, admin['token'])
-            adaptive = (args.stage == 'capacity' and not args.validation_only
-                        and args.capacity_search == 'fixed-start-probe-confirm')
+            warm_runtime(args, product_id, private, directory, admin['token'])
 
             def checkpoint():
                 write_json(directory/'manifest.json', meta)
@@ -459,34 +450,29 @@ def main(argv=None):
                 point = dict(config)
                 check_host_health()
                 check_disk(directory)
-                probe = phase == 'probe'
-                entries = meta.setdefault('probePoints', []) if probe else meta['points']
+                entries = meta['points']
                 point_name = f"{len(entries)+1:03d}-r{point['repeat']}-{point['workload']}-{point['rate']}-{point['path']}"
-                relative = Path('probes')/point_name if probe else Path(point_name)
+                relative = Path(point_name)
                 point_dir = directory/relative
                 point_dir.mkdir(parents=True)
                 point['userPrefix'] = 'x'+secrets.token_hex(6)
                 entries.append({'directory': str(relative), 'userPrefix': point['userPrefix'],
-                                'phase': phase, 'scope': 'validation' if probe else meta['scope']})
+                                'phase': phase, 'scope': meta['scope']})
                 checkpoint()
                 current = require_idle(admin['token'])
                 if (current['settings'] != metrics['settings'] or current['localCacheEnabled'] != metrics['localCacheEnabled']
                         or current.get('processStartedAtMs') != metrics.get('processStartedAtMs')):
                     raise RuntimeError('Backend settings/process changed between points')
-                print(f"{'短探路（validation，不计容量）' if probe else '测量'} {point_name}: {point['scheduled']} 请求", flush=True)
+                print(f"测量 {point_name}: {point['scheduled']} 请求", flush=True)
                 prepare(point, product_id, private/relative, point_dir, admin['token'], api, require_idle)
                 entries[-1]['activityId'] = point['activityId']
                 checkpoint()
-                selected = copy.copy(args)
-                if probe:
-                    selected.validation_only = True
-                value = measure(point, private/relative, point_dir, admin['token'], selected)
+                value = measure(point, private/relative, point_dir, admin['token'], args)
                 value.pop('timeline', None)
                 value['phase'] = phase
-                value['scope'] = 'validation' if probe else meta['scope']
+                value['scope'] = meta['scope']
                 value['evidenceDirectory'] = str(relative)
-                if not probe:
-                    results.append((point_name, value))
+                results.append((point_name, value))
                 write_json(point_dir/'result.json', value)
                 print(f"结果 {point_name}: phase={phase}, valid={value['valid']}, SLO={value['sloPassed']}, "
                       f"started={value['started']}/{value['scheduled']}, "
@@ -502,14 +488,14 @@ def main(argv=None):
                 check_host_health()
                 if value['correctnessErrors'] or value['unresolvedCount']:
                     raise RuntimeError('Data/evidence invalid or accepted orders unresolved; preserve this run')
-                limited = adaptive and adaptive_search.recoverable_load_limit(value)
+                limited = safe_load_failure(value)
                 if value['loadErrors'] and not limited:
                     raise RuntimeError(
                         f"Load generation invalid: {'; '.join(value['loadErrors'])} "
                         f"(planned={value['scheduled']}, started={value['started']}, "
                         f"missing={value['missingRequests']}, VUs={point['vus']}, "
                         f"lagP99Ms={value['generatorLagMs']['p99']}). "
-                        'See point/result.json and k6.out; this is not a service capacity failure')
+                        'See point/result.json and k6.out; no service performance conclusion can be drawn')
                 if not value['valid'] and not limited:
                     raise RuntimeError('Measurement is invalid; preserve this point')
                 if limited:
@@ -518,73 +504,19 @@ def main(argv=None):
                     require_idle(admin['token'])
                     value['recoveryVerified'] = True
                     write_json(point_dir/'result.json', value)
-                    print('发压受限：'+ '; '.join(value['loadErrors']) + '；该点不作为容量边界；证据已保留，核对空闲后继续其他候选。', flush=True)
+                    print('发压受限：'+ '; '.join(value['loadErrors']) + '；该点不参与收益比较；证据已保留，核对空闲后继续固定对照。', flush=True)
                 release_redis(private/relative, point)
                 entries[-1]['redisReleased'] = True
                 checkpoint()
                 return value
 
-            if adaptive:
-                search_deadline = min(time.monotonic()+args.search_minutes*60,
-                                      float(os.environ.get('BENCH_STAGE_DEADLINE', 'inf'))-args.drain_seconds-args.request_timeout-60)
-                adaptive_search.run(args, execute_point, results, meta,
-                                    lambda: search_deadline-time.monotonic(), checkpoint)
-            else:
-                rounds = {path: {'expand': 0, 'refine': 0} for path in capacities(args, results)}
-                search_deadline = min(time.monotonic()+args.search_minutes*60,
-                                      float(os.environ.get('BENCH_STAGE_DEADLINE', 'inf'))-args.drain_seconds-args.request_timeout-60)
-                meta['search'] = {'budgetMinutes': args.search_minutes, 'rounds': rounds, 'history': [], 'stopReason': None}
-                budget_exhausted = False
-                while True:
-                    started_rates = set()
-                    for index, point in enumerate(points):
-                        check_host_health()
-                        if args.stage == 'capacity':
-                            bounds = capacities(args, results)
-                            observations = bounds[point['path']]['observations']
-                            failures = [item['rate'] for item in observations if item['state']=='fail']
-                            if failures and point['rate'] > min(failures):
-                                continue
-                            remaining = search_deadline-time.monotonic()
-                            # Reserve an entire new rate's remaining repetitions before
-                            # allocating fixtures, so budget stops normally land between rates.
-                            block = [p for p in points[index:] if p['rate'] == point['rate'] and not any(
-                                o['state'] == 'fail' and o['rate'] < p['rate'] for o in bounds[p['path']]['observations'])]
-                            if point['rate'] not in started_rates:
-                                required = sum(p['seconds']+p['requestTimeout']+30 for p in block)
-                            else:
-                                required = point['seconds']+point['requestTimeout']+30
-                            if not point_fits_budget(point, remaining) or remaining < required:
-                                meta['search']['stopReason'] = 'time-budget'
-                                budget_exhausted = True
-                                print('Capacity search stopped at its budget; retaining qualified observations', flush=True)
-                                break
-                            started_rates.add(point['rate'])
-                            if len(meta['points']) >= 200:
-                                meta['search']['stopReason'] = 'point-limit'
-                                budget_exhausted = True
-                                break
-                        execute_point(point, 'confirmation')
-                    if args.stage != 'capacity' or budget_exhausted: break
-                    candidates = search_candidates(args, results, rounds)
-                    if not candidates:
-                        meta['search']['stopReason'] = ('bounds-resolved' if all(not baseline_readiness(b)
-                            for b in capacities(args, results).values()) else 'round-limit-or-inconclusive-evidence')
-                        break
-                    selected = {(c['path'], c['rate']) for c in candidates}
-                    points = [p for p in matrix(args, sorted({c['rate'] for c in candidates}))
-                              if (p['path'], p['rate']) in selected]
-                    for candidate in candidates:
-                        rounds[candidate['path']][candidate['reason']] += 1
-                    meta['search']['history'].append(candidates)
-                    write_json(directory/'manifest.json', meta)
-                    print('Capacity search next: '+json.dumps(candidates), flush=True)
+            for point in points:
+                execute_point(point, 'measurement')
             check_host_health()
-            meta['status'] = 'completed'
+            qualified = args.validation_only or all(c['qualified'] for c in comparisons(args, results))
+            meta['status'] = 'completed' if len(results) == len(points) and all(r['valid'] for _, r in results) and qualified else 'inconclusive'
         except BaseException as error:
             meta.update(status='failed', error=str(error))
-            if meta.get('search'):
-                meta['search'].update(stopReason='measurement-error', error=str(error))
             raise
         finally:
             meta['finishedAtMs'] = int(time.time()*1000)
@@ -601,7 +533,7 @@ def main(argv=None):
             report(directory, meta, results, args)
             write_json(directory / 'manifest.json', meta)
             print(f'现场与证据已保留：{directory}', flush=True)
-        if meta['status'] != 'completed':
+        if meta['status'] == 'failed':
             raise RuntimeError(meta.get('error', 'Run was interrupted'))
         return 0
 

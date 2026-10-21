@@ -101,16 +101,15 @@ class HostTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);directory=root/'report';watch=root/'watch'
             directory.mkdir();watch.mkdir()
-            value={'status':'completed','capacityGainPct':100,'capacityGainRangePct':[90,110],'comparisons':[{}]}
-            (directory/'capacity.json').write_text(json.dumps(value))
+            value={'status':'completed','comparisons':[{}]}
+            (directory/'experiment.json').write_text(json.dumps(value))
             (directory/'manifest.json').write_text(json.dumps({'status':'completed'}))
-            (directory/'report.md').write_text('状态：completed。容量提升 100%')
+            (directory/'report.md').write_text('状态：completed。SQL 调用减少 90%')
             (watch/'status.json').write_text(json.dumps({'failure':'host low memory'}))
             (watch/'samples.jsonl').write_text('{}\n')
             finalize_host_evidence(directory,watch,'host low memory')
-            artifact=json.loads((directory/'capacity.json').read_text())
+            artifact=json.loads((directory/'experiment.json').read_text())
             self.assertEqual('failed',artifact['status'])
-            self.assertIsNone(artifact['capacityGainPct'])
             self.assertEqual([],artifact['comparisons'])
             self.assertEqual('failed',json.loads((directory/'manifest.json').read_text())['status'])
             self.assertNotIn('100%',(directory/'report.md').read_text())
@@ -146,9 +145,9 @@ class HostTest(unittest.TestCase):
             before={'timeMs':int(time.time()*1000),'settings':{},'localCacheEnabled':False,'journalOffset':0,
                     'events':0,'sqlCalls':{},'processStartedAtMs':1}
             load=Load()
-            args=parse_args(['kafka-buffering'])
+            args=parse_args(['kafka-burst'])
             config=dict(activityId=12,path='C',workload='steady',seconds=1,baseSeconds=0,baseRate=1,
-                        scheduled=1,rate=1,points=1000,plan='kafka-buffering',repeat=1,requestTimeout=1,vus=100)
+                        scheduled=1,rate=1,points=1000,plan='kafka-burst',repeat=1,requestTimeout=1,vus=100)
             with patch('runner.require_idle',return_value=before),patch('runner.mysql_counters',return_value={}), \
                  patch('runner.observation.fresh_metrics',side_effect=lambda:{**before,'timeMs':int(time.time()*1000),'events':1}), \
                  patch('runner.lag',return_value={'0':0}),patch('runner.sql',return_value='0'), \

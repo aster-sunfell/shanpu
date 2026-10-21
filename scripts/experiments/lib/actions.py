@@ -251,10 +251,10 @@ def build():
 
 
 def validate_runner_config(service):
-    if (float(service.get("cpus", 0)) != 1 or int(service.get("mem_limit", 0)) != 512 * MIB
-            or int(service.get("memswap_limit", 0)) != 512 * MIB or service.get("pids_limit") != 128
+    if (float(service.get("cpus", 0)) != 1 or int(service.get("mem_limit", 0)) != 1024 * MIB
+            or int(service.get("memswap_limit", 0)) != 1024 * MIB or service.get("pids_limit") != 128
             or service.get("restart") != "no"):
-        raise RuntimeError("Load runner must have fixed 1 CPU / 512 MiB limits")
+        raise RuntimeError("Load runner must have fixed 1 CPU / 1024 MiB limits")
     for mount in service.get("volumes", []):
         if "docker.sock" in mount.get("source", ""):
             raise RuntimeError("The load runner must not access the Docker socket")
@@ -262,8 +262,8 @@ def validate_runner_config(service):
 
 def validate_runner_container(container, expected_cpuset=None):
     actual = container["HostConfig"]
-    if (actual.get("NanoCpus") != 1000000000 or actual.get("Memory") != 512 * MIB
-            or actual.get("MemorySwap") != 512 * MIB or actual.get("PidsLimit") != 128
+    if (actual.get("NanoCpus") != 1000000000 or actual.get("Memory") != 1024 * MIB
+            or actual.get("MemorySwap") != 1024 * MIB or actual.get("PidsLimit") != 128
             or actual.get("Privileged") or actual.get("RestartPolicy", {}).get("Name") != "no"):
         raise RuntimeError("Docker did not apply the load runner limits")
     if expected_cpuset is not None and cpu_list(actual.get('CpusetCpus', '') or '') != cpu_list(expected_cpuset or ''):
@@ -284,7 +284,7 @@ def prepare_actions():
     pins = select_affinity()
     atomic_json(RUNTIME / 'cpu-affinity.json', pins)
     atomic_json(RUNTIME / 'actions.json', actions_context())
-    atomic_json(RUNTIME / 'deadline.json', {'monotonic': time.monotonic() + 160 * 60})
+    atomic_json(RUNTIME / 'deadline.json', {'monotonic': time.monotonic() + 75 * 60})
     atomic_json(REPORTS / 'environment.json', {'actions': actions_context(), 'cpuAllocation': pins,
                                                'host': environment(), 'targetBudget': validate_config(
         json.loads(command(compose('sut', 'config', '--format', 'json'))))})
@@ -307,8 +307,8 @@ def start_services():
     verify()
 
 
-def run_stage(arguments, deadline, *, preflight=False, mode='full'):
-    from protocol import parse_args
+def run_stage(arguments, deadline, *, preflight=False):
+    from protocol import parse_args, VERSION
     args = parse_args(arguments)
     require_start_memory()
     check_engine()
@@ -321,23 +321,19 @@ def run_stage(arguments, deadline, *, preflight=False, mode='full'):
     config = json.loads(command(compose('sut', 'config', '--format', 'json')))
     identifier_list = [command(compose('sut', 'ps', '-q', name)).strip() for name in LIMITS]
     run_id = (f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-preflight" if preflight else
-              f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-{args.stage}-{secrets.token_hex(3)}")
+              f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-{args.plan}-{secrets.token_hex(3)}")
     watch = RUNTIME / 'host-watch' / run_id
     converted = list(arguments)
-    for index, argument in enumerate(converted):
-        if argument == '--baseline-report':
-            converted[index + 1] = str(Path('/bench/reports') / Path(converted[index + 1]).relative_to(REPORTS))
     overrides = {'command': converted, 'user': f'{os.getuid()}:{os.getgid()}',
                  'environment': {'BENCH_RUN_ID': run_id,
                                  'BENCH_STAGE_DEADLINE': str(deadline),
                                  'BENCH_HOST_STATUS': str(Path('/bench/runtime/host-watch') / run_id / 'status.json')}}
     if preflight:
         overrides['entrypoint'] = ['python3', '/workspace/scripts/experiments/lib/preflight.py']
-        overrides['environment']['BENCH_PREFLIGHT_MODE'] = mode
     result_dir = REPORTS / ('preflight' if preflight else args.plan) / run_id
     # Create evidence location before startup, so even a failed container launch is reported.
     result_dir.mkdir(parents=True)
-    atomic_json(result_dir / 'manifest.json', {'schemaVersion': 3, 'plan': args.plan, 'stage': 'preflight' if preflight else args.stage,
+    atomic_json(result_dir / 'manifest.json', {'schemaVersion': VERSION, 'plan': args.plan, 'stage': 'preflight' if preflight else 'experiment',
                 'scope': 'validation' if preflight or args.validation_only else 'performance', 'status': 'running',
                 'deployment': 'github-actions', 'source': source, 'actions': actions_context()})
     identifier, watchdog, failure = None, None, None
@@ -352,7 +348,7 @@ def run_stage(arguments, deadline, *, preflight=False, mode='full'):
             identifier = command(invocation + ['ps', '-a', '-q', 'load-runner']).strip()
             container = json.loads(command(['docker', 'inspect', identifier]))[0]
             validate_runner_container(container, service['cpuset'])
-            load_host = {'machineId': machine_id(), 'cpus': 1, 'memoryMiB': 512, 'environment': environment(),
+            load_host = {'machineId': machine_id(), 'cpus': 1, 'memoryMiB': 1024, 'environment': environment(),
                          'actions': actions_context(), 'cpuset': service['cpuset'], 'imageId': container['Image'],
                          'engine': json.loads(command(['docker', 'version', '--format', '{{json .Server}}']))}
             atomic_json(RUNTIME / 'load-host.json', load_host)
@@ -412,11 +408,9 @@ def run_stage(arguments, deadline, *, preflight=False, mode='full'):
     return result_dir
 
 
-def experiment_parameters(mode, rates, seconds, repeats, vus, refine_steps):
-    from protocol import capacity_rates
-    return {'mode': mode, 'rates': {plan: capacity_rates(plan, rates) for plan in ('redis-filtering', 'kafka-buffering')},
-            'seconds': seconds, 'repeats': repeats, 'vus': vus, 'refineSteps': refine_steps,
-            'capacitySearch': 'ladder' if rates else 'fixed-start-probe-confirm'}
+def experiment_parameters(experiment):
+    from protocol import parse_args, VERSION
+    return {'protocol': VERSION, **vars(parse_args([experiment]))}
 
 
 def reset_after_preflight(previous):
@@ -454,22 +448,20 @@ def reset_after_preflight(previous):
             'emptyJournal': True, 'emptyRedis': True}
 
 
-def run_preflight(mode, rates, seconds, repeats, vus, refine_steps, minutes):
-    parameters = experiment_parameters(mode, rates, seconds, repeats, vus, refine_steps)
-    if mode not in ('full', 'redis', 'kafka', 'smoke') or not 1 <= minutes <= 12:
-        raise RuntimeError('Preflight requires a supported mode and a 1–12 minute data/probe budget')
+def run_preflight(experiment, minutes):
+    parameters = experiment_parameters(experiment)
+    if not 1 <= minutes <= 12:
+        raise RuntimeError('Preflight requires a 1–12 minute budget')
     marker = RUNTIME/'preflight-ready.json'
     marker.unlink(missing_ok=True)
     previous = verify()
     directory = REPORTS/'preflight'/f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT','1')}-preflight"
-    arguments = ['redis-filtering', *(['--rates', rates] if rates else []), '--seconds', str(seconds), '--repeats', str(repeats),
-                 '--vus', str(vus), '--refine-steps', str(refine_steps)]
-    if mode == 'smoke': arguments.append('--validation-only')
+    arguments = [experiment]
     deadline = min(time.monotonic()+minutes*60, json.loads((RUNTIME/'deadline.json').read_text())['monotonic'])
     suite = json.loads((REPORTS/'suite.json').read_text())
-    suite.update(mode=mode, scope='validation', phase='preflight')
+    suite.update(mode=experiment, scope='validation', phase='preflight')
     try:
-        run_stage(arguments, deadline, preflight=True, mode=mode)
+        run_stage(arguments, deadline, preflight=True)
         collect(directory/'diagnostics')
         reset = reset_after_preflight(previous)
         meta = json.loads((directory/'manifest.json').read_text())
@@ -506,72 +498,25 @@ def require_preflight(parameters):
         raise RuntimeError('Successful preflight and verified clean reset are required before measurement: '+str(error)) from error
 
 
-def run_suite(mode, rates, seconds, repeats, vus, refine_steps, minutes):
-    if mode not in ('full', 'redis', 'kafka', 'smoke'):
-        raise RuntimeError('Unsupported experiment selection')
-    if not 1 <= minutes <= 150:
-        raise RuntimeError('Internal deadline must be between 1 and 150 minutes')
-    from protocol import parse_args, read_baseline, validate_baseline, baseline_readiness, budgeted_matrix
-    # Parse all numeric inputs before starting services or creating fixtures.
-    common = [*(['--rates', rates] if rates else []), '--seconds', str(seconds), '--repeats', str(repeats),
-              '--vus', str(vus), '--refine-steps', str(refine_steps)]
-    if mode == 'smoke':
-        common = ['--rates', '5', '--seconds', '2', '--repeats', '1', '--vus', '5',
-                  '--refine-steps', '0', '--validation-only']
-    parse_args(['redis-filtering', *common])
-    deadline = min(time.monotonic() + minutes * 60,
-                   json.loads((RUNTIME / 'deadline.json').read_text())['monotonic'])
-    suite = json.loads((REPORTS / 'suite.json').read_text())
-    suite.update(mode=mode, scope='validation' if mode == 'smoke' else 'performance', phase='measurement')
-    atomic_json(REPORTS / 'suite.json', suite)
+def run_experiment(experiment, minutes):
+    parameters = experiment_parameters(experiment)
+    if not 1 <= minutes <= 45:
+        raise RuntimeError('Measurement deadline must be between 1 and 45 minutes')
+    deadline = min(time.monotonic()+minutes*60, json.loads((RUNTIME/'deadline.json').read_text())['monotonic'])
+    suite = json.loads((REPORTS/'suite.json').read_text())
+    suite.update(mode=experiment, scope='performance', phase='measurement')
+    atomic_json(REPORTS/'suite.json', suite)
     try:
-        require_preflight(experiment_parameters(mode, rates, seconds, repeats, vus, refine_steps))
-        plans = ['redis-filtering', 'kafka-buffering'] if mode in ('full', 'smoke') else [
-            'redis-filtering' if mode == 'redis' else 'kafka-buffering']
-        for plan in plans:
-            if time.monotonic() >= deadline-180:
-                suite.setdefault('skipped', []).append({'plan': plan, 'stage': 'capacity',
-                                                        'reason': 'Insufficient remaining measurement budget'})
-                break
-            directory = run_stage([plan, *common], deadline)
-            suite['stages'].append(str(directory.relative_to(REPORTS)))
-            value = read_baseline(directory/'capacity.json')
-            if plan == 'kafka-buffering':
-                validate_baseline(value, parse_args([plan, *common]), require_capacity=False)
-            if mode != 'smoke':
-                for path in (('A', 'B') if plan == 'redis-filtering' else ('B', 'C')):
-                    bound = value.get('paths', {}).get(path, {})
-                    if baseline_readiness(bound):
-                        suite.setdefault('inconclusive', []).append({'plan': plan, 'path': path,
-                            'reason': 'Qualified passing/failing capacity interval within 10% not established'})
-            atomic_json(REPORTS / 'suite.json', suite)
-            if plan == 'kafka-buffering':
-                baseline = directory / 'capacity.json'
-                reason = baseline_readiness(value.get('paths', {}).get('B', {}), mode == 'smoke')
-                if reason:
-                    suite.setdefault('skipped', []).append({'plan': plan, 'stage': 'burst', 'reason': reason})
-                    print('Burst skipped: '+reason, flush=True)
-                    continue
-                # Provenance and runtime configuration must still match exactly.
-                burst_args = [plan, '--stage', 'burst', '--baseline-report', str(baseline), *common]
-                burst_options = parse_args(burst_args)
-                validate_baseline(value, burst_options)
-                required = 180+sum(p['seconds']+p['baseSeconds']+p['requestTimeout']+30
-                                   for p in budgeted_matrix(burst_options))
-                if deadline-time.monotonic() < required:
-                    suite.setdefault('skipped', []).append({'plan': plan, 'stage': 'burst',
-                                                            'reason': 'Insufficient remaining budget for the full burst matrix'})
-                    print('Burst skipped: insufficient budget for all repetitions', flush=True)
-                    continue
-                directory = run_stage(burst_args, deadline)
-                suite['stages'].append(str(directory.relative_to(REPORTS)))
-                atomic_json(REPORTS / 'suite.json', suite)
-        suite['status'] = 'inconclusive' if suite.get('skipped') or suite.get('inconclusive') else 'completed'
+        require_preflight(parameters)
+        directory = run_stage([experiment], deadline)
+        suite['stages'] = [str(directory.relative_to(REPORTS))]
+        value = json.loads((directory/'experiment.json').read_text())
+        suite['status'] = value['status']
     except BaseException as error:
         suite.update(status='failed', error=str(error) or type(error).__name__)
         raise
     finally:
-        atomic_json(REPORTS / 'suite.json', suite)
+        atomic_json(REPORTS/'suite.json', suite)
 
 
 def collect(public=None):
@@ -612,13 +557,8 @@ def cleanup():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['prepare', 'build', 'up', 'preflight', 'run', 'collect', 'cleanup'])
-    parser.add_argument('--mode', choices=['full', 'redis', 'kafka', 'smoke'], default='full')
-    parser.add_argument('--rates', help='Override both plan-specific ladders')
-    parser.add_argument('--seconds', type=int, default=60)
-    parser.add_argument('--repeats', type=int, default=3)
-    parser.add_argument('--vus', type=int, default=200)
-    parser.add_argument('--refine-steps', type=int, default=4)
-    parser.add_argument('--minutes', type=int, default=150)
+    parser.add_argument('--experiment', choices=['redis-filtering', 'kafka-burst'], default='redis-filtering')
+    parser.add_argument('--minutes', type=int, default=30)
     args = parser.parse_args()
     require_actions()
     os.environ['BENCH_ROOT'] = str(ROOT)
@@ -631,9 +571,9 @@ def main():
     elif args.action == 'up':
         start_services()
     elif args.action == 'preflight':
-        run_preflight(args.mode, args.rates, args.seconds, args.repeats, args.vus, args.refine_steps, args.minutes)
+        run_preflight(args.experiment, args.minutes)
     elif args.action == 'run':
-        run_suite(args.mode, args.rates, args.seconds, args.repeats, args.vus, args.refine_steps, args.minutes)
+        run_experiment(args.experiment, args.minutes)
     elif args.action == 'collect':
         collect()
     elif args.action == 'cleanup':

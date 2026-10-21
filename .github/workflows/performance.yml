@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: Experiment group (fixed-start discovery and formal confirmation)
+        description: One independent fixed-load experiment
         type: choice
-        default: full
-        options: [full, redis, kafka]
+        default: redis-filtering
+        options: [redis-filtering, kafka-burst]
 
 permissions:
   contents: read
@@ -38,12 +38,11 @@ jobs:
   performance:
     needs: checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 90
     env:
       BENCH_ROOT: ${{ github.workspace }}
       BENCH_REPORTS: ${{ github.workspace }}/artifacts/performance
-      BENCH_MODE: ${{ inputs.experiment }}
-      BENCH_VUS: '200'
+      BENCH_EXPERIMENT: ${{ inputs.experiment }}
     outputs:
       html: ${{ steps.html.outputs.ready }}
     steps:
@@ -57,14 +56,14 @@ jobs:
       - name: Build all images before measurement
         timeout-minutes: 25
         run: python3 scripts/experiments/lib/actions.py build
-      - name: Verify real k6 overload recovery before starting business services
+      - name: Calibrate fixed k6 profiles and verify overload classification
         timeout-minutes: 5
         run: |
           mkdir -p artifacts/runner-recovery
-          docker run --rm --network none --cpus 1 --memory 512m --memory-swap 512m --pids-limit 128 \
+          docker run --rm --network none --cpus 1 --memory 1g --memory-swap 1g --pids-limit 128 \
             -v "$GITHUB_WORKSPACE/artifacts/runner-recovery:/check" \
             --entrypoint python3 shanpu-experiment-runner:ci \
-            /workspace/scripts/experiments/checks/k6_recovery.py --output /check
+            /workspace/scripts/experiments/checks/k6_recovery.py --output /check --experiment "$BENCH_EXPERIMENT"
       - name: Preserve load recovery check evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -76,18 +75,16 @@ jobs:
       - name: Start and verify isolated services
         timeout-minutes: 8
         run: python3 scripts/experiments/lib/actions.py up
-      - name: Preflight data growth, low-rate A/B/C warmup and probes, then reset
+      - name: Preflight selected experiment data and paths, then reset
         timeout-minutes: 20
         run: |
           python3 scripts/experiments/lib/actions.py preflight \
-            --mode "$BENCH_MODE" \
-            --seconds 60 --repeats 3 --vus "$BENCH_VUS" --refine-steps 4 --minutes 12
+            --experiment "$BENCH_EXPERIMENT" --minutes 12
       - name: Execute measured experiments and verify evidence
-        timeout-minutes: 150
+        timeout-minutes: 35
         run: |
           python3 scripts/experiments/lib/actions.py run \
-            --mode "$BENCH_MODE" \
-            --seconds 60 --repeats 3 --vus "$BENCH_VUS" --refine-steps 4 --minutes 135
+            --experiment "$BENCH_EXPERIMENT" --minutes 30
       - name: Preserve diagnostics before deleting ephemeral services
         if: always()
         timeout-minutes: 3

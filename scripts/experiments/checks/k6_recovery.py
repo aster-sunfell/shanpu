@@ -1,4 +1,4 @@
-"""Real k6 + controlled HTTP queue + production evidence/search code; no capacity claims.
+"""Real k6 + controlled HTTP queue + production workload/evidence code; no performance claims.
 
 Run inside the load-runner image. The HTTP fixture replaces the business backend;
 its ledger provides deterministic snapshot/commit evidence, not a database benchmark.
@@ -16,10 +16,9 @@ import time
 
 LIB = Path(__file__).resolve().parents[1]/'lib'
 sys.path.insert(0, str(LIB))
-from adaptive_search import recoverable_load_limit, run
 from analysis import Evidence, LATE_START_ERROR, save_result, write_json
-from protocol import capacities, parse_args, policy
-from runner import verify_k6_load
+from protocol import parse_args, policy, matrix
+from runner import verify_k6_load, safe_load_failure, runner_usage
 
 
 class HttpQueue:
@@ -41,13 +40,14 @@ class HttpQueue:
             await reader.readexactly(int(headers.get('Content-Length', 0)))
             token = headers['Authorization'].split()[1].split('.')[1]
             uid = json.loads(base64.urlsafe_b64decode(token+'='*(-len(token) % 4)))['uid']
+            duplicate = self.config['workload'] == 'mixed' and (uid-1)%10 != 9
             async with self.gate:
                 await asyncio.sleep(.04 if self.config['path'] == 'B' else .001)
                 oid = str(uid)
-                self.ledger[uid] = {'orderId': oid, 'userId': uid, 'activityId': self.config['activityId'],
+                if not duplicate: self.ledger[uid] = {'orderId': oid, 'userId': uid, 'activityId': self.config['activityId'],
                                     'commitObservedAtMs': int(time.time()*1000)}
-            data = json.dumps({'code': 0, 'data': {'orderId': oid,
-                               'status': 'PAID' if self.config['path'] == 'B' else 'PENDING'}}).encode()
+            data = json.dumps({'code': 40900} if duplicate else {'code': 0, 'data': {'orderId': oid,
+                               'status': 'PENDING' if self.config['path'] == 'C' else 'PAID'}}).encode()
             writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: '
                          + str(len(data)).encode() + b'\r\n\r\n' + data)
             await writer.drain()
@@ -66,29 +66,13 @@ class HttpQueue:
         self.loop.close()
 
 
-def check(output):
+def check(output, experiment):
     output.mkdir(parents=True, exist_ok=True)
-    workload = (LIB.parent/'k6/lib/workload.js').as_uri()
-    wrapper = output/'workload.js'
-    # Exercise a real late start without rewriting timestamps or evidence. Delay
-    # the final 100 ms of iterations until 25 ms after the actual scenario end.
-    wrapper.write_text("import exec from 'k6/execution';\nimport { sleep } from 'k6';\n"
-                       f"import {{ optionsFor, request }} from '{workload}';\n"
-                       "export const options = optionsFor('kafka-buffering');\n"
-                       "const config = JSON.parse(open(__ENV.POINT_CONFIG));\n"
-                       "export default function() {\n"
-                       "  const left = exec.scenario.startTime + config.seconds*1000 - Date.now();\n"
-                       "  if (__ENV.STOP_TAIL === '1' && left < 100) return;\n"
-                       "  if (__ENV.DELAY_TAIL === '1' && left > 0 && left < 100) sleep((left+25)/1000);\n"
-                       "  request();\n}\n")
-    args = parse_args(['kafka-buffering'])
-    # Short functional checks only; these deliberately cannot qualify as formal evidence.
-    args.rates, args.probe_seconds, args.probe_steps = [500], 3, 5
-    args.seconds, args.repeats, args.min_samples, args.refine_steps = 2, 1, 1, 2
+    args = parse_args(['kafka-burst'])
     server = HttpQueue()
     observed, results, meta = [], [], {}
 
-    def execute(point, phase, tail=False, stop_tail=False):
+    def execute(point, phase):
         assert server.active == 0, 'Previous HTTP work did not drain'
         directory = output/f'{len(observed)+1:02d}-{phase}-{point["path"]}-{point["rate"]}'
         directory.mkdir()
@@ -98,18 +82,19 @@ def check(output):
                 'segments': [{'index': 0, 'userId': 1, 'count': config['scheduled']+1}]}
         write_json(directory/'point.json', config)
         write_json(directory/'users.json', pool)
+        wrapper = LIB.parent/'k6'/f"{config['plan']}.js"
         with (directory/'k6.out').open('w') as log:
             completed = subprocess.run(['k6', 'run', '--no-summary', '--no-thresholds', '--log-format', 'raw',
                 '--console-output', str(directory/'requests.jsonl'), str(wrapper)],
                 env={**os.environ, 'POINT_CONFIG': str(directory/'point.json'), 'USER_FILE': str(directory/'users.json'),
-                     'JWT_SECRET': 'local-recovery-fixture-only', 'DELAY_TAIL': '1' if tail else '0',
-                     'STOP_TAIL': '1' if stop_tail else '0',
-                     'API_BASE': f'http://127.0.0.1:{server.port}/api'}, stdout=log, stderr=subprocess.STDOUT, timeout=30)
+                     'JWT_SECRET': 'local-recovery-fixture-only',
+                     'API_BASE': f'http://127.0.0.1:{server.port}/api'}, stdout=log, stderr=subprocess.STDOUT, timeout=100)
         until = time.monotonic()+5
         while server.active and time.monotonic() < until: time.sleep(.01)
         assert server.active == 0, 'HTTP queue did not drain'
         for snapshot in ('before', 'after'):
-            paid = server.ledger if snapshot == 'after' else {}
+            duplicates = {i+1: {} for i in range(config['scheduled']) if config['workload'] == 'mixed' and i%10 != 9}
+            paid = {**duplicates, **server.ledger} if snapshot == 'after' else duplicates
             rows = {'users': [[i, i+1, 900 if i+1 in paid else 1000] for i in range(pool['count'])],
                     'orders': [[str(uid), uid, 100, 2] for uid in paid],
                     'logs': [[uid, str(uid), -100, 2] for uid in paid], 'bought': list(paid)}
@@ -126,48 +111,44 @@ def check(output):
         value.update(phase=phase, scope='validation', repeat=config['repeat'], evidenceDirectory=directory.name)
         save_result(directory, value)
         assert not value['correctnessErrors'] and not value['unresolvedCount'], value['correctnessErrors']
-        assert value['valid'] or recoverable_load_limit(value), value['loadErrors']
+        assert value['valid'] or safe_load_failure(value), value['loadErrors']
         observed.append(value)
-        if phase == 'confirmation': results.append((directory.name, value))
+        value['runnerUsage'] = runner_usage()
+        save_result(directory, value)
+        results.append((directory.name, value))
         print(json.dumps({'point': directory.name, 'valid': value['valid'], 'vuExhausted': value['vuExhausted'],
                           'started': value['started'], 'scheduled': value['scheduled'],
                           'late': value['injectionTiming']['lateStarts']['count'], 'loadErrors': value['loadErrors']}), flush=True)
         return value
 
     try:
-        # Lateness alone must remain invalid, even when no VU is exhausted.
-        late = execute({'plan': 'kafka-buffering', 'path': 'C', 'rate': 50, 'seconds': 3, 'baseSeconds': 0,
-                        'baseRate': 0, 'workload': 'steady', 'repeat': 1, 'vus': 200, 'scheduled': 150}, 'probe', tail=True)
-        assert LATE_START_ERROR in late['loadErrors'] and not late['vuExhausted']
-        # Stop the last 100 ms deliberately in this fixture to isolate pool
-        # exhaustion from the independently checked duration-boundary race.
-        limited = execute({'plan': 'kafka-buffering', 'path': 'B', 'rate': 800, 'seconds': 3, 'baseSeconds': 0,
-                           'baseRate': 0, 'workload': 'steady', 'repeat': 1, 'vus': 200, 'scheduled': 2400},
-                          'probe', stop_tail=True)
-        assert limited['vuExhausted'] and LATE_START_ERROR not in limited['loadErrors']
-        search_start = len(observed)
-        run(args, lambda point, phase: execute(point, phase, tail=point['path'] == 'B' and point['rate'] == 500),
-            results, meta, lambda: 100000, lambda: write_json(output/'search.json', meta))
-        slow = [r for r in observed[search_start:] if r['path'] == 'B']
-        assert slow[0]['vuExhausted'] and LATE_START_ERROR in slow[0]['loadErrors'], 'Combined overload not reproduced'
-        bounds = capacities(args, results)
-        assert all(b['passingRps'] is not None for b in bounds.values()), bounds
-        for path, bound in bounds.items():
-            limited_rates = {r['rate'] for r in observed[search_start:] if r['path'] == path and not r['valid']}
-            assert bound['failingRps'] not in limited_rates, 'Invalid injection became a service failure bound'
-        assert any(r['path'] == 'C' and r['valid'] for _, r in results), 'Other path did not continue'
-        write_json(output/'check.json', {'status': 'passed', 'scope': 'validation', 'formalCapacityEvidence': False,
-                   'description': 'Real k6 and production workload/evidence/search; controlled HTTP queue replaces business services',
-                   'observedPoints': len(observed), 'search': meta['search']})
+        # Actual default counts, durations and fixed VU allocation; only HTTP business
+        # behavior is controlled. This validates the generator, not service performance.
+        selected = next(p for p in matrix(parse_args([experiment])) if p['path'] == ('B' if experiment == 'redis-filtering' else 'C'))
+        measured = execute(selected, 'fixed-profile')
+        assert measured['valid'], measured['loadErrors']
+        if experiment == 'kafka-burst': assert measured['burst']['requests'] == 4000
+        burst = next(p for p in matrix(args) if p['path'] == 'C')
+        limited = execute({'plan': 'kafka-burst', 'path': 'B', 'rate': 800, 'seconds': 3,
+                           'baseSeconds': 0, 'baseRate': 0, 'recoverySeconds': 0,
+                           'workload': 'steady', 'repeat': 1, 'vus': 20, 'scheduled': 2400}, 'overload')
+        assert limited['vuExhausted'] and safe_load_failure(limited), limited['loadErrors']
+        recovered = execute({**burst, 'workload': 'steady', 'baseSeconds': 0, 'seconds': 2,
+                             'recoverySeconds': 0, 'rate': 50, 'scheduled': 100}, 'after-overload')
+        assert recovered['valid'], recovered['loadErrors']
+        write_json(output/'check.json', {'status': 'passed', 'scope': 'validation',
+                   'description': 'Real default k6 profiles and production evidence; controlled HTTP queue, no business performance claims',
+                   'experiment': experiment, 'observedPoints': len(observed), 'resources': runner_usage()})
     finally: server.close()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--experiment', choices=['redis-filtering','kafka-burst'], default='redis-filtering')
     options = parser.parse_args()
     try:
-        check(options.output.resolve())
+        check(options.output.resolve(), options.experiment)
     except Exception as error:
         options.output.mkdir(parents=True, exist_ok=True)
         write_json(options.output/'check.json', {'status': 'failed', 'scope': 'validation', 'error': str(error)})

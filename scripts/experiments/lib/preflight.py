@@ -1,4 +1,4 @@
-"""Real-runner fixture growth and short request probes, never capacity evidence."""
+"""Real-runner fixture growth and short request probes, never comparison evidence."""
 import copy
 import json
 import math
@@ -10,27 +10,17 @@ import time
 from analysis import Evidence, write_json
 from fixtures import POINTS, PRICE, create_users, credential, prepare, release_redis
 from host import check_host_health
-from protocol import budgeted_matrix, parse_args, validate_deployment, capacity_rates
+from protocol import budgeted_matrix, parse_args, validate_deployment
 from runner import RUNTIME, REPORTS, api, measure, mysql_settings, require_idle, sql
 
 
-def dataset_plan(args, mode):
-    plans = ['redis-filtering', 'kafka-buffering'] if mode in ('full', 'smoke') else [
-        'redis-filtering' if mode == 'redis' else 'kafka-buffering']
-    points = []
-    for plan in plans:
-        selected = copy.copy(args)
-        selected.plan = plan
-        selected.rates = capacity_rates(plan, args.rates_override)
-        points.extend(budgeted_matrix(selected))
-    initial = sum(p['scheduled'] for p in points)
-    return {'initialLadderRequests': initial, 'seedUsers': math.ceil(initial*1.2),
-            'planRates': {plan: capacity_rates(plan, args.rates_override) for plan in plans},
+def dataset_plan(args):
+    points = budgeted_matrix(args)
+    total = sum(p['scheduled'] for p in points)
+    return {'formalRequests': total, 'seedUsers': math.ceil(total*1.2),
             'batchUsers': max(p['scheduled'] for p in points),
-            # Readiness must not require passing the highest capacity rung.
-            # Ten seconds also exercises an eligible mixed request at 1 RPS.
-            'probeRate': min(5, min(args.rates)), 'warmupSeconds': 10, 'probeSeconds': 10,
-            'coverage': 'Configured formal starting blocks plus 20%; not all adaptive candidates, bursts or long-duration effects'}
+            'probeRate': 5, 'warmupSeconds': 5, 'probeSeconds': 10,
+            'coverage': 'Complete fixed experiment request count plus 20%'}
 
 
 def verify_fixture(directory, config):
@@ -40,15 +30,16 @@ def verify_fixture(directory, config):
     try:
         evidence.load_snapshot('before')
         planned = config['scheduled']
-        expected_orders = planned-planned//10+1
+        expected_orders = planned-planned//10+1 if config['workload'] == 'mixed' else 1
         counts = {kind: evidence.scalar(f'SELECT COUNT(*) FROM before_{kind}')
                   for kind in ('users', 'orders', 'logs')}
         if counts != {'users': planned+1, 'orders': expected_orders, 'logs': expected_orders}:
             errors.append('Fixture row counts do not match the duplicate mix and warmup user')
+        duplicate_predicate = 'u.idx%10<>9' if config['workload'] == 'mixed' else '0'
         checks = {
-            'Fixture ownership, mix or balance mismatch': '''SELECT COUNT(*) FROM before_users u
+            'Fixture ownership, mix or balance mismatch': f'''SELECT COUNT(*) FROM before_users u
                 LEFT JOIN before_orders o ON o.uid=u.uid WHERE u.idx<0 OR u.idx>?
-                OR ((u.idx=? OR u.idx%10<>9)<>(o.oid IS NOT NULL))
+                OR ((u.idx=? OR {duplicate_predicate})<>(o.oid IS NOT NULL))
                 OR u.points<>?-CASE WHEN o.oid IS NOT NULL THEN ? ELSE 0 END''',
             'Fixture order or log mismatch': '''SELECT COUNT(*) FROM before_orders o
                 LEFT JOIN before_users u ON u.uid=o.uid LEFT JOIN
@@ -89,7 +80,7 @@ def run(args):
         check_host_health()
         settings = mysql_settings()
         write_json(directory/'mysql-settings.json', settings)
-        summary['dataset'] = dataset_plan(args, os.environ['BENCH_PREFLIGHT_MODE'])
+        summary['dataset'] = dataset_plan(args)
         write_json(directory/'preflight.json', summary)
         private = RUNTIME/'preflight'/os.environ['BENCH_RUN_ID']
         private.mkdir(parents=True, mode=0o700)
@@ -102,8 +93,9 @@ def run(args):
             check_host_health()
             batch += 1
             size = min(summary['dataset']['batchUsers'], summary['dataset']['seedUsers']-seeded)
-            path = 'A' if batch%2 else 'B'
-            point = {'plan': 'redis-filtering', 'repeat': 1, 'workload': 'mixed', 'path': path,
+            paths = ('A', 'B') if args.plan == 'redis-filtering' else ('B', 'C')
+            path = paths[(batch-1)%2]
+            point = {'plan': args.plan, 'repeat': 1, 'workload': 'mixed' if args.plan == 'redis-filtering' else 'steady', 'path': path,
                      'rate': summary['dataset']['probeRate'], 'seconds': args.seconds, 'baseSeconds': 0,
                      'baseRate': 1, 'vus': args.vus, 'requestTimeout': args.request_timeout,
                      'points': POINTS, 'scheduled': size, 'userPrefix': 'x'+secrets.token_hex(6)}
@@ -119,19 +111,19 @@ def run(args):
             write_json(directory/'preflight.json', summary)
         # Warm each path at low rate, then validate with fresh users and activity.
         # Both phases retain evidence and validity checks; neither gates on SLO
-        # or requires passing the highest rung of the formal capacity ladder.
+        # or requires passing the measured workload's SLO.
         probe_args = copy.copy(args)
         probe_args.validation_only = True
         probe_args.drain_seconds = min(args.drain_seconds, 30)
-        for path in ('A', 'B', 'C'):
+        for path in (('A', 'B') if args.plan == 'redis-filtering' else ('B', 'C')):
             for phase, seconds in (('warmup', summary['dataset']['warmupSeconds']),
                                    ('probe', summary['dataset']['probeSeconds'])):
                 check_host_health()
                 name = f'{phase}-{path}'
                 point_dir = directory/name
                 point_dir.mkdir()
-                point = {'plan': 'kafka-buffering' if path=='C' else 'redis-filtering', 'repeat': 1,
-                         'workload': 'steady' if path=='C' else 'mixed', 'path': path,
+                point = {'plan': args.plan, 'repeat': 1,
+                         'workload': 'mixed' if args.plan == 'redis-filtering' else 'steady', 'path': path,
                          'rate': summary['dataset']['probeRate'], 'seconds': seconds,
                          'baseSeconds': 0, 'baseRate': 1, 'vus': args.vus, 'requestTimeout': args.request_timeout,
                          'points': POINTS, 'scheduled': summary['dataset']['probeRate']*seconds,

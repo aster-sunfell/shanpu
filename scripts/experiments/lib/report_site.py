@@ -27,20 +27,20 @@ def merge_report(current, archive, keep=30):
         if value and re.fullmatch(r'[0-9]+-[0-9]+', path.parent.name) and value.get('id') == path.parent.name:
             reports.append(value)
     reports.sort(key=lambda value: (int(value['runId']), int(value['attempt'])), reverse=True)
-    complete = next((value for value in reports if value['status'] == 'completed' and value['scope'] == 'performance'), None)
-    # Preserve the latest complete formal report even after many failed/validation attempts.
+    complete = {plan: next((v for v in reports if v.get('mode') == plan and v['status'] == 'completed'
+                           and v['scope'] == 'performance'), None) for plan in ('redis-filtering','kafka-burst')}
     retained = reports[:keep]
-    if complete and complete not in retained:
-        retained.append(complete)
+    for value in complete.values():
+        if value and value not in retained: retained.append(value)
     retained_ids = {value['id'] for value in retained}
     for value in reports:
         if value['id'] not in retained_ids:
             shutil.rmtree(runs / value['id'])
-    body = ['<h1>闪铺压测报告</h1><p class="muted">GitHub Actions · Redis 过滤收益 · Kafka 异步化容量与突发收益</p>']
-    if complete:
-        body.append(f'<section><h2>最近一次完整正式实验</h2><p><a href="runs/{complete["id"]}/index.html">打开报告 {complete["id"]}</a></p></section>')
-    else:
-        body.append('<p class="warning">尚无完整正式实验。流程验证和失败记录均有明确标记。</p>')
+    body = ['<h1>闪铺压测报告</h1><p class="muted">GitHub Actions · Redis 过滤收益 · Kafka 削峰收益</p>']
+    for plan, value in complete.items():
+        body.append('<section><h2>'+escape(plan)+' · 最近一次完整正式实验</h2>')
+        body.append(f'<a href="runs/{value["id"]}/index.html">打开报告 {value["id"]}</a>' if value else '<p>尚无完整正式实验。</p>')
+        body.append('</section>')
     body.append('<section><h2>运行历史</h2><div class="scroll"><table><thead><tr><th>运行</th><th>模式</th><th>用途</th><th>状态</th><th>Commit</th></tr></thead><tbody>')
     for value in retained:
         body.append(f'<tr><td><a href="runs/{value["id"]}/index.html">{value["id"]}</a></td>'

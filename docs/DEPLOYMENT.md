@@ -150,7 +150,7 @@ docker compose --env-file .env.production -f deploy/compose.2c2g.yml ps
 
 业务请求经过 Nginx，前端容器计入预算但不施加浏览器负载。指标每秒原子写入证据卷，发压端只读采集，避免与业务争抢 Tomcat 连接；关键核对等待新快照，过期或不完整证据仍使测量无效。实验关闭定时补偿、超时处理、对账与定时预热，启用提交/SQL 观测；这些差异会写入报告，结果不等同于启用全部后台任务的生产容量。
 
-HTML 报告和完整证据分别保存为 Actions artifacts；配置 Pages 后，main 会将 HTML 发布到报告网站，并通过仓库 About 的 Website 打开。参数、设置与结论边界见 [实验说明](./experiments/README.md) 和 [实验计划](./experiments/PLAN.md)。
+HTML 报告和完整证据分别保存为 Actions artifacts；配置 Pages 后，main 会将 HTML 发布到报告网站，并通过仓库 About 的 Website 打开。参数、设置与结论边界见 [实验说明](./experiments/README.md)。
 
 ## 9. 重置数据
 

@@ -1,9 +1,3 @@
-document.querySelectorAll('[data-timeline-select]').forEach(select => {
- select.addEventListener('change', () => {
-  const scope=select.closest('[data-timeline-group]');
-  scope.querySelectorAll('.timeline-variant').forEach(plot => {plot.hidden=plot.dataset.key!==select.value;});
- });
-});
 const menu = document.querySelector('nav');
 if (menu) {
 const navigation = Array.from(menu.querySelectorAll('a[href^="#"]')).map(link => ({link, section: document.querySelector(link.getAttribute('href'))})).filter(item => item.section);

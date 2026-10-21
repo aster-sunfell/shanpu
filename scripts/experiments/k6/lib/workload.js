@@ -2,7 +2,7 @@ import http from 'k6/http';
 import exec from 'k6/execution';
 import crypto from 'k6/crypto';
 import encoding from 'k6/encoding';
-import { userIndex, userId, trafficClass, scheduledAt } from './schedule.mjs';
+import { userIndex, userId, trafficClass, scheduledAt, phaseFor, slotRate } from './schedule.mjs';
 
 const config = JSON.parse(open(__ENV.POINT_CONFIG));
 const pool = JSON.parse(open(__ENV.USER_FILE));
@@ -22,8 +22,7 @@ export function optionsFor(plan) {
     gracefulStop: `${config.requestTimeout + 2}s`,
   });
   const scenarios = config.workload === 'burst' ? {
-    baseline: scenario(config.baseRate, config.baseSeconds),
-    burst: scenario(config.rate, config.seconds, `${config.baseSeconds}s`),
+    profile: scenario(slotRate(config), config.baseSeconds + config.seconds + config.recoverySeconds),
   } : { steady: scenario(config.rate, config.seconds) };
   return {
     scenarios,
@@ -36,11 +35,11 @@ export function request() {
   if (index >= pool.count - 1) throw new Error('User pool exhausted; warmup user must remain isolated');
   const uid = userId(pool, index);
   const token = tokenFor(uid, index);
-  const requestId = `${exec.scenario.name}:${exec.scenario.iterationInTest}`;
+  const phase = phaseFor(config, index);
+  const requestId = `${phase.name}:${index - phase.offset}`;
   const startedAtMs = Date.now();
-  const injectionEndMs = exec.scenario.startTime + 1000 * (exec.scenario.name === 'baseline'
-    ? config.baseSeconds + config.seconds : config.seconds);
-  console.log(JSON.stringify({ type: 'start', requestId, index, userId: uid, trafficClass: trafficClass(config, index), scheduledAtMs: scheduledAt(config, exec.scenario.name, exec.scenario.iterationInTest, exec.scenario.startTime), startedAtMs, injectionEndMs }));
+  const injectionEndMs = exec.scenario.startTime + 1000 * (config.baseSeconds + config.seconds + (config.recoverySeconds || 0));
+  console.log(JSON.stringify({ type: 'start', requestId, index, userId: uid, trafficClass: trafficClass(config, index), scheduledAtMs: scheduledAt(config, exec.scenario.name, index, exec.scenario.startTime), startedAtMs, injectionEndMs }));
   const response = http.post(`${__ENV.API_BASE}/seckills/${config.activityId}/grab`, '{}', {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     timeout: `${config.requestTimeout}s`, tags: { name: 'seckill-grab' },

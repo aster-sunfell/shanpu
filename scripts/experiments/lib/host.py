@@ -171,7 +171,7 @@ def finalize_host_evidence(directory, watch_directory, failure=None):
         if (watch_directory/name).exists():
             shutil.copyfile(watch_directory/name, directory/'host-watch'/name)
     if not failure: return
-    for name in ('capacity.json', 'burst.json', 'manifest.json'):
+    for name in ('experiment.json', 'manifest.json'):
         path = directory/name
         if not path.exists(): continue
         if path.stat().st_size > 2*MIB:
@@ -179,10 +179,10 @@ def finalize_host_evidence(directory, watch_directory, failure=None):
         value = json.loads(path.read_text())
         value.update(status='failed', hostFailure=failure)
         if name != 'manifest.json':
-            value.update(capacityGainPct=None, capacityGainRangePct=None, comparisons=[])
+            value.update(comparisons=[])
         atomic_json(path,value)
     (directory/'report.md').write_text('# 性能测量中止\n\n状态：failed。\n\n'
-                                      '**宿主机最终检查失败，本轮不可用于性能收益或突发基线。**\n\n'
+                                      '**宿主机最终检查失败，本轮不可用于性能收益。**\n\n'
                                       '原因见 manifest.json 的 hostFailure 与 host-watch/。逐点结果和原始证据保留，未执行自动清理。\n')
 
 

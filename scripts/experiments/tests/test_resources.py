@@ -69,25 +69,25 @@ class ResourceTest(unittest.TestCase):
         container['HostConfig']['CpusetCpus']='0,2'
         validate_container('backend',container,'0,2')
         with self.assertRaisesRegex(RuntimeError,'affinity'):validate_container('backend',container,'0,4')
-        container=self.container(cpu=1,restart='no')
+        container=self.container(cpu=1,memory=1024,restart='no')
         container['HostConfig']['CpusetCpus']='4'
         validate_runner_container(container,'4')
         with self.assertRaisesRegex(RuntimeError,'affinity'):validate_runner_container(container,'2')
 
     def test_runner_is_bounded_and_cannot_spawn_other_containers(self):
-        validate_runner_container(self.container(cpu=1,restart='no'))
-        validate_runner_config({'cpus': 1, 'mem_limit': str(512 * MIB), 'memswap_limit': str(512 * MIB),
+        validate_runner_container(self.container(cpu=1,memory=1024,restart='no'))
+        validate_runner_config({'cpus': 1, 'mem_limit': str(1024 * MIB), 'memswap_limit': str(1024 * MIB),
                                 'pids_limit': 128, 'restart': 'no'})
-        container = self.container(cpu=1,restart='no')
+        container = self.container(cpu=1,memory=1024,restart='no')
         container['Mounts'] = [{'Source': '/var/run/docker.sock'}]
         with self.assertRaises(RuntimeError): validate_runner_container(container)
 
     def test_safe_default_vus_and_duration_remain_bounded(self):
         points = budgeted_matrix(parse_args(['redis-filtering']))
-        self.assertTrue(all(p['vus'] == 200 for p in points))
+        self.assertTrue(all(p['vus'] == 400 for p in points))
         self.assertTrue(all(60 <= p['seconds'] <= 600 for p in points))
         with patch('sys.stderr'), self.assertRaises(SystemExit):
-            parse_args(['redis-filtering', '--vus', '201'])
+            parse_args(['redis-filtering', '--vus', '401'])
 
 
 if __name__ == '__main__':
