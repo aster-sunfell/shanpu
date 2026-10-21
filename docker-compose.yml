@@ -27,6 +27,7 @@ services:
     volumes:
       - ./deploy/nginx.conf.template:/etc/nginx/templates/nginx.conf.template:ro
       - ./deploy/nginx.api.conf:/etc/nginx/api.conf:ro
+      - ./deploy/nginx.backend-keepalive.conf:/etc/nginx/backend-keepalive.conf:ro
     deploy:
       resources:
         limits:

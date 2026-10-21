@@ -61,6 +61,10 @@
 
 本地、生产和待测端共用 `deploy/nginx.api.conf`，统一 API 请求头、上游连接复用和超时。网关使用一个 worker、512 个连接位；本地仅页面代理保留 WebSocket、关闭缓冲和热更新需要的长超时。
 
+后端上游连接池共用 `deploy/nginx.backend-keepalive.conf`，由本地和生产的 `upstream backend` 引用，压测继承生产挂载。池内最多保留 16 条空闲连接，空闲超时为 3 秒，必须小于 Tomcat 的 5 秒，避免复用正在被后端关闭的连接。`http` 中的 `keepalive_timeout 15s` 控制客户端连接，不控制这个上游连接池；`nginx.api.conf` 在 `location` 中加载，也不能放置上游连接池指令。配置一致性检查会核验共享文件引用、只读挂载和超时关系，并将共享文件纳入报告配置指纹。
+
+首次引入共享文件后，本地执行 `docker compose up -d --force-recreate nginx`；生产执行 `docker compose --env-file .env.production -f deploy/compose.2c2g.yml up -d --force-recreate nginx`，让新增挂载生效。后续 Actions 压测会自动使用该配置；此次仅调整网关，无需重建后端镜像。
+
 - `/api/` 转发到宿主机 Java，保留 `/api` 路径。
 - `/` 转发到宿主机 Next.js，支持 WebSocket Upgrade，并关闭代理缓冲。
 - `/gateway-health` 由 Nginx 直接返回 200，用于独立判断网关是否运行。

@@ -169,6 +169,7 @@ services:
     volumes:
       - ./nginx.2c2g.conf:/etc/nginx/nginx.conf:ro
       - ./nginx.api.conf:/etc/nginx/api.conf:ro
+      - ./nginx.backend-keepalive.conf:/etc/nginx/backend-keepalive.conf:ro
     depends_on:
       backend: {condition: service_healthy}
       frontend: {condition: service_healthy}

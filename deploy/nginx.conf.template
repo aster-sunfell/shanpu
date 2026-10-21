@@ -8,7 +8,10 @@ http {
     error_log /dev/stderr warn;
     sendfile on;
     keepalive_timeout 15s;
-    upstream backend { server 127.0.0.1:${BACKEND_PORT}; keepalive 16; }
+    upstream backend {
+        server 127.0.0.1:${BACKEND_PORT};
+        include /etc/nginx/backend-keepalive.conf;
+    }
     upstream frontend { server 127.0.0.1:${FRONTEND_PORT}; keepalive 4; }
     map $http_upgrade $connection_upgrade {
         default upgrade;

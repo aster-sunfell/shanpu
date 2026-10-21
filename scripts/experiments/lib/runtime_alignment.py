@@ -3,11 +3,45 @@ import copy
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[3]
 MIDDLEWARE = ('mysql', 'redis', 'kafka')
+
+
+def validate_backend_keepalive(development, production, shared, application):
+    """Check the shared upstream policy, separately from client keepalive settings."""
+    def uncomment(value):
+        return re.sub(r'#[^\n]*', '', value)
+
+    for label, config in (('development', development), ('production', production)):
+        # Port placeholders contain braces but are not Nginx blocks.
+        config = re.sub(r'\$\{\w+\}', 'PORT', uncomment(config))
+        blocks = re.findall(r'\bupstream\s+backend\s*\{([^{}]*)\}', config)
+        if (len(blocks) != 1
+                or len(re.findall(r'\binclude\s+/etc/nginx/backend-keepalive\.conf\s*;', blocks[0])) != 1
+                or re.search(r'\bkeepalive(?:_\w+)?\s', blocks[0])):
+            raise RuntimeError(f'{label} backend upstream must include only the shared keepalive policy')
+    shared = uncomment(shared)
+    pool = re.findall(r'\bkeepalive\s+(\d+)\s*;', shared)
+    timeout = re.findall(r'\bkeepalive_timeout\s+(\d+(?:ms|s))\s*;', shared)
+    # The repository uses block-style YAML; scope the scalar to server.tomcat.
+    application = uncomment(application) + '\n'
+    server = re.search(r'^server:[ \t]*\n((?:[ \t]+[^\n]*\n|\n)*)', application, re.M)
+    tomcat = re.search(r'^  tomcat:[ \t]*\n((?: {4}[^\n]*\n|\n)*)', server[1], re.M) if server else None
+    backend = re.findall(r'^    keep-alive-timeout:[ \t]*(\d+(?:ms|s))[ \t]*$', tomcat[1], re.M) if tomcat else []
+    if len(pool) != 1 or int(pool[0]) <= 0 or len(timeout) != 1 or len(backend) != 1:
+        raise RuntimeError('Explicit shared upstream keepalive and Tomcat keep-alive-timeout are required')
+
+    def milliseconds(value):
+        return int(value[:-2]) if value.endswith('ms') else int(value[:-1]) * 1000
+
+    upstream_ms, backend_ms = milliseconds(timeout[0]), milliseconds(backend[0])
+    if not 0 < upstream_ms < backend_ms:
+        raise RuntimeError('Upstream keepalive timeout must be positive and shorter than Tomcat keep-alive-timeout')
+    return {'idleConnections': int(pool[0]), 'upstreamTimeoutMs': upstream_ms, 'tomcatTimeoutMs': backend_ms}
 
 
 def _equal(expected, actual, label):
@@ -62,13 +96,23 @@ def validate_alignment(production, sut, development):
     api_mounts = [mount for mount in baseline['nginx']['volumes'] if mount['target'] == '/etc/nginx/api.conf']
     if not api_mounts or api_mounts != [mount for mount in nginx.get('volumes', []) if mount['target'] == '/etc/nginx/api.conf']:
         raise RuntimeError('Development must share the production API proxy configuration')
+    for label, service in (('production', baseline['nginx']), ('development', nginx)):
+        mounts = [mount for mount in service.get('volumes', []) if mount['target'] == '/etc/nginx/backend-keepalive.conf']
+        if (len(mounts) != 1 or mounts[0].get('type') != 'bind' or mounts[0].get('read_only') is not True
+                or Path(mounts[0].get('source', '')).resolve() != ROOT/'deploy/nginx.backend-keepalive.conf'):
+            raise RuntimeError(f'{label} must mount the shared backend keepalive policy read-only')
+    keepalive = validate_backend_keepalive(*((ROOT/name).read_text() for name in
+        ('deploy/nginx.conf.template', 'deploy/nginx.2c2g.conf', 'deploy/nginx.backend-keepalive.conf',
+         'backend/src/main/resources/application-2c2g.yml')))
     digest = hashlib.sha256()
     for name in ('deploy/compose.2c2g.yml', 'deploy/nginx.2c2g.conf', 'deploy/nginx.api.conf',
+                 'deploy/nginx.backend-keepalive.conf',
                  'backend/Dockerfile', 'backend/docker/java.options', 'backend/docker/entrypoint.sh',
                  'backend/src/main/resources/application.yml', 'backend/src/main/resources/application-prod.yml',
                  'backend/src/main/resources/application-2c2g.yml', 'frontend/Dockerfile'):
         digest.update(name.encode()+b'\0'+(ROOT/name).read_bytes()+b'\0')
     return {'status': 'aligned', 'services': sorted(baseline),
+            'backendKeepalive': keepalive,
             'developmentMiddleware': list(MIDDLEWARE),
             'sharedConfigurationSha256': digest.hexdigest(),
             'baselineSha256': hashlib.sha256((ROOT/'deploy/compose.2c2g.yml').read_bytes()).hexdigest()}
