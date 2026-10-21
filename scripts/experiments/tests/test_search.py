@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'lib'))
 import runner
 from protocol import capacities, parse_args, search_candidates
+from analysis import LATE_START_ERROR
 
 
 class CapacitySearchTest(unittest.TestCase):
@@ -70,6 +71,8 @@ class CapacitySearchTest(unittest.TestCase):
                 for entry in meta.get('probePoints', []):
                     data = json.loads((reports/'kafka-buffering/run'/entry['directory']/'result.json').read_text())
                     self.assertEqual(('probe', 'validation'), (data['phase'], data['scope']))
+                    if entry.get('redisReleased') and data.get('loadErrors'):
+                        self.assertTrue(data['recoveryVerified'])
                 self.assertTrue(all(r.get('phase') != 'probe' for _, r in reports_written[-1][1]))
             return calls, meta, capacities(reports_written[-1][2], reports_written[-1][1])
 
@@ -97,13 +100,33 @@ class CapacitySearchTest(unittest.TestCase):
     def test_adaptive_runner_still_aborts_on_data_errors_and_unknown_load_failures(self):
         for response, error in (({'correctnessErrors': ['stock mismatch']}, 'Data/evidence invalid'),
                                 ({'valid': False, 'loadErrors': ['k6 exit 1']}, 'Load generation invalid'),
+                                ({'valid': False, 'loadErrors': ['Injection window endpoints are inconsistent']}, 'Load generation invalid'),
+                                ({'correctnessErrors': ['Clock shifted during the point']}, 'Data/evidence invalid'),
                                 ({'unresolvedCount': 1}, 'Data/evidence invalid')):
             with self.subTest(response=response):
                 calls, meta, bounds = self.run_search({'B': 330, 'C': 450}, adaptive=True,
                                                       response=lambda p: response, expected_error=error)
                 self.assertEqual(1, len(calls))
                 self.assertEqual('failed', meta['status'])
+                self.assertEqual('measurement-error', meta['search']['stopReason'])
+                self.assertFalse(meta['probePoints'][0].get('redisReleased'))
                 self.assertTrue(all(b['passingRps'] is None for b in bounds.values()))
+
+    def test_dropped_late_probe_descends_and_keeps_other_path_running(self):
+        def response(point):
+            if point['path'] != 'B' or point['rate'] < 300: return {}
+            timing = {key: {'count': 0} for key in ('inconsistentEnds', 'earlyStarts', 'invalidSchedule', 'aheadOfSchedule')}
+            timing['lateStarts'] = {'count': 1, 'maxDeviationMs': 25, 'examples': []}
+            return {'valid': False, 'sloPassed': False,
+                    'loadErrors': ['Offered load not achieved', LATE_START_ERROR,
+                                   'k6 exhausted its fixed VU pool (Insufficient VUs); arrivals were dropped'],
+                    'injectionTiming': timing}
+        calls, meta, bounds = self.run_search({'B': 10000, 'C': 450}, adaptive=True, response=response)
+        self.assertEqual('completed', meta['status'])
+        self.assertTrue(any(p['path'] == 'B' and p['rate'] < 300 for p in calls))
+        self.assertIsNotNone(bounds['B']['passingRps'])
+        self.assertIsNone(bounds['B']['failingRps'])
+        self.assertTrue(bounds['C']['bounded'])
 
     def test_paths_stop_above_their_own_failure_and_refine_independently(self):
         calls, meta, bounds = self.run_search({'B': 260, 'C': 230})

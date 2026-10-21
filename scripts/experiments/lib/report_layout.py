@@ -244,10 +244,18 @@ def diagnostics(stage):
                      fmt(r.get('completedWithinDeadline')),fmt(r.get('completionWindowRps')),fmt(r.get('peakPendingAccepted')),
                      fmt(r.get('peakHttpInFlight')),status])
     if rows: body.append(table(['测量点','方案','实际 RPS','有效样本','响应 p99 ms','完成 p99 ms','分类错误率 %','全程按时完成','窗口完成/s','待完成峰值','HTTP 在途峰值','状态'],rows))
-    for path,r in stage.points:
+    diagnostic_points = stage.points + [(file.parent, read_json(file, {}))
+                                       for file in sorted(stage.directory.glob('probes/*/result.json'))]
+    for path,r in diagnostic_points:
         errors=r.get('correctnessErrors',[])+r.get('loadErrors',[])
         if errors: body.append('<p>'+text(path.name)+'：'+text('；'.join(errors))+'</p>')
-        if stage.kind!='burst':
+        if r.get('injectionTiming') and errors:
+            body.append('<details><summary>'+text(path.name)+' · 注入时间核对（探路不计容量）</summary><pre>'
+                        +text(json.dumps(r['injectionTiming'], ensure_ascii=False, indent=2))+'</pre></details>')
+        if r.get('phase') == 'probe':
+            body.append('<p>'+text(path.name)+'：validation / 不计容量；'
+                        +('已核对排空，允许继续搜索。' if r.get('recoveryVerified') else '未记录恢复核验。')+'</p>')
+        if stage.kind!='burst' and r.get('phase') != 'probe':
             timeline=charts.read_timeline(path/'timeline.csv')
             if timeline and r.get('path') in COLORS:
                 body.append('<details><summary>'+text(path.name)+' · 测量时间线</summary>'+charts.timelines({r['path']:timeline})+'</details>')

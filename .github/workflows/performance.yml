@@ -57,6 +57,22 @@ jobs:
       - name: Build all images before measurement
         timeout-minutes: 25
         run: python3 scripts/experiments/lib/actions.py build
+      - name: Verify real k6 overload recovery before starting business services
+        timeout-minutes: 5
+        run: |
+          mkdir -p artifacts/runner-recovery
+          docker run --rm --network none --cpus 1 --memory 512m --memory-swap 512m --pids-limit 128 \
+            -v "$GITHUB_WORKSPACE/artifacts/runner-recovery:/check" \
+            --entrypoint python3 shanpu-experiment-runner:ci \
+            /workspace/scripts/experiments/checks/k6_recovery.py --output /check
+      - name: Preserve load recovery check evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-recovery-check
+          path: artifacts/runner-recovery/
+          retention-days: 14
+          if-no-files-found: ignore
       - name: Start and verify isolated services
         timeout-minutes: 8
         run: python3 scripts/experiments/lib/actions.py up

@@ -492,6 +492,12 @@ def main(argv=None):
                       f"started={value['started']}/{value['scheduled']}, "
                       f"peakHttpInFlight={value.get('peakHttpInFlight')}, VUs={point['vus']}, "
                       f"responseP99Ms={value['classes'].get('eligible', {}).get('responseMs', {}).get('p99')}", flush=True)
+                timing = value.get('injectionTiming', {})
+                for category in ('inconsistentEnds', 'earlyStarts', 'lateStarts', 'invalidSchedule', 'aheadOfSchedule'):
+                    detail = timing.get(category, {})
+                    if detail.get('count'):
+                        print(f"注入时间异常 {category}: count={detail['count']}, maxDeviationMs={detail['maxDeviationMs']}, "
+                              f"examples={json.dumps(detail.get('examples', []), ensure_ascii=False)}", flush=True)
                 checkpoint()
                 check_host_health()
                 if value['correctnessErrors'] or value['unresolvedCount']:
@@ -510,7 +516,9 @@ def main(argv=None):
                     # Recovery requires the same full conservation/commit checks plus an idle SUT.
                     # Disk evidence is retained; only verified closed-point hot data is retired.
                     require_idle(admin['token'])
-                    print('发压受限：该点不作为容量边界；证据已保留，核对空闲后继续其他候选。', flush=True)
+                    value['recoveryVerified'] = True
+                    write_json(point_dir/'result.json', value)
+                    print('发压受限：'+ '; '.join(value['loadErrors']) + '；该点不作为容量边界；证据已保留，核对空闲后继续其他候选。', flush=True)
                 release_redis(private/relative, point)
                 entries[-1]['redisReleased'] = True
                 checkpoint()
@@ -575,6 +583,8 @@ def main(argv=None):
             meta['status'] = 'completed'
         except BaseException as error:
             meta.update(status='failed', error=str(error))
+            if meta.get('search'):
+                meta['search'].update(stopReason='measurement-error', error=str(error))
             raise
         finally:
             meta['finishedAtMs'] = int(time.time()*1000)

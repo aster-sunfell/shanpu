@@ -5,7 +5,8 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-from analysis import Evidence, percentiles, write_json
+from analysis import Evidence, LATE_START_ERROR, percentiles, write_json
+from adaptive_search import recoverable_load_limit
 
 POLICY = {'responseP99Ms': 500, 'completionP99Ms': 5000, 'maxErrorRate': .001}
 
@@ -86,6 +87,54 @@ class EvidenceTest(unittest.TestCase):
         self.assertEqual(1,result['started'])
         self.assertIn('Injection timing does not follow the arrival schedule',result['loadErrors'])
         self.assertFalse(result['valid'])
+
+    def test_late_tail_and_dropped_arrival_stay_invalid_but_can_recover(self):
+        self.start.update(startedAtMs=2025, scheduledAtMs=1990)
+        self.finish.update(startedAtMs=2025, finishedAtMs=2045)
+        result = self.run_evidence(k6={'metrics': {'dropped_iterations': {'values': {'count': 1}}}})
+        self.assertFalse(result['valid'])
+        self.assertFalse(result['sloPassed'])
+        self.assertEqual(35, result['generatorLagMs']['p99'])
+        self.assertEqual(['Offered load not achieved', LATE_START_ERROR], result['loadErrors'])
+        late = result['injectionTiming']['lateStarts']
+        self.assertEqual((1, 25), (late['count'], late['maxDeviationMs']))
+        self.assertEqual('steady:0', late['examples'][0]['requestId'])
+        self.assertTrue(recoverable_load_limit(result))
+        result['correctnessErrors'].append('Clock shifted during the point or target/load clocks diverged')
+        self.assertFalse(recoverable_load_limit(result))
+
+    def test_early_clock_and_schedule_anomalies_cannot_recover(self):
+        for changes, category in (({'startedAtMs': 999}, 'earlyStarts'),
+                                  ({'scheduledAtMs': 2000}, 'invalidSchedule'),
+                                  ({'scheduledAtMs': 1100}, 'aheadOfSchedule')):
+            with self.subTest(category=category):
+                self.start.update(startedAtMs=1000, scheduledAtMs=1000)
+                self.start.update(changes)
+                self.finish['startedAtMs'] = self.start['startedAtMs']
+                result = self.run_evidence()
+                self.assertEqual(1, result['injectionTiming'][category]['count'])
+                self.assertFalse(recoverable_load_limit(result))
+                # Each analysis owns a fresh database, just as each measured point does.
+                (self.directory/'evidence.sqlite').unlink()
+
+    def test_timing_diagnostics_split_endpoint_mismatch_and_bound_examples(self):
+        e = Evidence(self.directory)
+        try:
+            e.db.executemany('INSERT INTO starts VALUES (?,?,?,?,?,?,?)',
+                             [(str(i), i, i, 2025+i, 2000 if i == 0 else 2050, 'eligible', 1990) for i in range(10)])
+            value = e.injection_timing(1000, 2000)
+            self.assertEqual(9, value['inconsistentEnds']['count'])
+            self.assertEqual(50, value['inconsistentEnds']['maxDeviationMs'])
+            self.assertEqual(10, value['lateStarts']['count'])
+            self.assertEqual(34, value['lateStarts']['maxDeviationMs'])
+            self.assertEqual(5, len(value['lateStarts']['examples']))
+        finally: e.close()
+
+    def test_nonfinite_timestamps_are_evidence_errors(self):
+        self.start['startedAtMs'] = float('nan')
+        result = self.run_evidence()
+        self.assertIn('Non-finite or non-numeric injection timestamp', result['correctnessErrors'])
+        self.assertFalse(recoverable_load_limit(result))
 
     def test_commit_before_response_has_no_false_pending_peak(self):
         self.commit['commitObservedAtMs'] = 1010

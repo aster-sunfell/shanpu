@@ -5,6 +5,8 @@ import math
 from pathlib import Path
 import sqlite3
 
+LATE_START_ERROR = 'Requests started after the injection window'
+
 
 def write_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
@@ -74,6 +76,10 @@ class Evidence:
             for row in records(self.directory / 'requests.jsonl'):
                 try:
                     if row['type'] == 'start':
+                        times = [row['startedAtMs'], row['injectionEndMs'], row.get('scheduledAtMs', row['startedAtMs'])]
+                        if any(not isinstance(t, (int, float)) or isinstance(t, bool) or not math.isfinite(t) for t in times):
+                            self.record_errors.append('Non-finite or non-numeric injection timestamp')
+                            continue
                         self.db.execute('INSERT INTO starts VALUES (?,?,?,?,?,?,?)',
                                         (row['requestId'], row['index'], row['userId'], row['startedAtMs'], row['injectionEndMs'], row['trafficClass'], row.get('scheduledAtMs',row['startedAtMs'])))
                     elif row['type'] == 'finish':
@@ -102,6 +108,25 @@ class Evidence:
             b = self.scalar(f'{query} ORDER BY value LIMIT 1 OFFSET {hi}')
             return round(a + (b - a) * (pos - lo), 3)
         return {'samples': count, 'p50': one(.5), 'p95': one(.95), 'p99': one(.99)}
+
+    def injection_timing(self, origin, end):
+        """Keep scheduling delay separate from inconsistent clocks/window evidence."""
+        def anomaly(condition, deviation, parameters):
+            count, maximum = self.db.execute(
+                f'SELECT COUNT(*),MAX({deviation}) FROM starts WHERE {condition}', parameters).fetchone()
+            # Substitution order is SELECT deviation, then WHERE condition.
+            examples = self.db.execute(
+                f'SELECT rid,t,due,e,{deviation} deviation FROM starts WHERE {condition} '
+                'ORDER BY deviation DESC,rid LIMIT 5', parameters).fetchall()
+            return {'count': count, 'maxDeviationMs': round(maximum, 3) if maximum is not None else None,
+                    'examples': [dict(zip(('requestId', 'startedAtMs', 'scheduledAtMs', 'injectionEndMs', 'deviationMs'), row))
+                                 for row in examples]}
+        return {'windowStartMs': origin, 'windowEndMs': end, 'timestampToleranceMs': 1,
+                'inconsistentEnds': anomaly('ABS(e-?)>1', 'ABS(e-?)', (end, end)),
+                'earlyStarts': anomaly('t<?', '?-t', (origin, origin)),
+                'lateStarts': anomaly('t>=?', 't-?', (end, end+1)),
+                'invalidSchedule': anomaly('due<? OR due>=?', 'MAX(?-due,due-?,0)', (origin, end, origin, end)),
+                'aheadOfSchedule': anomaly('t-due < -50', 'due-t', ())}
 
     def analyze(self, config, k6, cutoff_ms, policy):
         self.db.executescript('''
@@ -153,13 +178,19 @@ class Evidence:
         if unmatched: load_errors.append('Interrupted requests')
         if not started: load_errors.append('No requests recorded')
         generator_lag = self.quantiles('t-due','starts')
-        if (generator_lag['p99'] or 0)>policy.get('generatorLagP99Ms',100) or (self.scalar('SELECT MIN(t-due) FROM starts') or 0)<-50:
+        if (generator_lag['p99'] or 0)>policy.get('generatorLagP99Ms',100):
             load_errors.append('Injection timing does not follow the arrival schedule')
         origin = self.scalar('SELECT MIN(e) FROM starts') or cutoff_ms
         origin -= (config['seconds'] + config['baseSeconds']) * 1000
         end = origin + (config['seconds'] + config['baseSeconds']) * 1000
-        if self.scalar('SELECT COUNT(*) FROM starts WHERE ABS(e-?)>1 OR t<? OR t>=?', (end, origin, end + 1)):
-            load_errors.append('Injection timestamps do not match the configured window')
+        injection_timing = self.injection_timing(origin, end)
+        for category, message in (
+                ('inconsistentEnds', 'Injection window endpoints are inconsistent'),
+                ('earlyStarts', 'Requests started before the injection window'),
+                ('invalidSchedule', 'Scheduled arrivals fall outside the injection window'),
+                ('aheadOfSchedule', 'Requests started before their scheduled arrival'),
+                ('lateStarts', LATE_START_ERROR)):
+            if injection_timing[category]['count']: load_errors.append(message)
         seconds = config['seconds'] + config['baseSeconds']
         outcomes = dict(self.db.execute('SELECT outcome,COUNT(*) FROM finishes GROUP BY outcome'))
         if unmatched: outcomes['interrupted'] = unmatched
@@ -250,7 +281,8 @@ class Evidence:
                     (SELECT t,1 delta FROM starts UNION ALL SELECT f,-1 FROM finishes) GROUP BY t))''')
         return {'path': config['path'], 'workload': config['workload'], 'rate': config['rate'],
                 'peakHttpInFlight': peak_http,
-                'scheduled': config['scheduled'], 'started': started, 'generatorLagMs': generator_lag, 'outcomes': outcomes, 'classes': classes,
+                'scheduled': config['scheduled'], 'started': started, 'generatorLagMs': generator_lag,
+                'injectionTiming': injection_timing, 'outcomes': outcomes, 'classes': classes,
                 'accepted': accepted, 'completed': completed, 'eligible': eligible, 'unresolvedCount': unresolved,
                 'committedAfterResponseFailure': self.scalar("SELECT COUNT(*) FROM joined WHERE ct<=? AND (outcome IS NULL OR outcome<>'accepted')", (cutoff_ms,)),
                 'acceptedWithinResponseDeadline': timely_accepted, 'completedWithinDeadline': on_time,
@@ -266,6 +298,8 @@ class Evidence:
 def save_result(directory, result):
     directory = Path(directory)
     write_json(directory / 'result.json', result)
+    if 'injectionTiming' in result:
+        write_json(directory / 'injection-timing.json', result['injectionTiming'])
     fields = ['second', 'started', 'accepted', 'completed', 'pendingAccepted', 'outstanding']
     with (directory / 'timeline.csv').open('w') as file:
         writer = csv.DictWriter(file, fieldnames=fields)
@@ -278,6 +312,7 @@ def save_result(directory, result):
              f"完成覆盖率：{result['completionCoverage']}；截止未完成受理数：{result['unresolvedCount']}。", '',
              '![请求、完成与积压曲线](curves.svg)', '',
              '分类延迟、错误率及积压判定见 [result.json](result.json)，每秒曲线数据见 [timeline.csv](timeline.csv)。', '',
+             '注入时间异常的分类、数量、最大偏差与示例见 [injection-timing.json](injection-timing.json)。', '',
              '原始逐笔记录保存在 JSONL，关联和精确分位数在 evidence.sqlite 中通过磁盘计算。']
     (directory / 'report.md').write_text('\n'.join(lines) + '\n')
 

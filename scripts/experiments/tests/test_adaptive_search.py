@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'lib'))
 from adaptive_search import run, recoverable_load_limit
 from protocol import parse_args, capacities, comparisons, baseline_readiness
+from analysis import LATE_START_ERROR
 
 
 LOAD_LIMIT = 'k6 exhausted its fixed VU pool (Insufficient VUs); arrivals were dropped'
@@ -131,6 +132,17 @@ class AdaptiveSearchTest(unittest.TestCase):
         for change in ({'correctnessErrors': ['stock mismatch']}, {'unresolvedCount': 1},
                        {'loadErrors': ['Interrupted requests']}, {'loadErrors': ['k6 exit 1']}, {'loadErrors': []}):
             with self.subTest(change=change): self.assertFalse(recoverable_load_limit({**value, **change}))
+
+    def test_late_tail_requires_consistent_timing_evidence(self):
+        timing = {key: {'count': 0} for key in ('inconsistentEnds', 'earlyStarts', 'invalidSchedule', 'aheadOfSchedule')}
+        timing['lateStarts'] = {'count': 2, 'maxDeviationMs': 25}
+        value = {'loadErrors': [LOAD_LIMIT, LATE_START_ERROR], 'injectionTiming': timing}
+        self.assertTrue(recoverable_load_limit(value))
+        self.assertFalse(recoverable_load_limit({**value, 'injectionTiming': {}}))
+        self.assertFalse(recoverable_load_limit({'loadErrors': ['Injection timestamps do not match the configured window']}))
+        for key in ('inconsistentEnds', 'earlyStarts', 'invalidSchedule', 'aheadOfSchedule'):
+            with self.subTest(key=key):
+                self.assertFalse(recoverable_load_limit({**value, 'injectionTiming': {**timing, key: {'count': 1}}}))
 
 
 if __name__ == '__main__': unittest.main()

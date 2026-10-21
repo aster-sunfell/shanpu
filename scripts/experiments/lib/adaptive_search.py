@@ -2,13 +2,24 @@
 import copy
 import math
 
+from analysis import LATE_START_ERROR
 from protocol import capacities, matrix
 
 
 def recoverable_load_limit(value):
     errors = value.get('loadErrors', [])
     allowed = ('Offered load not achieved', 'Injection timing does not follow the arrival schedule',
-               'k6 exhausted its fixed VU pool (Insufficient VUs); arrivals were dropped')
+               'k6 exhausted its fixed VU pool (Insufficient VUs); arrivals were dropped', LATE_START_ERROR)
+    if LATE_START_ERROR in errors:
+        timing = value.get('injectionTiming') or {}
+        late = timing.get('lateStarts') or {}
+        # Never reinterpret the old combined timestamp error as ordinary lateness.
+        # Recovery requires explicit evidence of a consistent window/schedule.
+        maximum = late.get('maxDeviationMs')
+        if (not late.get('count') or not isinstance(maximum, (int, float)) or not math.isfinite(maximum) or maximum < 1
+                or any(timing.get(key, {}).get('count') != 0 for key in
+                       ('inconsistentEnds', 'earlyStarts', 'invalidSchedule', 'aheadOfSchedule'))):
+            return False
     return (bool(errors) and not value.get('correctnessErrors') and not value.get('unresolvedCount')
             and all(error in allowed for error in errors))
 

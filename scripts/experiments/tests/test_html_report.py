@@ -49,6 +49,24 @@ class HtmlReportTest(unittest.TestCase):
             self.assertIn('Kafka 异步化收益与代价', html)
             self.assertNotIn('href="#ab"', html)
 
+    def test_failed_probe_retains_timing_diagnostics_without_becoming_formal_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = self.capacity_fixture(Path(temp), status='failed')
+            probe = directory/'probes/002-failed-tail'
+            probe.mkdir(parents=True)
+            (probe/'result.json').write_text(json.dumps({'phase': 'probe', 'scope': 'validation',
+                'path': 'B', 'rate': 500, 'valid': False, 'sloPassed': False,
+                'loadErrors': ['Requests started after the injection window'],
+                'injectionTiming': {'lateStarts': {'count': 1, 'maxDeviationMs': 25,
+                    'examples': [{'requestId': '<tail-request>'}]}}}))
+            stage = Stage(directory)
+            self.assertFalse(any(row.get('phase') == 'probe' for row in stage.rows))
+            html = stage_report(stage)
+            self.assertIn('002-failed-tail', html)
+            self.assertIn('maxDeviationMs', html)
+            self.assertIn('&lt;tail-request&gt;', html)
+            self.assertIn('未记录恢复核验', html)
+
     def capacity_fixture(self, reports, plan='redis-filtering', status='completed', scope='performance'):
         stage=reports/plan/'capacity'
         stage.mkdir(parents=True)
