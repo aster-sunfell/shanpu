@@ -36,7 +36,7 @@ def merge_report(current, archive, keep=30):
     for value in reports:
         if value['id'] not in retained_ids:
             shutil.rmtree(runs / value['id'])
-    body = ['<h1>闪铺性能实验</h1><p class="muted">GitHub Actions · A/B 延迟与容量 · B/C 稳定容量与突发收益</p>']
+    body = ['<h1>闪铺压测报告</h1><p class="muted">GitHub Actions · Redis 过滤收益 · Kafka 异步化容量与突发收益</p>']
     if complete:
         body.append(f'<section><h2>最近一次完整正式实验</h2><p><a href="runs/{complete["id"]}/index.html">打开报告 {complete["id"]}</a></p></section>')
     else:

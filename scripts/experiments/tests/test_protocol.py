@@ -87,6 +87,26 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(40,value['latencyReductionPct']['p50'])
         self.assertIsNone(comparisons(args,rows[:-1])[0]['latencyReductionPct'])
 
+    def test_burst_comparison_keeps_cohort_gains_distinct_from_whole_run_totals(self):
+        args=parse_args(['kafka-buffering'])
+        args.stage='burst'
+        rows=[]
+        for path in ('B','C'):
+            for repeat in range(1,4):
+                name,row=self.row(path,200,repeat)
+                row.update(workload='burst',completedWithinDeadline=400 if path=='B' else 500,
+                           burst={'scope':'burst-requests','requests':100,
+                                  'acceptedWithinResponseDeadline':50 if path=='B' else 80,
+                                  'completedWithinDeadline':20 if path=='B' else 25})
+                rows.append((name,row))
+        item=comparisons(args,rows)[0]
+        self.assertEqual(100,item['extraCompletedOnTime']['p50'])
+        self.assertEqual(5,item['burstExtraCompletedOnTime']['p50'])
+        rows[-1][1]['burst']=None
+        self.assertNotIn('burstExtraCompletedOnTime',comparisons(args,rows)[0])
+        rows[-1][1]['valid']=False
+        self.assertIsNone(comparisons(args,rows)[0]['extraCompletedOnTime'])
+
     def test_baseline_rejects_smoke_wrong_slo_and_changed_contract(self):
         args=parse_args(['kafka-buffering'])
         b={'schemaVersion':3,'plan':'kafka-buffering','stage':'capacity','status':'completed',

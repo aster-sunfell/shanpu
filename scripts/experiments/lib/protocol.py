@@ -256,6 +256,9 @@ def comparisons(args, results):
         if len(valid) == args.repeats and args.stage == 'burst':
             item['extraAcceptedOnTime'] = spread([b['acceptedWithinResponseDeadline'] - a['acceptedWithinResponseDeadline'] for a,b in valid])
             item['extraCompletedOnTime'] = spread([b['completedWithinDeadline'] - a['completedWithinDeadline'] for a,b in valid])
+            if all((r.get('burst') or {}).get('scope') == 'burst-requests' for pair in valid for r in pair):
+                item['burstExtraAcceptedOnTime'] = spread([b['burst']['acceptedWithinResponseDeadline'] - a['burst']['acceptedWithinResponseDeadline'] for a,b in valid])
+                item['burstExtraCompletedOnTime'] = spread([b['burst']['completedWithinDeadline'] - a['burst']['completedWithinDeadline'] for a,b in valid])
         elif len(valid) == args.repeats and all(a['sloPassed'] and b['sloPassed'] for a,b in valid):
             enough = args.validation_only or all(sum(r['classes']['eligible']['responseMs']['samples'] for pair in valid for r in [pair[n]]) >= args.min_samples for n in (0,1))
             if enough:
@@ -299,13 +302,17 @@ def report(directory, meta, results, args):
         sample_count = r['classes'].get('eligible',{}).get('responseMs',{}).get('samples',0)
         lines.append(f"| [{name}]({name}/report.md) | {configured_rate}/{fmt(r['actualRequestRps'])} | {sample_count} | {fmt(eligible)} | {fmt(duplicate)} | {fmt(r['completionWindowRps'])} | {r['acceptedWithinResponseDeadline']} | {r['completedWithinDeadline']} | {fmt(r['completionMs']['p99'])} | {r['peakPendingAccepted']}/{fmt(r['drainMs'])} | {r['valid']}/{r['sloPassed']} |")
     if formal:
-        lines += ['', '## 同压配对比较', '', '延迟差比较各轮有效请求 p99，报告配对差的中位数与范围；不混合各类请求，也不平均多个 p99 冒充合并分位数。']
+        lines += ['', '## 同压比较', '', '先比较相同压力、同一轮的有效请求 p99，再汇总降幅的中位数与范围；不混合各类请求，也不平均多个 p99 冒充合并分位数。']
         for p in paired:
             if args.stage == 'capacity' and p['latencyReductionPct'] is not None:
-                lines.append(f"- {p['rate']} RPS：p99 配对减少中位数 {fmt(p['latencyReductionMs']['p50'])} ms（{fmt(p['latencyReductionPct']['p50'])}%），比例范围 {fmt(p['latencyReductionPct']['min'])}%～{fmt(p['latencyReductionPct']['max'])}%。")
+                lines.append(f"- {p['rate']} RPS：p99 减少中位数 {fmt(p['latencyReductionMs']['p50'])} ms，降幅中位数 {fmt(p['latencyReductionPct']['p50'])}%，范围 {fmt(p['latencyReductionPct']['min'])}%～{fmt(p['latencyReductionPct']['max'])}%。")
             elif args.stage == 'burst' and p['extraCompletedOnTime'] is not None:
-                lines.append(f"- {p['rate']} RPS 突发：按响应期限多受理中位数 {fmt(p['extraAcceptedOnTime']['p50'])} 单，按完成期限多完成中位数 {fmt(p['extraCompletedOnTime']['p50'])} 单。")
-            else: lines.append(f"- {p['rate']} RPS：配对/SLO/样本不足，不生成提升比例。")
+                cohort = p.get('burstExtraCompletedOnTime') is not None
+                accepted = p['burstExtraAcceptedOnTime'] if cohort else p['extraAcceptedOnTime']
+                completed = p['burstExtraCompletedOnTime'] if cohort else p['extraCompletedOnTime']
+                scope = '突发段请求' if cohort else '整场（含低负载段）'
+                lines.append(f"- {p['rate']} RPS，{scope}：按响应期限多受理中位数 {fmt(accepted['p50'])} 单，按完成期限多完成中位数 {fmt(completed['p50'])} 单。")
+            else: lines.append(f"- {p['rate']} RPS：完整对照/达标条件/样本不足，不生成提升比例。")
         if path_caps:
             lines += ['', '## 稳定容量区间', '']
             for path,item in path_caps.items():

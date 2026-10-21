@@ -186,6 +186,21 @@ class Evidence:
         accepted = self.scalar("SELECT COUNT(*) FROM finishes WHERE outcome='accepted'")
         timely_accepted = self.scalar("SELECT COUNT(*) FROM finishes WHERE outcome='accepted' AND f-t<=?", (response_limit,))
         on_time = self.scalar('SELECT COUNT(*) FROM joined WHERE ct<=? AND ct-t<=?', (cutoff_ms, completion_limit))
+        burst = None
+        if config['workload'] == 'burst':
+            # Scenario identity keeps a delayed baseline request out of the burst cohort.
+            cohort = "kind='eligible' AND rid LIKE 'burst:%'"
+            burst = {
+                'scope': 'burst-requests',
+                'requests': self.scalar(f'SELECT COUNT(*) FROM joined WHERE {cohort}'),
+                'acceptedWithinResponseDeadline': self.scalar(
+                    f"SELECT COUNT(*) FROM joined WHERE {cohort} AND outcome='accepted' AND f-t<=?", (response_limit,)),
+                'completedWithinDeadline': self.scalar(
+                    f'SELECT COUNT(*) FROM joined WHERE {cohort} AND ct<=? AND ct-t<=?', (cutoff_ms, completion_limit)),
+                'completed': self.scalar(f'SELECT COUNT(*) FROM joined WHERE {cohort} AND ct<=?', (cutoff_ms,)),
+            }
+            if burst['requests'] != config['rate'] * config['seconds']:
+                load_errors.append('Burst request cohort does not match the scheduled phase')
         buckets = [{'second': i, 'started': 0, 'accepted': 0, 'completed': 0, 'pendingAccepted': 0, 'outstanding': 0}
                    for i in range(max(1, math.ceil(max(end, cutoff_ms) - origin) // 1000 + 1))]
         # Group on disk; only the bounded time axis is materialized in Python.
@@ -239,6 +254,7 @@ class Evidence:
                 'accepted': accepted, 'completed': completed, 'eligible': eligible, 'unresolvedCount': unresolved,
                 'committedAfterResponseFailure': self.scalar("SELECT COUNT(*) FROM joined WHERE ct<=? AND (outcome IS NULL OR outcome<>'accepted')", (cutoff_ms,)),
                 'acceptedWithinResponseDeadline': timely_accepted, 'completedWithinDeadline': on_time,
+                'burst': burst,
                 'actualRequestRps': started / seconds, 'acceptedRps': accepted / seconds, 'completionWindowRps': window_complete / seconds,
                 'responseMs': response, 'completionMs': completion_q, 'completionCoverage': completed / eligible if eligible else None,
                 'peakPendingAccepted': peak, 'drainMs': max(0, last_commit-end) if not unresolved else None,

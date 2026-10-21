@@ -129,5 +129,34 @@ class EvidenceTest(unittest.TestCase):
     def test_missing_values_remain_null(self):
         self.assertIsNone(percentiles([])['p99'])
 
+    def test_burst_cohort_excludes_baseline_and_uses_each_request_deadline(self):
+        config={**self.config,'workload':'burst','rate':2,'baseSeconds':1,'seconds':1,'scheduled':3}
+        for phase in ('before','after'):
+            rows={'users':[[i,7+i,1000 if phase=='before' else 900] for i in range(3)],
+                  'orders':[] if phase=='before' else [[str(i),7+i,100,2] for i in range(3)],
+                  'logs':[] if phase=='before' else [[7+i,str(i),-100,2] for i in range(3)],
+                  'bought':[] if phase=='before' else [7,8,9]}
+            for kind,values in rows.items():
+                (self.directory/f'{phase}-{kind}.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in values))
+            write_json(self.directory/f'{phase}.json',{'stock':10 if phase=='before' else 7,'redisStock':10 if phase=='before' else 7})
+        # Baseline response and even its start cross the phase boundary; scenario identity is authoritative.
+        starts=[('baseline:0',2001),('burst:0',2000),('burst:1',2500)]
+        with (self.directory/'requests.jsonl').open('w') as file:
+            for i,(rid,t) in enumerate(starts):
+                file.write(json.dumps({**self.start,'requestId':rid,'index':i,'userId':7+i,'startedAtMs':t,
+                                       'scheduledAtMs':1990 if i==0 else t,'injectionEndMs':3000})+'\n')
+                file.write(json.dumps({**self.finish,'requestId':rid,'index':i,'startedAtMs':t,'finishedAtMs':t+20,'orderId':str(i)})+'\n')
+        evidence=Evidence(self.directory)
+        try:
+            evidence.load_snapshot('before');evidence.load_snapshot('after');evidence.load_requests()
+            evidence.add_commits([{**self.commit,'orderId':str(i),'userId':7+i,'commitObservedAtMs':t}
+                                  for i,t in enumerate([2050,7000,7600])])
+            result=evidence.analyze(config,{},9000,POLICY)
+            self.assertTrue(result['valid'])
+            self.assertEqual(2,result['completedWithinDeadline'])
+            self.assertEqual({'scope':'burst-requests','requests':2,'acceptedWithinResponseDeadline':2,
+                              'completedWithinDeadline':1,'completed':2},result['burst'])
+        finally:evidence.close()
+
 
 if __name__ == '__main__': unittest.main()
