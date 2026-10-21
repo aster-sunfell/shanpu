@@ -1,0 +1,455 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>闪铺压测报告</title><style>
+:root{color-scheme:light;--ink:#172d3c;--muted:#526a79;--line:#d5e0e6;--accent:#096b65}
+*{box-sizing:border-box}body{margin:0;background:#f3f6f8;color:var(--ink);font:15px/1.65 system-ui,sans-serif}
+main{max-width:1240px;margin:auto;padding:36px 24px}h1{font-size:32px;line-height:1.25}h2{margin-top:32px}
+a{color:var(--accent)}section,.card,details{background:white;border:1px solid var(--line);border-radius:10px;padding:20px;margin:16px 0}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card{margin:0}.big{font-size:25px;font-weight:650}
+.muted{color:var(--muted)}.warning{background:#fff4df;border-left:5px solid #b97600;padding:14px}.failed{color:#a32e2e}
+.scroll{overflow:auto}table{border-collapse:collapse;min-width:760px;width:100%;font-size:14px}td,th{text-align:left;padding:9px;border-bottom:1px solid var(--line)}
+th{background:#edf3f6;white-space:nowrap}code{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6f8;padding:12px}
+summary{cursor:pointer;font-weight:600}svg{max-width:100%;height:auto}input{padding:10px;border:1px solid var(--line);border-radius:6px;width:100%;max-width:380px}
+footer{margin-top:30px;color:var(--muted)}.chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+</style></head><body><main><h1>闪铺压测报告</h1><p class="muted">GitHub Actions · full · run 39531870785 / attempt 1</p><div class="cards"><div class="card"><div class="muted">执行状态</div><div class="big">failed</div></div><div class="card"><div class="muted">用途</div><div class="big">validation</div></div><div class="card"><div class="muted">被测端配额</div><div class="big">2 vCPU</div></div><div class="card"><div class="muted">发压端配额</div><div class="big">1 vCPU</div></div></div><p class="warning">流程验证：仅核对执行、采集和业务一致性，不输出正式性能提升结论，不能作为正式突发基线。</p><p class="warning">运行未完整完成。已有证据供排查，不能以部分结果声称完整实验成功。</p><p class="failed">Preflight/reset failed: Command &#x27;[&#x27;docker&#x27;, &#x27;start&#x27;, &#x27;--attach&#x27;, &#x27;0282aca543b632f791ed170e17352061113479180cb5028cd27c3c27c19f54dc&#x27;]&#x27; returned non-zero exit status 1.</p><p>Commit：<code>5a9d16e6fb2c3c5233e3a745f75de4960f6cd6f6</code></p><p><a href="https://github.com/aster-sunfell/shanpu/actions/runs/39531870785">打开 Actions 运行及完整证据下载</a>（artifacts 有保留期限，下载可能需要登录 GitHub）</p><section><h2>真实环境预检</h2><p class="warning">用途：validation。预检验证造数、短时请求和运行资源，不输出容量或性能提升结论。</p><p>状态：<strong>failed</strong></p><p class="failed">Command &#x27;[&#x27;docker&#x27;, &#x27;start&#x27;, &#x27;--attach&#x27;, &#x27;0282aca543b632f791ed170e17352061113479180cb5028cd27c3c27c19f54dc&#x27;]&#x27; returned non-zero exit status 1.</p><details><summary>预检数据规模与业务核对</summary><pre>{
+  &quot;status&quot;: &quot;failed&quot;,
+  &quot;scope&quot;: &quot;validation&quot;,
+  &quot;seeds&quot;: [
+    {
+      &quot;point&quot;: &quot;seed-001-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-002-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-003-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-004-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-005-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-006-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-007-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-008-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-009-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-010-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-011-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-012-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-013-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-014-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-015-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-016-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-017-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-018-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-019-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-020-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-021-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-022-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-023-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-024-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-025-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-026-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-027-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-028-B&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 12001,
+        &quot;orders&quot;: 10801,
+        &quot;logs&quot;: 10801
+      }
+    },
+    {
+      &quot;point&quot;: &quot;seed-029-A&quot;,
+      &quot;counts&quot;: {
+        &quot;users&quot;: 3841,
+        &quot;orders&quot;: 3457,
+        &quot;logs&quot;: 3457
+      }
+    }
+  ],
+  &quot;probes&quot;: [],
+  &quot;dataset&quot;: {
+    &quot;initialLadderRequests&quot;: 283200,
+    &quot;seedUsers&quot;: 339840,
+    &quot;batchUsers&quot;: 12000,
+    &quot;probeRate&quot;: 200,
+    &quot;probeSeconds&quot;: 3,
+    &quot;coverage&quot;: &quot;Initial capacity ladders plus 20%; not all refinements, burst sizes or long-duration effects&quot;
+  },
+  &quot;error&quot;: &quot;Preflight probe A failed: Offered load not achieved; Injection timing does not follow the arrival schedule; Injection timestamps do not match the configured window; k6 exhausted its fixed VU pool (Insufficient VUs); arrivals were dropped&quot;,
+  &quot;elapsedSeconds&quot;: 108.861
+}</pre></details><details><summary>MySQL 实际配置与版本</summary><pre>{
+  &quot;innodb_buffer_pool_size&quot;: &quot;134217728&quot;,
+  &quot;innodb_flush_log_at_trx_commit&quot;: &quot;2&quot;,
+  &quot;innodb_log_buffer_size&quot;: &quot;8388608&quot;,
+  &quot;max_connections&quot;: &quot;32&quot;,
+  &quot;max_heap_table_size&quot;: &quot;4194304&quot;,
+  &quot;performance_schema&quot;: &quot;OFF&quot;,
+  &quot;table_open_cache&quot;: &quot;128&quot;,
+  &quot;temptable_max_mmap&quot;: &quot;0&quot;,
+  &quot;temptable_max_ram&quot;: &quot;16777216&quot;,
+  &quot;thread_cache_size&quot;: &quot;4&quot;,
+  &quot;tmp_table_size&quot;: &quot;4194304&quot;,
+  &quot;version&quot;: &quot;8.0.46&quot;
+}</pre></details><details><summary>结束时容器状态（清理前）</summary><pre>{
+  &quot;timeMs&quot;: 1792549080184,
+  &quot;containers&quot;: [
+    {
+      &quot;service&quot;: &quot;backend&quot;,
+      &quot;imageId&quot;: &quot;sha256:aefadf61e8041d5745f2ae426122ed1f66041984083955a43b072560f70ed1ec&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T02:15:41.012499046Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;mysql&quot;,
+      &quot;imageId&quot;: &quot;sha256:6cd09145362dfe6831b14545de3d5fd6cc75c37cfd6ef8561429c1fc73518b39&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T02:15:25.187489682Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;redis&quot;,
+      &quot;imageId&quot;: &quot;sha256:f84b0c4678011602b9b98c227a4dcd5468bf8b088b02fdd4165cb7758bad8058&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T02:15:25.187139887Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;kafka&quot;,
+      &quot;imageId&quot;: &quot;sha256:6d8457e841c10f58f952cb3942a38b6b3c21015b643e3dd010aea37cc0b89055&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;running&quot;,
+        &quot;Running&quot;: true,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 0,
+        &quot;StartedAt&quot;: &quot;2026-10-21T02:15:25.186940743Z&quot;,
+        &quot;FinishedAt&quot;: &quot;0001-01-01T00:00:00Z&quot;
+      }
+    },
+    {
+      &quot;service&quot;: &quot;load-runner&quot;,
+      &quot;imageId&quot;: &quot;sha256:303dd89bf719e00da2d3a0067ff4198d70459ef73dfe6ac731423329efe86e15&quot;,
+      &quot;restartCount&quot;: 0,
+      &quot;state&quot;: {
+        &quot;Status&quot;: &quot;exited&quot;,
+        &quot;Running&quot;: false,
+        &quot;OOMKilled&quot;: false,
+        &quot;ExitCode&quot;: 1,
+        &quot;StartedAt&quot;: &quot;2026-10-21T02:16:11.087834243Z&quot;,
+        &quot;FinishedAt&quot;: &quot;2026-10-21T02:18:00.131287152Z&quot;
+      }
+    }
+  ]
+}</pre></details><p>MySQL 工作集估算峰值：239.97 MiB；估算最小余量：144.03 MiB。扣除 inactive_file 的估算不保证实际可分配内存。</p><details><summary>容器资源采样</summary><p>下图为采样峰值，可能遗漏采样间隔内的瞬时峰值。CPU throttle 是计数差，不代表完整 CPU 利用率。</p><svg role="img" aria-label="采样内存峰值" viewBox="0 0 520 195"><text x="8" y="19" font-size="14" font-weight="600">采样内存峰值 · MiB</text><text x="8" y="49" font-size="12">backend</text><rect x="132" y="36" width="190.86" height="18" rx="3" fill="#14867c"/><text x="330.86" y="49" font-size="12">261.73</text><text x="8" y="77" font-size="12">mysql</text><rect x="132" y="64" width="280.00" height="18" rx="3" fill="#14867c"/><text x="420.00" y="77" font-size="12">383.96</text><text x="8" y="105" font-size="12">redis</text><rect x="132" y="92" width="9.53" height="18" rx="3" fill="#14867c"/><text x="149.53" y="105" font-size="12">13.07</text><text x="8" y="133" font-size="12">kafka</text><rect x="132" y="120" width="114.77" height="18" rx="3" fill="#14867c"/><text x="254.77" y="133" font-size="12">157.39</text><text x="8" y="161" font-size="12">load-runner</text><rect x="132" y="148" width="130.48" height="18" rx="3" fill="#14867c"/><text x="270.48" y="161" font-size="12">178.93</text></svg><ul><li>backend：CPU nr_throttled 增量 55</li><li>mysql：CPU nr_throttled 增量 468</li><li>redis：CPU nr_throttled 增量 73</li><li>kafka：CPU nr_throttled 增量 1</li><li>load-runner：CPU nr_throttled 增量 1</li></ul></details></section><details><summary>运行环境和 CPU 分配</summary><pre>{
+  &quot;actions&quot;: {
+    &quot;runId&quot;: &quot;39531870785&quot;,
+    &quot;attempt&quot;: &quot;1&quot;,
+    &quot;job&quot;: &quot;performance&quot;,
+    &quot;repository&quot;: &quot;aster-sunfell/shanpu&quot;,
+    &quot;commit&quot;: &quot;5a9d16e6fb2c3c5233e3a745f75de4960f6cd6f6&quot;,
+    &quot;ref&quot;: &quot;refs/heads/main&quot;,
+    &quot;runUrl&quot;: &quot;https://github.com/aster-sunfell/shanpu/actions/runs/39531870785&quot;,
+    &quot;runnerImage&quot;: &quot;ubuntu24&quot;,
+    &quot;runnerImageVersion&quot;: &quot;20261012.334.1&quot;
+  },
+  &quot;cpuAllocation&quot;: {
+    &quot;sut&quot;: &quot;0,1&quot;,
+    &quot;runner&quot;: &quot;2&quot;,
+    &quot;reserved&quot;: &quot;3&quot;,
+    &quot;crossGroupSmt&quot;: [],
+    &quot;topology&quot;: [
+      {
+        &quot;cpu&quot;: 0,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 1,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 2,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      },
+      {
+        &quot;cpu&quot;: 3,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      }
+    ],
+    &quot;isolation&quot;: &quot;disjoint-vCPU-sets; physical host resources remain shared&quot;
+  },
+  &quot;host&quot;: {
+    &quot;kernel&quot;: &quot;6.17.0-1022-azure&quot;,
+    &quot;platform&quot;: &quot;Linux-6.17.0-1022-azure-x86_64-with-glibc2.39&quot;,
+    &quot;cpuModel&quot;: &quot;AMD EPYC 7763 64-Core Processor&quot;,
+    &quot;availableCpus&quot;: [
+      0,
+      1,
+      2,
+      3
+    ],
+    &quot;cpuTopology&quot;: [
+      {
+        &quot;cpu&quot;: 0,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 1,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 0,
+        &quot;siblings&quot;: [
+          0,
+          1
+        ]
+      },
+      {
+        &quot;cpu&quot;: 2,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      },
+      {
+        &quot;cpu&quot;: 3,
+        &quot;socket&quot;: 0,
+        &quot;core&quot;: 1,
+        &quot;siblings&quot;: [
+          2,
+          3
+        ]
+      }
+    ],
+    &quot;memoryBytes&quot;: 16766414848
+  },
+  &quot;targetBudget&quot;: {
+    &quot;cpuLimit&quot;: 2.0,
+    &quot;containerMemoryMiB&quot;: 1440,
+    &quot;hostReserveMiB&quot;: 608,
+    &quot;machineMemoryMiB&quot;: 2048
+  }
+}</pre></details><footer>闪铺 · GitHub Actions 单机受限资源测量。vCPU 配额不能等同于独占物理核或线上容量。</footer></main></body></html>
