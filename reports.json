@@ -1,5 +1,17 @@
 [
   {
+    "id": "39605491134-1",
+    "runId": "39605491134",
+    "attempt": "1",
+    "status": "inconclusive",
+    "scope": "performance",
+    "mode": "redis",
+    "commit": "f788a2af8f8bffd5339ba299106e769f549f98e6",
+    "runUrl": "https://github.com/aster-sunfell/shanpu/actions/runs/39605491134",
+    "createdAt": "2026-10-21T13:39:20.938645+00:00",
+    "stages": 1
+  },
+  {
     "id": "39584648467-1",
     "runId": "39584648467",
     "attempt": "1",
