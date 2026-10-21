@@ -1,0 +1,13 @@
+{
+  "id": "39654021824-1",
+  "runId": "39654021824",
+  "attempt": "1",
+  "status": "inconclusive",
+  "scope": "performance",
+  "mode": "kafka-burst",
+  "measuredAtMs": 1792608901411,
+  "rendererSha256": "4e1ccbcc6f2bb1d9fe6207576495a2ad9c8d74eef3b7a0147e5f014ee9be1aae",
+  "commit": "998f16de9e953c3b84dac416c038017ddbb5685e",
+  "runUrl": "https://github.com/aster-sunfell/shanpu/actions/runs/39654021824",
+  "createdAt": "2026-10-21T19:07:40.174401+00:00"
+}
