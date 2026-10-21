@@ -123,7 +123,11 @@ class BusinessRuntimeAlignmentTest {
                 var protocol = (AbstractProtocol<?>) server.getTomcat().getConnector().getProtocolHandler();
                 long deadline = System.nanoTime()+Duration.ofSeconds(2).toNanos();
                 while (protocol.getConnectionCount() < 200 && System.nanoTime() < deadline) Thread.sleep(10);
-                assertEquals(200, protocol.getConnectionCount(), "All 200 connections must be accepted, including those above 128");
+                // Tomcat reserves a slot before accept(), so its admission counter may
+                // include the acceptor waiting for the next socket as well as our 200.
+                long connections = protocol.getConnectionCount();
+                assertTrue(connections >= 200 && connections <= 201,
+                        () -> "Expected 200 sockets plus at most one acceptor reservation, got "+connections);
                 var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+server.getPort()+"/probe"))
                         .timeout(Duration.ofSeconds(2)).build();
                 var response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
