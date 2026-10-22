@@ -1,5 +1,18 @@
 [
   {
+    "id": "39762479947-2",
+    "runId": "39762479947",
+    "attempt": "2",
+    "status": "completed",
+    "scope": "performance",
+    "mode": "kafka-burst",
+    "measuredAtMs": 1792665037845,
+    "rendererSha256": "b7cb181a55b65775a69fb814b3f894390fa02c5aa9ef07c7446a7b57480ae056",
+    "commit": "d85b867fd956b39562d2aa2d031690587c88d487",
+    "runUrl": "https://github.com/aster-sunfell/shanpu/actions/runs/39762479947",
+    "createdAt": "2026-10-22T10:42:44.023133+00:00"
+  },
+  {
     "id": "39762479947-1",
     "runId": "39762479947",
     "attempt": "1",
@@ -352,18 +365,6 @@
     "commit": "990f96a2494254bf99c18d59de4d1c669144a7fe",
     "runUrl": "https://github.com/aster-sunfell/shanpu/actions/runs/39449743730",
     "createdAt": "2026-10-20T16:05:27.754410+00:00",
-    "stages": 1
-  },
-  {
-    "id": "39438351113-1",
-    "runId": "39438351113",
-    "attempt": "1",
-    "status": "failed",
-    "scope": "performance",
-    "mode": "full",
-    "commit": "962c1ee477111582391a60ef1e91e1b511542273",
-    "runUrl": "https://github.com/aster-sunfell/shanpu/actions/runs/39438351113",
-    "createdAt": "2026-10-20T14:25:11.473634+00:00",
     "stages": 1
   }
 ]
