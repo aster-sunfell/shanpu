@@ -11,12 +11,14 @@
 | Kafka 3.7.2 | Docker | `127.0.0.1:9092` | 超级秒杀异步下单与死信 Topic |
 | Nginx 1.28 | Docker，host 网络 | `127.0.0.1:8089` | 浏览器统一入口 |
 | Spring Boot | 宿主机 Java 17 | `127.0.0.1:8081` | 后端 API |
-| Next.js | 宿主机 Node.js 22 / pnpm 10 | `127.0.0.1:3000` | SSR、前端开发与热更新 |
+| Next.js | 宿主机 Node.js 22 / pnpm 10.11.0 | `127.0.0.1:3000` | SSR、前端开发与热更新 |
 | 压测端 | 独立 `experiments/compose.runner.yml` | 访问独立待测端 | 2 个逻辑 CPU / 2 GiB |
 
 `docker-compose.yml` 固定项目名为 `shanpu`，使用 `shanpu_mysql-data`、`shanpu_redis-data`、`shanpu_kafka-data` 三个数据卷。Nginx 和 k6 使用 Linux host 网络，直接访问宿主机回环地址；Nginx 不配置 `ports`。
 
 生产基线为 `deploy/compose.2c2g.yml`，包含 backend、frontend、Nginx、MySQL、Redis、Kafka 六个容器。本地 Compose 继承其中的中间件，保留宿主机前后端；压测待测端 `experiments/compose.sut.yml` 继承全部六个服务，发压端另用 `experiments/compose.runner.yml`，不占用待测端预算。
+
+前端包管理器版本固定在 `frontend/package.json` 的 `packageManager`（pnpm 10.11.0）。镜像按该字段安装工具，依赖安装和应用构建复用同一阶段，不在构建时解析 pnpm 最新版；依赖仍使用 `pnpm install --frozen-lockfile`。
 
 应用性能参数统一在 `backend/src/main/resources/application-2c2g.yml`；`dev` 和 `prod` profile 都自动加载。Tomcat 使用 32 个处理线程、8192 个连接、512 个连接排队位，连接及 keep-alive 超时均为 5 秒；数据库池最多 8 个连接、等待上限 3 秒。本地调试可显式覆盖参数，但其结果不作为容量证据。运行时镜像固定 digest，后端 JRE 版本与 `.sdkmanrc` 的 Java 17.0.18+8 对齐；生产和压测共用同一份 Dockerfile、JVM 参数及启动脚本。
 
