@@ -5,6 +5,7 @@ from html import escape
 import math
 from pathlib import Path
 
+from report_data import completed_activity_end
 from report_metrics import NAMES
 COLORS = {'A': '#6d7e96', 'B': '#168b80', 'C': '#7961cc'}
 
@@ -77,10 +78,46 @@ def rounds(rows, paths, label, threshold=None, percentage=False, names=None):
     return svg(body,label+' · 全部配对轮次')
 
 
+def timeline_display_end(directory, row, rows, database, samples, observed_end):
+    """Only omit a tail after complete orders, exact DB buckets and idle samples."""
+    completed_end = completed_activity_end(directory, row)
+    if completed_end is None or not database: return observed_end
+    activity_end = completed_end
+    try:
+        for source, keys in ((rows, ('started','accepted','completed','pendingAccepted','outstanding')),
+                             (database, ('transactionStarts','transactionEnds','transactionActivePeak'))):
+            seconds = [float(bucket['second']) for bucket in source]
+            if (not seconds or seconds[0] > 0 or seconds[-1]+1 < observed_end
+                    or any(abs(b-a-1) > .001 for a,b in zip(seconds,seconds[1:]))):
+                return observed_end
+            for bucket in source:
+                values = [float(bucket[key]) for key in keys]
+                if not all(numeric(v) for v in values): return observed_end
+                # Exact counters cover the whole second, not just its left edge.
+                if any(v > 0 for v in values):
+                    activity_end = max(activity_end, float(bucket['second'])+1)
+        for sample in samples:
+            if not numeric(sample.get('second')): return observed_end
+            values = [sample.get(key) for key in ('poolActive','poolWaitThreads','kafkaLag')]
+            if any(v is not None and not numeric(v) for v in values): return observed_end
+            if any(v is not None and v > 0 for v in values):
+                activity_end = max(activity_end, sample['second'])
+        ordered_samples = sorted(samples, key=lambda s:s['second'])
+        quiet_pool = next((s['second'] for s in ordered_samples
+                           if s['second'] >= activity_end and s.get('poolActive') == 0
+                           and s.get('poolWaitThreads') == 0), None)
+        quiet_lag = next((s['second'] for s in ordered_samples
+                          if s['second'] >= activity_end and s.get('kafkaLag') == 0), None)
+        if quiet_pool is None or (row['path'] == 'C' and quiet_lag is None): return observed_end
+        return min(observed_end, max(activity_end, quiet_pool, quiet_lag or 0)+5)
+    except (KeyError, TypeError, ValueError): return observed_end
+
+
 def comparison_timeline(points, paths, names=None):
     """All rounds and both paths share scales. Missing DB evidence stays missing."""
     names=names or NAMES
     data=[]
+    trimmed=False
     for directory,row in points:
         def csv_rows(filename, required):
             file=directory/filename
@@ -108,25 +145,38 @@ def comparison_timeline(points, paths, names=None):
             ('下单事务并发峰值',COLORS[row['path']],values(database,'transactionActivePeak'),False),
             ('连接等待线程（采样）','#b2781f',values(samples,'poolWaitThreads'),True)], [
             ('未完成订单',COLORS[row['path']],values(rows,'outstanding'),False)]]
-        pacing = row.get('orderConsumption') or {}
-        rate = pacing.get('maxTransactionsPerSecond')
+        if row['path']=='C': series[2].append(('Kafka lag（采样）','#b2781f',values(samples,'kafkaLag'),True))
+        observed_end=max(t for group in series for _,_,values,_ in group for t,_ in values)
+        observed_end=max(observed_end, row.get('baseSeconds',0)+row.get('seconds',0)+row.get('recoverySeconds',0))
+        if numeric(row.get('originMs')) and numeric(row.get('cutoffMs')):
+            observed_end=max(observed_end, (row['cutoffMs']-row['originMs'])/1000)
+        display_end=timeline_display_end(directory,row,rows,database,samples,observed_end)
+        trimmed |= display_end < observed_end
+        data.append((row,series,display_end))
+    if not data: return empty('时间线缺失','原始证据未包含时间线。')
+    duration=max(1,math.ceil(max(end for _,_,end in data)/10)*10)
+    # Use one horizon for all measured curves; the reference line must not extend
+    # the horizon or disappear when its original endpoint lies beyond the crop.
+    for row,groups,_ in data:
+        for group in groups:
+            group[:]=[(label,color,[(t,v) for t,v in values if t<=duration],sampled)
+                      for label,color,values,sampled in group]
+        pacing=row.get('orderConsumption') or {}
+        rate=pacing.get('maxTransactionsPerSecond')
         if (row['path']=='C' and type(rate) is int and rate > 0
                 and pacing.get('mode')=='smooth-no-catch-up' and pacing.get('scope')=='backend-instance'):
-            series[0].append((f'消费放行预算 {rate} 次/秒（非实测）','#596678',
-                              [(0,rate),(max(float(r['second']) for r in rows),rate)],False))
-        if row['path']=='C': series[2].append(('Kafka lag（采样）','#b2781f',values(samples,'kafkaLag'),True))
-        data.append((row,series))
-    if not data: return empty('时间线缺失','原始证据未包含时间线。')
-    duration=max(x for _,groups in data for group in groups for _,_,values,_ in group for x,_ in values) or 1
-    scales=[axis(max((v for _,groups in data for _,_,values,_ in groups[i] for _,v in values),default=1)*1.1) for i in range(3)]
-    repeats=sorted({r['repeat'] for r,_ in data})
+            groups[0].append((f'消费放行预算 {rate} 次/秒（非实测）','#596678',
+                              [(0,rate),(max(t for t,_ in groups[0][0][2]),rate)],False))
+    scales=[axis(max((v for _,groups,_ in data for _,_,values,_ in groups[i] for _,v in values),default=1)*1.1) for i in range(3)]
+    repeats=sorted({r['repeat'] for r,_,_ in data})
     html='<div class="round-selector"><label>查看轮次 <select data-round-select>'+''.join(f'<option value="{i}">第 {i} 轮</option>' for i in repeats)+'</select></label></div>'
+    if trimmed: html+='<p class="muted">时间线省略已确认完成后的末尾空闲观察段，保留恢复过程；统计仍使用完整观察窗口。</p>'
     for repeat in repeats:
         html+=f'<div class="timeline-variant" data-round="{repeat}"><h3>第 {repeat} 轮</h3><div class="timeline-grid">'
         for group,title in enumerate(('到达、事务开始与提交 / 每秒','事务并发与连接等待 / 个','未完成订单与消息积压 / 个')):
             top,ticks=scales[group]
             for path in paths:
-                entry=next(((r,groups[group]) for r,groups in data if r['repeat']==repeat and r['path']==path),None)
+                entry=next(((r,groups[group]) for r,groups,_ in data if r['repeat']==repeat and r['path']==path),None)
                 if not entry:
                     html+=empty(names[path]+'时间线缺失','不以其他轮次代替。');continue
                 row,fields=entry

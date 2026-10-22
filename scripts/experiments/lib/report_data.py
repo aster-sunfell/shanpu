@@ -1,5 +1,6 @@
 """Read report metadata and expose only comparisons qualified by the protocol."""
 import json
+import math
 import sqlite3
 from contextlib import closing
 from report_metrics import EXPERIMENTS
@@ -75,3 +76,31 @@ def burst_recovery(directory,row):
             if count!=burst['requests'] or last is None or end is None: return None
             return max(0,last-(end-row.get('recoverySeconds',0)*1000))
     except (sqlite3.Error,KeyError): return None
+
+
+def completed_activity_end(directory, row):
+    """Prove completion from read-only joins before shortening an idle plot tail."""
+    count = row.get('eligible')
+    if (not row.get('valid') or not row.get('pressure', {}).get('valid') or type(count) is not int or count <= 0
+            or row.get('started') != count or row.get('completed') != count):
+        return None
+    path = directory/'evidence.sqlite'
+    if not path.exists(): return None
+    try:
+        origin, cutoff = row['originMs'], row['cutoffMs']
+        if not all(type(v) in (int, float) and math.isfinite(v) for v in (origin, cutoff)):
+            return None
+        with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)) as db:
+            started, finished, committed, injection_end, last_finish, last_commit = db.execute('''
+                SELECT COUNT(*),COUNT(f.rid),COUNT(c.oid),MAX(s.e),MAX(f.f),MAX(c.t)
+                FROM starts s LEFT JOIN finishes f ON f.rid=s.rid
+                LEFT JOIN after_orders o ON o.uid=s.uid
+                LEFT JOIN before_orders b ON b.oid=o.oid
+                LEFT JOIN commits c ON c.oid=o.oid AND c.uid=s.uid AND c.t>=s.t AND c.t<=?
+                WHERE s.kind='eligible' AND b.oid IS NULL''', (cutoff,)).fetchone()
+        if (started != count or finished != count or committed != count
+                or any(v is None for v in (injection_end, last_finish, last_commit))):
+            return None
+        end = max(injection_end, last_finish, last_commit)
+        return (end-origin)/1000 if origin <= end <= cutoff else None
+    except (sqlite3.Error, KeyError): return None

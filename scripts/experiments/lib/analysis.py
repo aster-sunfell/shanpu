@@ -41,6 +41,7 @@ class Evidence:
             CREATE TABLE IF NOT EXISTS http_failures(rid TEXT PRIMARY KEY,status INTEGER,code TEXT,error_code TEXT,error TEXT,connecting_ms REAL,blocked_ms REAL);
             CREATE TABLE IF NOT EXISTS commits(oid TEXT PRIMARY KEY,aid INTEGER,uid INTEGER,t REAL);
             CREATE INDEX IF NOT EXISTS commit_time ON commits(t);
+            CREATE INDEX IF NOT EXISTS commit_owner ON commits(aid,uid);
             CREATE INDEX IF NOT EXISTS start_time ON starts(kind,t);
             CREATE INDEX IF NOT EXISTS finish_time ON finishes(f);
             CREATE INDEX IF NOT EXISTS finish_order ON finishes(oid);
@@ -101,6 +102,13 @@ class Evidence:
 
     def pending_accepted(self):
         return self.scalar("SELECT COUNT(*) FROM finishes f LEFT JOIN commits c ON c.oid=f.oid WHERE f.outcome='accepted' AND c.oid IS NULL")
+
+    def pending_ambiguous(self, activity_id):
+        # Failed responses may have no order ID. Each point uses fresh users and
+        # one request per user, so a later commit can resolve them by ownership.
+        return self.scalar("""SELECT COUNT(*) FROM finishes f JOIN starts s ON s.rid=f.rid
+            WHERE f.outcome IN ('timeout','network_error','internal_error') AND NOT EXISTS
+            (SELECT 1 FROM commits c WHERE c.aid=? AND c.uid=s.uid AND c.t>=s.t)""", (activity_id,))
 
     def quantiles(self, expression, source, condition='1'):
         query = f'SELECT {expression} value FROM {source} WHERE {condition} AND {expression} IS NOT NULL'

@@ -1,12 +1,14 @@
 """Dropped arrival evidence must survive disabled k6 metric aggregation."""
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-from runner import MYSQL_MEMORY_SETTINGS, mysql_settings, verify_k6_load, runner_usage
+from analysis import Evidence
+from runner import MYSQL_MEMORY_SETTINGS, mysql_settings, verify_k6_load, runner_usage, orders_drained
 
 
 class LoadEvidenceTest(unittest.TestCase):
@@ -64,6 +66,69 @@ class LoadEvidenceTest(unittest.TestCase):
         result = self.verify('', sloPassed=False)
         self.assertTrue(result['valid'])
         self.assertFalse(result['sloPassed'])
+
+
+class DrainEvidenceTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.evidence = Evidence(self.temp.name)
+        self.evidence.db.execute("INSERT INTO starts VALUES ('burst:0',0,7,1000,2000,'eligible',1000)")
+        self.evidence.db.execute("INSERT INTO finishes VALUES ('burst:0',0,1000,1100,'timeout',100,NULL)")
+        self.journal = SimpleNamespace(has_more=False, partial_tail=False)
+        self.metrics = {'poolActive':0, 'poolWaitThreads':0, 'transactionPressure':{'active':0}, 'writeErrors':0}
+
+    def tearDown(self):
+        self.evidence.close()
+        self.temp.cleanup()
+
+    def commit(self, oid='900', aid=12, uid=7, stamp=2100):
+        self.evidence.add_commits([{'orderId':oid, 'activityId':aid, 'userId':uid, 'commitObservedAtMs':stamp}])
+
+    def drained(self):
+        return orders_drained(self.evidence, self.journal, self.metrics, 12)
+
+    def test_failed_response_stops_blocking_as_soon_as_its_commit_is_observed(self):
+        for outcome in ('timeout','network_error','internal_error'):
+            with self.subTest(outcome=outcome):
+                self.evidence.db.execute('DELETE FROM commits')
+                self.evidence.db.execute('UPDATE finishes SET outcome=?', (outcome,))
+                self.assertEqual(0, self.evidence.pending_accepted())
+                self.assertEqual(1, self.evidence.pending_ambiguous(12))
+                self.assertFalse(self.drained())
+                self.commit()
+                self.assertEqual(0, self.evidence.pending_ambiguous(12))
+                self.assertTrue(self.drained())
+                self.assertEqual(outcome, self.evidence.scalar('SELECT outcome FROM finishes'))
+
+    def test_unconfirmed_timeout_is_not_resolved_by_another_activity_user_or_old_commit(self):
+        self.commit(oid='other-activity', aid=13)
+        self.commit(oid='other-user', uid=8)
+        self.commit(oid='old-commit', stamp=900)
+        self.assertEqual(1, self.evidence.pending_ambiguous(12))
+        self.assertFalse(self.drained())
+        self.commit()
+        self.assertTrue(self.drained())
+
+    def test_resolved_timeouts_do_not_hide_pending_acceptance_or_busy_backend(self):
+        self.commit()
+        self.evidence.db.execute("INSERT INTO starts VALUES ('recovery:0',1,8,2000,3000,'eligible',2000)")
+        self.evidence.db.execute("INSERT INTO finishes VALUES ('recovery:0',1,2000,2010,'accepted',10,'901')")
+        self.assertFalse(self.drained())
+        self.commit(oid='901', uid=8)
+        self.assertTrue(self.drained())
+        for key in ('poolActive','poolWaitThreads','writeErrors'):
+            with self.subTest(key=key):
+                self.metrics[key] = 1
+                self.assertFalse(self.drained())
+                self.metrics[key] = 0
+        self.metrics['transactionPressure']['active'] = 1
+        self.assertFalse(self.drained())
+        self.metrics['transactionPressure']['active'] = 0
+        for key in ('has_more','partial_tail'):
+            with self.subTest(key=key):
+                setattr(self.journal, key, True)
+                self.assertFalse(self.drained())
+                setattr(self.journal, key, False)
 
 
 if __name__ == '__main__':

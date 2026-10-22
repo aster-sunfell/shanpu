@@ -237,6 +237,15 @@ def require_valid_point(value, point):
             'See point/result.json and k6.out; no service performance conclusion can be drawn')
 
 
+def orders_drained(evidence, journal, metrics, activity_id):
+    """Require fresh idle evidence and resolve failed responses by actual commits."""
+    return (not journal.has_more and not journal.partial_tail
+            and not metrics.get('poolActive', 0) and not metrics.get('poolWaitThreads', 0)
+            and not metrics.get('transactionPressure', {}).get('active', 0)
+            and not metrics.get('writeErrors', 0)
+            and evidence.pending_accepted() == 0 and evidence.pending_ambiguous(activity_id) == 0)
+
+
 def measure(config, private, directory, token, args):
     check_host_health()
     before_metrics = require_idle(token)
@@ -300,7 +309,7 @@ def measure(config, private, directory, token, args):
                 interruption = interruption or sampler.failure
                 journal.poll()
                 metrics = observation.fresh_metrics()
-                if not journal.has_more and not journal.partial_tail and evidence.pending_accepted() == 0 and not any(lag().values()) and not metrics.get('poolActive', 0) and (not ambiguous or time.time()*1000 >= deadline_ms): break
+                if orders_drained(evidence, journal, metrics, config['activityId']) and not any(lag().values()): break
                 if time.time()*1000 >= deadline_ms: break
                 if time.monotonic() >= drain_deadline: break
                 time.sleep(.5)
