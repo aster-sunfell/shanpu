@@ -6,7 +6,7 @@ from pathlib import Path
 from analysis import percentiles, write_json
 from host import validate_affinity
 
-VERSION = 11
+VERSION = 12
 # Cover requests waiting through the full HTTP timeout, plus scheduling headroom.
 MAX_RATE = 1000
 MAX_REQUEST_TIMEOUT = 10
@@ -169,7 +169,7 @@ def comparisons(args, results):
         else:
             for key, field in (('completionP50Ms','p50'),('completionP95Ms','p95'),('completionP99Ms','p99')):
                 difference('burst.'+key, lambda r, f=field: (r.get('burst') or {}).get('completionMs',{}).get(f))
-            for field in ('recoveryMs','completionPct','completed'):
+            for field in ('recoveryMs','backlogClearMs','completionPct','completed'):
                 difference('burst.'+field, lambda r, f=field: (r.get('burst') or {}).get(f))
             difference('peakOutstanding', lambda r: r.get('peakOutstanding'))
             item['pressureQualified'] = all(r.get('pressure',{}).get('valid') for pair in valid for r in pair)
@@ -184,6 +184,7 @@ def report(directory, meta, results, args):
     artifact = {'schemaVersion': VERSION, 'plan': args.plan, 'status': meta['status'], 'scope': meta['scope'],
                 'deployment': args.deployment, 'policy': policy(args), 'contract': meta.get('contract'),
                 'comparisons': paired, 'parameters': vars(args), 'points': [name for name, _ in results],
+                'orderConsumption': meta.get('orderConsumption'),
                 'environment': {'target': meta.get('target'), 'loadHost': meta.get('loadHost')}}
     write_json(directory/'experiment.json', artifact)
     kafka=args.plan=='kafka-burst'

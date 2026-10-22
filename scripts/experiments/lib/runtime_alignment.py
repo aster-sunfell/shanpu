@@ -168,7 +168,10 @@ def validate_alignment(production, sut, development):
                  'deploy/resource_group.py', 'deploy/shanpu-memory.slice',
                  'backend/Dockerfile', 'backend/docker/java.options', 'backend/docker/entrypoint.sh',
                  'backend/src/main/resources/application.yml', 'backend/src/main/resources/application-prod.yml',
-                 'backend/src/main/resources/application-2c2g.yml', 'frontend/Dockerfile'):
+                 'backend/src/main/resources/application-2c2g.yml', 'frontend/Dockerfile',
+                 'backend/src/main/java/com/shanpu/module/seckill/infra/OrderConsumptionPacer.java',
+                 'backend/src/main/java/com/shanpu/module/seckill/service/impl/SeckillOrderWriter.java',
+                 'backend/src/main/java/com/shanpu/config/KafkaConfig.java'):
         digest.update(name.encode()+b'\0'+(ROOT/name).read_bytes()+b'\0')
     return {'status': 'aligned', 'services': sorted(baseline),
             'sharedCpu':cpu_budget, 'sharedMemory':memory_budget, 'backendKeepalive': keepalive, 'connectionBudget': connection_budget,

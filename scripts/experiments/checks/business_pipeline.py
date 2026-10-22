@@ -4,6 +4,7 @@ Run in the bounded runner against a dedicated disposable SUT, with a host watchd
 This is validation evidence only; it never estimates performance gains.
 """
 import json
+import argparse
 import os
 from pathlib import Path
 import secrets
@@ -18,6 +19,9 @@ from runner import RUNTIME, REPORTS, api, sql, require_idle, measure, require_va
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--paced-burst', action='store_true', help='Validate paced Kafka path at 1000 RPS with 4000 VUs once; never comparison evidence')
+    options = parser.parse_args()
     if os.environ.get('BENCH_CONTAINER') != '1' or not os.environ.get('BENCH_HOST_STATUS'):
         raise RuntimeError('Use a bounded runner and a host watchdog with a dedicated disposable SUT')
     check_host_health()
@@ -27,16 +31,19 @@ def main():
     require_idle(None)  # Verify instance/database, disabled jobs and idle work before mutation.
     admin = credential(create_users('x'+secrets.token_hex(6), 1, private), 0)['token']
     product = int(sql(f"INSERT INTO t_product(title,price,stock,status) VALUES ('pipeline-regression',{PRICE},0,1); SELECT LAST_INSERT_ID();"))
-    for plan in ('redis-filtering', 'kafka-burst'):
+    for plan in (('kafka-burst',) if options.paced_burst else ('redis-filtering', 'kafka-burst')):
         args = parse_args([plan, '--validation-only', '--repeats', '1', '--rate', '50', '--seconds', '2',
                            '--base-rate', '10', '--base-seconds', '2', '--burst-rate', '50', '--burst-seconds', '2',
                            '--recovery-rate', '10', '--recovery-seconds', '2', '--drain-seconds', '30', '--min-samples', '1', '--vus', '200'])
+        if options.paced_burst:
+            args = parse_args([plan,'--validation-only','--repeats','1','--min-samples','1','--vus','4000'])
         args.deployment = 'development-validation'
         directory = REPORTS/plan/run_id
         directory.mkdir(parents=True)
         meta, results = {'status':'running','scope':'validation','plan':plan,'points':[]}, []
         try:
-            for index, point in enumerate(matrix(args), 1):
+            selected = [p for p in matrix(args) if not options.paced_burst or p['path']=='C']
+            for index, point in enumerate(selected, 1):
                 name = f'{index:03d}-{point["path"]}'
                 output, secret = directory/name, private/plan/name
                 output.mkdir()
@@ -51,6 +58,15 @@ def main():
                 if plan == 'kafka-burst':
                     after = json.loads((output/'backend-after.json').read_text())['transactionPressure']
                     assert after['started'] == value['completed'], 'Prepared order leaked into formal transaction count'
+                    if options.paced_burst and point['path']=='C':
+                        rate = value['orderConsumption']['maxTransactionsPerSecond']
+                        assert rate == 400, 'Validation must exercise the shared default business policy'
+                        assert value['pressure']['peakActive'] <= 3
+                        # A permit precedes connection acquisition/first SQL. Up to three in-flight
+                        # permits can cross a wall-clock bucket; allow one more for ms timestamp edges.
+                        assert value['pressure']['peakStartRps'] <= rate+4, 'Database starts escaped the paced envelope'
+                        assert value['peakOutstanding'] > 0, 'Burst must exercise buffering'
+                        assert value['burst']['backlogClearMs'] is not None, 'Buffered orders did not recover'
                 require_idle(admin)
                 release_redis(secret, point)
                 print(json.dumps({'plan':plan,'path':point['path'],'valid':value['valid'],

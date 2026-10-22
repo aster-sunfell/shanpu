@@ -39,6 +39,8 @@ class ExperimentEvidencePublisherTest {
 
     @Test void snapshotReportsActualConnectorAndPoolValuesRatherThanOnlyYamlProperties() throws Exception {
         var context = mock(ServletWebServerApplicationContext.class);
+        when(context.getBean(com.shanpu.module.seckill.infra.OrderConsumptionPacer.class))
+                .thenReturn(new com.shanpu.module.seckill.infra.OrderConsumptionPacer(321));
         var server = mock(TomcatWebServer.class);
         var tomcat = new Tomcat();
         var connector = new Connector();
@@ -62,6 +64,7 @@ class ExperimentEvidencePublisherTest {
             assertEquals("128", settings.get("server.tomcat.max-connections"));
             assertEquals("50", settings.get("spring.datasource.druid.max-active"));
             assertTrue(data.containsKey("httpConnections"));
+            assertEquals(321, ((Map<?, ?>) settings.get("orderConsumption")).get("maxTransactionsPerSecond"));
         } finally { pool.close(); connector.destroy(); }
     }
 }

@@ -58,6 +58,8 @@ shanpu:
   kafka:
     consumer:
       enabled: true
+      # Shared business policy: three consumers share this single-instance transaction budget.
+      max-transactions-per-second: 400
     dlq-rescue:
       enabled: true
       cron: "0 */1 * * * *"

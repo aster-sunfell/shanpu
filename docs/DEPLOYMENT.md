@@ -103,6 +103,10 @@ Redis 启用密码、AOF 与 `appendfsync everysec`，使用 `redis-data` 持久
 
 Spring `KafkaConfig` 在后端启动时声明 `shanpu.seckill.order`（3 分区）和 `shanpu.seckill.order.dlq`（1 分区），副本数均为 1。消费者并发度为 3。Producer 使用幂等发送和 `acks=all`；单节点用于开发联调，不提供节点级容错。
 
+Kafka 消费节奏由共享业务配置 `application.yml` 的 `shanpu.kafka.consumer.max-transactions-per-second: 400` 控制，本地、生产与实验一致。三个消费者共享一个 `OrderConsumptionPacer`，在获取数据库连接、开启异步下单事务之前平滑等待，失败重试及重复消息的幂等检查也消耗许可。空闲及 JVM 暂停不积累补发额度；正常完成事务后才确认 Kafka 消息。等待中断会停止消费容器并保留未确认消息，不走业务重试耗尽后的死信恢复。
+
+400 是单个后端实例的事务入口预算，不是 SQL 条数、实际吞吐或数据库安全容量；它以增加异步确认等待换取可控的数据库写入节奏。增加后端实例会增加总消费预算，必须重新分配实例预算或引入全局协调。速率需要为正数，不提供把 0 当作无限速的隐式开关。当前每次拉取最多 20 条，三个线程在 400 次/秒下处理一轮许可的理想等待约 150ms，远小于默认 `max.poll.interval.ms=300000`；数据库及外部调用耗时仍需另外计入 poll 间隔。
+
 ## 6. VS Code tasks 与命令行
 
 通过“终端 → 运行任务”选择：

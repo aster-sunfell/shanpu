@@ -39,6 +39,10 @@ class BusinessRuntimeAlignmentTest {
     @Configuration(proxyBeanMethods = false)
     @EnableConfigurationProperties({ServerProperties.class, KafkaProperties.class, RedisProperties.class})
     static class Properties {
+        @Bean com.shanpu.module.seckill.infra.OrderConsumptionPacer pacer(Environment environment) {
+            return new com.shanpu.module.seckill.infra.OrderConsumptionPacer(
+                    environment.getRequiredProperty("shanpu.kafka.consumer.max-transactions-per-second", Integer.class));
+        }
         @Bean DruidDataSource pool(Environment environment) {
             return Binder.get(environment).bind("spring.datasource.druid", DruidDataSource.class).orElseThrow(() -> new IllegalStateException("Missing Druid config"));
         }
@@ -79,6 +83,7 @@ class BusinessRuntimeAlignmentTest {
                     var redisPool = context.getBean(RedisProperties.class).getLettuce().getPool();
                     values.put("redisPool", java.util.List.of(redisPool.getMaxActive(), redisPool.getMaxIdle(), redisPool.getMinIdle()));
                     values.put("logging", context.getEnvironment().getProperty("logging.level.com.shanpu"));
+                    values.put("orderConsumptionRate", context.getBean(com.shanpu.module.seckill.infra.OrderConsumptionPacer.class).transactionsPerSecond());
                     result.set(values);
                 });
         return result.get();
@@ -95,6 +100,14 @@ class BusinessRuntimeAlignmentTest {
         assertEquals(3000L, experiment.get("poolWait"));
         assertEquals(Duration.ofSeconds(5), experiment.get("keepAliveTimeout"));
         assertEquals("INFO", experiment.get("logging"));
+        assertEquals(400, experiment.get("orderConsumptionRate"));
+    }
+
+    @Test void invalidConsumptionRateFailsAtStartupInBusinessAndExperimentProfiles() {
+        for (String profiles : new String[]{"dev", "prod", "prod,experiment,sut"}) {
+            configurationRunner(profiles).withPropertyValues("shanpu.kafka.consumer.max-transactions-per-second=0")
+                    .run(context -> assertNotNull(context.getStartupFailure()));
+        }
     }
 
     @Test void sharedConnectorAcceptsBaselineSocketLoadAndStillServesAnotherRequest() {

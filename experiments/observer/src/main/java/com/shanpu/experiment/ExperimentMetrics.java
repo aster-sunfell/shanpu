@@ -104,6 +104,10 @@ public class ExperimentMetrics implements Interceptor {
             settings.put("database", environment.getProperty("spring.datasource.url", "")
                     .replaceFirst("^jdbc:mysql://[^/]+/([^?]+).*$", "$1"));
             settings.put("consumerConcurrency", 3);
+            // Read the actual business component, not an experiment-only configuration copy.
+            var pacer = applicationContext.getBean(com.shanpu.module.seckill.infra.OrderConsumptionPacer.class);
+            settings.put("orderConsumption", Map.of("maxTransactionsPerSecond", pacer.transactionsPerSecond(),
+                    "scope", "backend-instance", "mode", com.shanpu.module.seckill.infra.OrderConsumptionPacer.MODE));
             settings.put("javaVersion", System.getProperty("java.version"));
             settings.put("heapMax", ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getMax());
             settings.put("jvmArguments", ManagementFactory.getRuntimeMXBean().getInputArguments().stream()
@@ -135,7 +139,7 @@ public class ExperimentMetrics implements Interceptor {
             applicationContext.getBeansOfType(ConsumerFactory.class).values().stream().findFirst().ifPresent(factory -> {
                 var defaults = ConsumerConfig.configDef().defaultValues();
                 var configured = factory.getConfigurationProperties();
-                for (String key : new String[]{"max.poll.records", "fetch.max.bytes", "max.partition.fetch.bytes"}) {
+                for (String key : new String[]{"max.poll.records", "max.poll.interval.ms", "fetch.max.bytes", "max.partition.fetch.bytes"}) {
                     settings.put("kafka.consumer."+key, String.valueOf(configured.getOrDefault(key, defaults.get(key))));
                 }
             });

@@ -69,6 +69,11 @@ def require_idle(token):
         raise RuntimeError("Wrong SUT instance: refusing to touch another environment")
     if metrics.get("settings", {}).get("database") != os.environ["MYSQL_DATABASE"]:
         raise RuntimeError("Backend and runner target different databases")
+    consumption = metrics.get('settings', {}).get('orderConsumption', {})
+    rate = consumption.get('maxTransactionsPerSecond')
+    if (type(rate) is not int or rate <= 0 or consumption.get('mode') != 'smooth-no-catch-up'
+            or consumption.get('scope') != 'backend-instance'):
+        raise RuntimeError('Missing or invalid business Kafka consumption pacing evidence')
     if any(value != "-" for key, value in metrics.get("settings", {}).items() if key.endswith(".cron")):
         raise RuntimeError("Scheduled jobs must be disabled during measurement")
     if metrics.get("poolActive", 0) or metrics.get("poolWaitThreads", 0):
@@ -330,6 +335,7 @@ def measure(config, private, directory, token, args):
         result.update(plan=config['plan'], phase=config.get('phase', 'confirmation'), scope='validation' if args.validation_only else 'performance',
                       repeat=config['repeat'], seconds=config['seconds'], baseRate=config['baseRate'], baseSeconds=config['baseSeconds'], recoveryRate=config.get('recoveryRate', 0), recoverySeconds=config.get('recoverySeconds', 0), k6ExitCode=process.returncode,
                       wallSeconds=round(time.monotonic()-started, 3), backendDelta=delta(before_metrics, after_metrics))
+        result['orderConsumption'] = before_metrics['settings'].get('orderConsumption')
         if abs(drift)>50 or abs(after_metrics['runnerClock']['offsetEstimateMs'])>50+after_metrics['runnerClock']['uncertaintyMs']:
             result['correctnessErrors'].append('Clock shifted during the point or target/load clocks diverged')
         unproven = evidence.scalar("SELECT COUNT(*) FROM joined WHERE outcome IN ('timeout','network_error','internal_error') AND ct IS NULL")
@@ -376,7 +382,7 @@ def manifest(args, target, load_host):
                                      'Frontend is running without browser workload'],
             'limitations': ['GitHub-hosted vCPUs share storage, caches, kernel and host scheduling; quotas do not emulate dedicated physical cores'] + ['Single-broker results have no availability/durability claim',
                            'After-commit observation includes callback delay and residual clock error',
-                           'All SUT containers share two logical CPUs; memory limits remain per service',
+                           'All SUT containers share two logical CPUs and one 1632 MiB memory group',
                            'SUT Redis memory bounds fixture working sets; fixture failures are not service performance results',
                            'After-commit journal flushes, mapper/AOP counters and sampling add measurement overhead',
                            'Global MySQL counters include observer queries; results describe this instrumented deployment']}
@@ -481,6 +487,7 @@ def main(argv=None):
             write_json(private / 'admin.json', admin_pool)
             admin = credential(admin_pool, 0)
             metrics = require_idle(admin['token'])
+            meta['orderConsumption'] = metrics['settings'].get('orderConsumption')
             meta['contract'] = context_contract(target, {**metrics['settings'], 'localCacheEnabled': metrics['localCacheEnabled']},
                                                 meta['source']['sourceSha256'], load_host, args, meta['mysqlSettings'])
             write_json(directory / 'backend-settings.json', metrics)

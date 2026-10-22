@@ -55,6 +55,33 @@ class ReportTest(unittest.TestCase):
             self.assertIn('不代表独占物理核',html)
             self.assertNotIn('被测端 CPU 配额合计',html)
 
+    def test_pacing_label_and_reference_use_recorded_policy_not_current_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            directory=self.fixture(root,'kafka-burst')
+            render(root,root/'html')
+            legacy=(root/'html/index.html').read_text()
+            self.assertNotIn('合计限速',legacy)
+            self.assertNotIn('消费放行预算',legacy)
+            for file in directory.glob('*/result.json'):
+                value=json.loads(file.read_text())
+                value['orderConsumption']={'maxTransactionsPerSecond':321,'scope':'backend-instance','mode':'smooth-no-catch-up'}
+                file.write_text(json.dumps(value))
+            render(root,root/'html')
+            html=(root/'html/index.html').read_text()
+            self.assertIn('Kafka 异步下单（合计限速 321 次/秒）',html)
+            self.assertIn('消费放行预算 321 次/秒（非实测）',html)
+            self.assertNotIn('合计限速 400',html)
+            from report_metrics import EXPERIMENTS
+            self.assertEqual('Kafka 异步下单',EXPERIMENTS['kafka-burst']['names']['C'])
+            file=next(p for p in directory.glob('*/result.json') if json.loads(p.read_text())['path']=='C')
+            value=json.loads(file.read_text());value['orderConsumption']['maxTransactionsPerSecond']=400
+            file.write_text(json.dumps(value))
+            render(root,root/'html')
+            html=(root/'html/index.html').read_text()
+            self.assertIn('各轮 Kafka 消费策略证据不一致',html)
+            self.assertIn('尚无完整有效比较',html)
+
     def test_shared_memory_report_does_not_call_group_cap_a_machine_limit(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);self.fixture(root)

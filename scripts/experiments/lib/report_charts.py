@@ -108,6 +108,12 @@ def comparison_timeline(points, paths, names=None):
             ('下单事务并发峰值',COLORS[row['path']],values(database,'transactionActivePeak'),False),
             ('连接等待线程（采样）','#b2781f',values(samples,'poolWaitThreads'),True)], [
             ('未完成订单',COLORS[row['path']],values(rows,'outstanding'),False)]]
+        pacing = row.get('orderConsumption') or {}
+        rate = pacing.get('maxTransactionsPerSecond')
+        if (row['path']=='C' and type(rate) is int and rate > 0
+                and pacing.get('mode')=='smooth-no-catch-up' and pacing.get('scope')=='backend-instance'):
+            series[0].append((f'消费放行预算 {rate} 次/秒（非实测）','#596678',
+                              [(0,rate),(max(float(r['second']) for r in rows),rate)],False))
         if row['path']=='C': series[2].append(('Kafka lag（采样）','#b2781f',values(samples,'kafkaLag'),True))
         data.append((row,series))
     if not data: return empty('时间线缺失','原始证据未包含时间线。')
@@ -135,7 +141,7 @@ def comparison_timeline(points, paths, names=None):
                     plot+=line(x(t),50,x(t),243,'#d4cde6','4 5')+txt(x(t),39,label,9,anchor='middle')
                 items=[]
                 for i,(label,color,values,sampled) in enumerate(fields):
-                    dash=('', '6 4', '2 3')[i]
+                    dash=('', '6 4', '2 3', '8 4')[i]
                     width=3 if i==0 else 2
                     segments=[[]]
                     for t,v in values:

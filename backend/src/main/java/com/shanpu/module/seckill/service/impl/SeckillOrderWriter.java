@@ -8,6 +8,7 @@ import com.shanpu.module.order.domain.entity.Order;
 import com.shanpu.module.order.mapper.OrderMapper;
 import com.shanpu.module.seckill.domain.event.SeckillOrderPaidEvent;
 import com.shanpu.module.seckill.domain.msg.SeckillOrderMsg;
+import com.shanpu.module.seckill.infra.OrderConsumptionPacer;
 import com.shanpu.module.seckill.mapper.SeckillActivityMapper;
 import com.shanpu.module.user.domain.entity.PointLog;
 import com.shanpu.module.user.mapper.PointLogMapper;
@@ -39,6 +40,7 @@ public class SeckillOrderWriter {
     private final TransactionTemplate transactionTemplate;
     private final CacheClient cacheClient;
     private final ApplicationEventPublisher eventPublisher;
+    private final OrderConsumptionPacer consumptionPacer;
 
     /**
      * 创建同步支付完成的秒杀订单。
@@ -81,6 +83,8 @@ public class SeckillOrderWriter {
      * @return true 表示本次实际创建订单，false 表示重复消息已被跳过
      */
     public boolean createAsyncPaidOrder(SeckillOrderMsg msg) {
+        // Wait before acquiring a connection; all consumers/retries share the same instance budget.
+        consumptionPacer.acquire();
         Boolean created = transactionTemplate.execute(status -> {
             // 订单号已存在说明这条消息已经消费成功过，本次重投直接幂等结束。
             if (orderMapper.existsByOrderId(msg.getOrderId()) > 0) {

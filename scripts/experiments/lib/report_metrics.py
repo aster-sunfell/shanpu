@@ -6,7 +6,7 @@ EXPERIMENTS = {
     'redis-filtering': {'paths':('A','B'), 'names':{'A':NAMES['A'],'B':NAMES['B']}, 'primary':('eligibleResponseP99Ms','eligibleResponseP95Ms','duplicateResponseP99Ms','duplicateResponseP95Ms'),
                         'support':('businessSqlPer1000Requests','syncAttemptsPer1000Requests')},
     'kafka-burst': {'paths':('B','C'), 'names':{'B':'Redis 同步下单','C':NAMES['C']}, 'primary':('pressure.peakStartRps','pressure.peakActive'),
-                    'cost':('burst.completionP50Ms','burst.completionP95Ms','burst.completionP99Ms','burst.completionPct','peakOutstanding','burst.recoveryMs')},
+                    'cost':('burst.completionP50Ms','burst.completionP95Ms','burst.completionP99Ms','burst.completionPct','peakOutstanding','burst.recoveryMs','burst.backlogClearMs')},
 }
 LABELS = {
     'eligibleResponseP99Ms':'有效购买响应 p99 / ms', 'eligibleResponseP95Ms':'有效购买响应 p95 / ms',
@@ -19,6 +19,7 @@ LABELS = {
     'burst.completionPct':'突发请求最终完成率 / %',
     'peakOutstanding':'全程最大未完成订单数 / 个',
     'burst.completionP99Ms':'突发请求完成 p99 / ms',
+    'burst.backlogClearMs':'突发结束至未完成订单首次归零 / ms',
     'burst.recoveryMs':'突发结束至突发批次全部完成 / ms',
 }
 

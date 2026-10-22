@@ -105,6 +105,10 @@ def experiment_report(e):
              f"{p.get('base_rate','—')} RPS × {p.get('base_seconds','—')} 秒 → {p.get('burst_rate','—')} RPS × {p.get('burst_seconds','—')} 秒 → {p.get('recovery_rate','—')} RPS × {p.get('recovery_seconds','—')} 秒；全部有效购买")
     body=['<section id="performance">'+heading('数据库削峰对照' if e.plan=='kafka-burst' else '性能对照',profile)]
     body.append(f'<p>{text(e.names[e.paths[0]])} 与 {text(e.names[e.paths[1]])}，每路径 {text(p.get("repeats","—"))} 轮交替配对。</p>')
+    if e.order_consumption:
+        body.append('<p>Kafka 缓冲＋应用侧受控消费：限速预算由单个后端实例内的全部消费者共享，事务前等待，不积攒空闲额度。参考线表示事务入口放行预算，实测事务速率以首条 SQL 为准，可能因调度和连接等待出现短时偏差；限速不代表实际吞吐或数据库安全容量。</p>')
+    if e.consumption_mismatch:
+        body.append('<p class="warning">各轮 Kafka 消费策略证据不一致，不能合并计算收益。</p>')
     if not e.comparisons:
         body.append('<p class="warning">尚无完整有效比较。保留观测，不输出收益结论。</p>')
     if e.plan=='kafka-burst' and any(not r.get('pressure',{}).get('valid') for _,r in e.points):
@@ -115,7 +119,8 @@ def experiment_report(e):
     if e.plan=='kafka-burst':
         body.append('<section id="cost">'+heading('完成等待与恢复','完成耗时统计突发批次；最大未完成数统计全程。降低峰值必须同时评估完成量与等待代价。')+'<div class="metrics-grid">')
         for key in specification['cost']:body.append(metric_panel(e,key))
-        body.append('</div><p>恢复时间从突发结束算到突发批次最后一个订单提交，早于突发结束则为 0；未全部完成或证据缺失显示为 —。它不等于停止全部注入后的排空时间。</p></section>')
+        body.append('</div><p>恢复时间从突发结束算到突发批次最后一个订单提交，早于突发结束则为 0；未全部完成或证据缺失显示为 —。它不等于停止全部注入后的排空时间。</p>')
+        body.append('<p>未完成订单首次归零时间覆盖基线、突发及恢复流量，从突发结束算起，按逐笔到达和提交事件核对；不等于 Kafka lag 归零，也不表示此后没有新订单。观察期内未归零或旧证据未采集时显示为 —。</p></section>')
         body.append('<section id="timeline">'+heading('突发过程','所有轮次、两种方案使用相同时间轴与纵轴尺度；默认第 1 轮。'))
         body.append(charts.comparison_timeline(e.points,e.paths,e.names))
         body.append('<p>事务速率按固定 1 秒墙钟桶计数，首尾不足 1 秒不外推；并发峰值由每次事务进入和退出更新，排除等待连接阶段。连接等待为采样值；Kafka lag 为 broker offset 采样（可能包含尚未提交 offset 的在途消息），不等于未完成订单数。缺失采样不补零，未完成订单包含截至观察点尚未提交的请求，不能将提交变慢单独解释为削峰。</p></section>')

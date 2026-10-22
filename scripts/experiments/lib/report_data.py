@@ -24,7 +24,7 @@ class Experiment:
         if self.plan not in EXPERIMENTS: raise ValueError('Unknown experiment: '+self.plan)
         if self.artifact.get('plan',self.plan) != self.plan: raise ValueError('Experiment metadata mismatch')
         self.paths = EXPERIMENTS[self.plan]['paths']
-        self.names = EXPERIMENTS[self.plan]['names']
+        self.names = dict(EXPERIMENTS[self.plan]['names'])
         self.parameters = self.artifact.get('parameters', {})
         self.policy = self.artifact.get('policy', {})
         self.points = [(p.parent, read_json(p)) for p in sorted(self.directory.glob('*/result.json'))]
@@ -35,6 +35,19 @@ class Experiment:
         formal = scope in (None, 'performance') and self.artifact.get('scope') == 'performance'
         self.comparisons = [c for c in self.artifact.get('comparisons', []) if c.get('qualified')] if (
             formal and self.meta.get('status') == self.artifact.get('status') == 'completed') else []
+        policies = [r.get('orderConsumption') for _,r in self.points if r.get('path') == 'C']
+        self.order_consumption = None
+        self.consumption_mismatch = bool(policies and any(p != policies[0] for p in policies))
+        if policies and not self.consumption_mismatch and isinstance(policies[0], dict):
+            policy = policies[0]
+            rate = policy.get('maxTransactionsPerSecond')
+            if (type(rate) is int and rate > 0 and policy.get('scope') == 'backend-instance'
+                    and policy.get('mode') == 'smooth-no-catch-up'):
+                self.order_consumption = policy
+                self.names['C'] += f'（合计限速 {rate} 次/秒）'
+        if any(p is not None for p in policies) and self.order_consumption is None:
+            self.consumption_mismatch = True
+        if self.consumption_mismatch: self.comparisons = []
 
         # Re-rendering never writes to original evidence. Older result.json already
         # contains burst completion quantiles; derive only recovery from read-only SQL.

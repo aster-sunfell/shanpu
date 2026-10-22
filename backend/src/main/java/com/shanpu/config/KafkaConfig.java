@@ -2,6 +2,7 @@ package com.shanpu.config;
 
 import com.shanpu.infra.kafka.KafkaTopics;
 import com.shanpu.module.seckill.domain.msg.SeckillOrderMsg;
+import com.shanpu.module.seckill.infra.OrderConsumptionPacer.ConsumptionInterruptedException;
 import com.shanpu.module.seckill.service.OrderDlqLogService;
 import lombok.RequiredArgsConstructor;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -14,6 +15,9 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.CommonContainerStoppingErrorHandler;
+import org.springframework.kafka.listener.CommonDelegatingErrorHandler;
+import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.util.backoff.FixedBackOff;
 
@@ -68,7 +72,7 @@ public class KafkaConfig {
      * @return Kafka 默认错误处理器
      */
     @Bean
-    public DefaultErrorHandler seckillKafkaErrorHandler(
+    public CommonErrorHandler seckillKafkaErrorHandler(
             KafkaTemplate<Object, Object> kafkaTemplate,
             OrderDlqLogService orderDlqLogService) {
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
@@ -80,7 +84,11 @@ public class KafkaConfig {
                     // 所有失败消息集中投递到固定死信分区，便于定时任务顺序扫描处理。
                     return new TopicPartition(KafkaTopics.SECKILL_ORDER_DLQ, 0);
                 });
-        return new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3));
+        var handler = new CommonDelegatingErrorHandler(new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3)));
+        handler.setCauseChainTraversing(true);
+        // An interrupted pacing wait must leave the message unacknowledged for redelivery.
+        handler.addDelegate(ConsumptionInterruptedException.class, new CommonContainerStoppingErrorHandler());
+        return handler;
     }
 
     /**
@@ -96,7 +104,7 @@ public class KafkaConfig {
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, SeckillOrderMsg> manualAckListenerContainerFactory(
             ConsumerFactory<String, SeckillOrderMsg> consumerFactory,
-            DefaultErrorHandler seckillKafkaErrorHandler) {
+            CommonErrorHandler seckillKafkaErrorHandler) {
         ConcurrentKafkaListenerContainerFactory<String, SeckillOrderMsg> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);

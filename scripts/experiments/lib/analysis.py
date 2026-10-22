@@ -306,11 +306,19 @@ class Evidence:
         last_commit = self.scalar('SELECT MAX(ct) FROM joined WHERE ct<=?', (cutoff_ms,)) or end
         window_complete = self.scalar('SELECT COUNT(*) FROM joined WHERE ct>=? AND ct<?', (origin, end))
         health = bool(not errors and not unresolved)
-        peak_outstanding = self.scalar("""SELECT COALESCE(MAX(n),0) FROM
-            (SELECT SUM(delta) OVER (ORDER BY stamp) n FROM
-                (SELECT stamp,SUM(delta) delta FROM
-                    (SELECT t stamp,1 delta FROM joined WHERE kind='eligible'
-                     UNION ALL SELECT ct,-1 FROM joined WHERE kind='eligible' AND ct<=?) GROUP BY stamp))""", (cutoff_ms,))
+        outstanding_events = """SELECT stamp,SUM(delta) delta FROM
+            (SELECT t stamp,1 delta FROM joined WHERE kind='eligible'
+             UNION ALL SELECT ct,-1 FROM joined WHERE kind='eligible' AND ct<=?) GROUP BY stamp"""
+        outstanding_levels = f'SELECT stamp,SUM(delta) OVER (ORDER BY stamp) n FROM ({outstanding_events})'
+        peak_outstanding = self.scalar(f'SELECT COALESCE(MAX(n),0) FROM ({outstanding_levels})', (cutoff_ms,))
+        if burst:
+            recovery_start = origin+(config['baseSeconds']+config['seconds'])*1000
+            pending_at_recovery = self.scalar(f'SELECT COALESCE(SUM(delta),0) FROM ({outstanding_events}) WHERE stamp<=?',
+                                              (cutoff_ms,recovery_start))
+            cleared = recovery_start if pending_at_recovery==0 else self.scalar(
+                f'SELECT MIN(stamp) FROM ({outstanding_levels}) WHERE stamp>=? AND stamp<=? AND n=0',
+                (cutoff_ms,recovery_start,cutoff_ms))
+            burst['backlogClearMs'] = cleared-recovery_start if cleared is not None and cutoff_ms>=recovery_start else None
         peak_http = self.scalar('''SELECT COALESCE(MAX(n),0) FROM
             (SELECT SUM(delta) OVER (ORDER BY t) n FROM
                 (SELECT t,SUM(delta) delta FROM

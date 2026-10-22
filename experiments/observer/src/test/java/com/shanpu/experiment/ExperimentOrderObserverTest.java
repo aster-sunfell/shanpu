@@ -8,6 +8,7 @@ import com.shanpu.module.order.domain.entity.Order;
 import com.shanpu.module.order.mapper.OrderMapper;
 import com.shanpu.module.seckill.domain.event.SeckillOrderPaidEvent;
 import com.shanpu.module.seckill.domain.msg.SeckillOrderMsg;
+import com.shanpu.module.seckill.infra.OrderConsumptionPacer;
 import com.shanpu.module.seckill.mapper.SeckillActivityMapper;
 import com.shanpu.module.seckill.service.impl.SeckillOrderWriter;
 import com.shanpu.module.user.mapper.PointLogMapper;
@@ -72,10 +73,11 @@ class ExperimentOrderObserverTest {
         @Bean CacheClient cacheClient() { return mock(CacheClient.class); }
         @Bean DataSource dataSource() { return mock(DataSource.class); }
         @Bean ActivityLocalCache localCache() { return mock(ActivityLocalCache.class); }
+        @Bean OrderConsumptionPacer pacer() { return spy(new OrderConsumptionPacer(400)); }
         @Bean SeckillOrderWriter writer(SeckillActivityMapper activities, OrderMapper orders, UserMapper users,
                                        PointLogMapper logs, TransactionTemplate transactions, CacheClient cache,
-                                       ApplicationEventPublisher publisher) {
-            return new SeckillOrderWriter(activities, orders, users, logs, transactions, cache, publisher);
+                                       ApplicationEventPublisher publisher, OrderConsumptionPacer pacer) {
+            return new SeckillOrderWriter(activities, orders, users, logs, transactions, cache, publisher, pacer);
         }
     }
 
@@ -100,6 +102,40 @@ class ExperimentOrderObserverTest {
     private SeckillOrderMsg message() {
         return SeckillOrderMsg.builder().activityId(12L).userId(34L).orderId("56")
                 .productId(1L).price(100).source(Order.SOURCE_SECKILL_SUPER).build();
+    }
+
+    @Test void pacingPrecedesTransactionAndCoversRetryAndDuplicateChecks() {
+        try (var context = context("experiment", directory.resolve("paced.jsonl"))) {
+            var pacer = context.getBean(OrderConsumptionPacer.class);
+            var writer = context.getBean(SeckillOrderWriter.class);
+            doAnswer(call -> {
+                assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+                assertEquals(0L, context.getBean(Transactions.class).committedAt);
+                return null;
+            }).when(pacer).acquire();
+            when(context.getBean(SeckillActivityMapper.class).deductStock(12L)).thenReturn(0,1);
+            assertThrows(BusinessException.class, () -> writer.createAsyncPaidOrder(message()));
+            assertTrue(writer.createAsyncPaidOrder(message()));
+            doNothing().when(pacer).acquire();
+            when(context.getBean(OrderMapper.class).existsByOrderId("56")).thenReturn(1);
+            assertFalse(writer.createAsyncPaidOrder(message()));
+            verify(pacer,times(3)).acquire();
+            clearInvocations(pacer);
+            sync(context);
+            verifyNoInteractions(pacer);
+        }
+    }
+
+    @Test void interruptedPacingStartsNoTransactionOrMapperWork() {
+        try (var context = context("experiment", directory.resolve("interrupted.jsonl"))) {
+            Thread.currentThread().interrupt();
+            try {
+                assertThrows(OrderConsumptionPacer.ConsumptionInterruptedException.class,
+                        () -> context.getBean(SeckillOrderWriter.class).createAsyncPaidOrder(message()));
+                assertEquals(0, context.getBean(Transactions.class).committedAt);
+                verifyNoInteractions(context.getBean(OrderMapper.class),context.getBean(SeckillActivityMapper.class));
+            } finally { Thread.interrupted(); }
+        }
     }
 
     @Test

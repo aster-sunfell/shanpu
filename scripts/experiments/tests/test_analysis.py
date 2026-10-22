@@ -238,11 +238,17 @@ class EvidenceTest(unittest.TestCase):
             self.assertEqual(75,result['eligibleOnTimeSuccessPct'])
             self.assertEqual(3600,result['drainMs'])
             self.assertEqual({'scope':'burst-requests','requests':2,'acceptedWithinResponseDeadline':2,
-                              'completedWithinDeadline':1,'completed':2,'onTimeAcceptedPct':100,'onTimeCompletedPct':50,'completionPct':100,'recoveryMs':4600},{k:v for k,v in result['burst'].items() if k not in ('responseMs','completionMs','failed')})
+                              'completedWithinDeadline':1,'completed':2,'onTimeAcceptedPct':100,'onTimeCompletedPct':50,'completionPct':100,'recoveryMs':4600,'backlogClearMs':4600},{k:v for k,v in result['burst'].items() if k not in ('responseMs','completionMs','failed')})
             evidence.db.execute("UPDATE commits SET t=10000 WHERE oid='3'")
             later=evidence.analyze(config,{},11000,POLICY)
             self.assertEqual(6000,later['drainMs'])
             self.assertEqual(4600,later['burst']['recoveryMs'])
+            self.assertEqual(7000,later['burst']['backlogClearMs'])
+            unfinished=evidence.analyze(config,{},8000,POLICY)
+            self.assertIsNone(unfinished['burst']['backlogClearMs'])
+            evidence.db.execute("UPDATE commits SET t=2900 WHERE oid IN ('1','2')")
+            already_clear=evidence.analyze(config,{},11000,POLICY)
+            self.assertEqual(0,already_clear['burst']['backlogClearMs'])
         finally:evidence.close()
 
 
