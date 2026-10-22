@@ -280,7 +280,7 @@ def build():
     m2 = os.environ.get('BENCH_M2')
     if m2: Path(m2).mkdir(parents=True, exist_ok=True)
     command(["docker", "run", "--rm", "--name", "shanpu-experiment-build", "--cpus", "2",
-             "--memory", "768m", "--memory-swap", "768m", "--pids-limit", "128", "--ulimit", "nofile=8192:8192",
+             "--memory", "768m", "--memory-swap", "768m", "--pids-limit", "128", "--ulimit", "nofile=32768:32768",
              "-e", "MAVEN_OPTS=-Xms64m -Xmx384m -XX:ActiveProcessorCount=2",
              "-v", f"{ROOT}:/source:ro", "-v", f"{output}:/output",
              "-v", f"{m2 or 'shanpu-experiment-m2'}:/root/.m2", "maven:3.9-eclipse-temurin-17",
@@ -295,17 +295,17 @@ def build():
 
 def validate_nofile(host_config):
     limits = next((v for v in host_config.get('Ulimits',[]) if v['Name']=='nofile'),{})
-    if any(limits.get(k,0) < 8192 for k in ('Soft','Hard')):
-        raise RuntimeError('Docker did not apply the 8192 file descriptor budget')
+    if any(limits.get(k,0) < 32768 for k in ('Soft','Hard')):
+        raise RuntimeError('Docker did not apply the 32768 file descriptor budget')
 
 
 def validate_runner_config(service):
-    if (float(service.get("cpus", 0)) != 1 or int(service.get("mem_limit", 0)) != 2048 * MIB
+    if (float(service.get("cpus", 0)) != 2 or int(service.get("mem_limit", 0)) != 2048 * MIB
             or int(service.get("memswap_limit", 0)) != 2048 * MIB or service.get("pids_limit") != 128
             or service.get("restart") != "no"):
-        raise RuntimeError("Load runner must have fixed 1 CPU / 2048 MiB limits")
+        raise RuntimeError("Load runner must have fixed 2 CPU / 2048 MiB limits")
     limits = service.get('ulimits',{}).get('nofile',{})
-    if any(limits.get(k,0) < 8192 for k in ('soft','hard')): raise RuntimeError('Load runner requires 8192 descriptors')
+    if any(limits.get(k,0) < 32768 for k in ('soft','hard')): raise RuntimeError('Load runner requires 32768 descriptors')
     for mount in service.get("volumes", []):
         if "docker.sock" in mount.get("source", ""):
             raise RuntimeError("The load runner must not access the Docker socket")
@@ -313,7 +313,7 @@ def validate_runner_config(service):
 
 def validate_runner_container(container, expected_cpuset=None):
     actual = container["HostConfig"]
-    if (actual.get("NanoCpus") != 1000000000 or actual.get("Memory") != 2048 * MIB
+    if (actual.get("NanoCpus") != 2000000000 or actual.get("Memory") != 2048 * MIB
             or actual.get("MemorySwap") != 2048 * MIB or actual.get("PidsLimit") != 128
             or actual.get("Privileged") or actual.get("RestartPolicy", {}).get("Name") != "no"):
         raise RuntimeError("Docker did not apply the load runner limits")
@@ -424,7 +424,7 @@ def run_stage(arguments, deadline, *, preflight=False):
             identifier = command(invocation + ['ps', '-a', '-q', 'load-runner']).strip()
             container = json.loads(command(['docker', 'inspect', identifier]))[0]
             validate_runner_container(container, service['cpuset'])
-            load_host = {'machineId': machine_id(), 'cpus': 1, 'memoryMiB': 2048, 'environment': environment(),
+            load_host = {'machineId': machine_id(), 'cpus': 2, 'memoryMiB': 2048, 'environment': environment(),
                          'actions': actions_context(), 'cpuset': service['cpuset'], 'imageId': container['Image'],
                          'engine': json.loads(command(['docker', 'version', '--format', '{{json .Server}}']))}
             atomic_json(RUNTIME / 'load-host.json', load_host)
@@ -523,8 +523,8 @@ def check_generator(experiment):
     source=source_metadata()['sourceSha256']
     marker=output/'check.json'
     marker.unlink(missing_ok=True)
-    command(['docker','run','--rm','--network','none','--cpus','1','--cpuset-cpus',pins['runner'],
-             '--memory','2g','--memory-swap','2g','--pids-limit','128','--ulimit','nofile=8192:8192',
+    command(['docker','run','--rm','--network','none','--cpus','2','--cpuset-cpus',pins['runner'],
+             '--memory','2g','--memory-swap','2g','--pids-limit','128','--ulimit','nofile=32768:32768',
              '--user',f'{os.getuid()}:{os.getgid()}', '-v',f'{output}:/check',
              '--entrypoint','python3','shanpu-experiment-runner:ci',
              '/workspace/scripts/experiments/checks/k6_recovery.py','--output','/check','--experiment',experiment,'--short'],capture=False)

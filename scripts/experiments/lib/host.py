@@ -61,8 +61,8 @@ def validate_affinity(sut, runner, rows):
     available = {row['cpu'] for row in rows}
     if len(available) < 4:
         raise RuntimeError('GitHub Actions measurement requires at least four available vCPUs')
-    if len(sut) != 2 or len(runner) != 1 or set(sut) & set(runner):
-        raise RuntimeError('Require two SUT vCPUs and one distinct load vCPU')
+    if len(sut) != 2 or len(runner) != 2 or set(sut) & set(runner):
+        raise RuntimeError('Require two SUT vCPUs and two distinct load vCPUs')
     if not set(sut + runner) <= available:
         raise RuntimeError('Selected CPUs are unavailable')
     shared = [row['cpu'] for row in rows if row['cpu'] in sut
@@ -85,7 +85,7 @@ def select_affinity():
     remaining = [row['cpu'] for row in rows if row['cpu'] not in sut]
     if len(remaining) < 2:
         raise RuntimeError('GitHub Actions measurement requires at least four available vCPUs')
-    return validate_affinity(cpu_string(sut), str(remaining[0]), rows)
+    return validate_affinity(cpu_string(sut), cpu_string(remaining[:2]), rows)
 
 
 def environment():

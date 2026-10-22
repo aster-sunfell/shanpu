@@ -16,7 +16,7 @@ services:
   nginx:
     image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
     container_name: shanpu-nginx
-    ulimits: {nofile: {soft: 8192, hard: 8192}}
+    ulimits: {nofile: {soft: 32768, hard: 32768}}
     restart: "no"
     network_mode: host
     cpuset: ${SUT_CPUSET:-0,1}

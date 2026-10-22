@@ -65,7 +65,8 @@ jobs:
         timeout-minutes: 5
         run: |
           mkdir -p artifacts/generator
-          docker run --rm --network none --cpus 1 --memory 2g --memory-swap 2g --pids-limit 128 --ulimit nofile=8192:8192 \
+          RUNNER_CPUSET=$(python3 -c 'import json,os; print(json.load(open(os.path.join(os.environ["BENCH_RUNTIME"], "cpu-affinity.json")))["runner"])')
+          docker run --rm --network none --cpuset-cpus "$RUNNER_CPUSET" --cpus 2 --memory 2g --memory-swap 2g --pids-limit 128 --ulimit nofile=32768:32768 \
             -v "$GITHUB_WORKSPACE/artifacts/generator:/check" --entrypoint python3 shanpu-experiment-runner:ci \
             /workspace/scripts/experiments/checks/k6_recovery.py --output /check --experiment "$BENCH_EXPERIMENT"
       - run: python3 scripts/experiments/lib/actions.py up

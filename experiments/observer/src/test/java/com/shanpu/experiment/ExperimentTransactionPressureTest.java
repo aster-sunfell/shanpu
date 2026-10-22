@@ -149,6 +149,39 @@ class ExperimentTransactionPressureTest {
         assertEquals(0L, rows(pressure).get(0).get("notCommitted"));
     }
 
+    @Test void formalWindowExcludesPreparationEvenWithinTheSameSecondAndRejectsActiveReset() {
+        var pressure = new ExperimentTransactionPressure(true, () -> 1000L);
+        pressure.enter(12); begin();
+        try {
+            pressure.beforeMapper();
+            assertThrows(IllegalStateException.class, () -> pressure.openWindow(12));
+            assertEquals(1L, pressure.snapshot().get("started"));
+        } finally { end(TransactionSynchronization.STATUS_COMMITTED); pressure.leave(null); }
+        assertThrows(IllegalStateException.class, () -> pressure.openWindow(13));
+        var initial = pressure.openWindow(12);
+        assertEquals(0L, initial.get("started"));
+        assertEquals(0, initial.get("peakActive"));
+        assertTrue(rows(pressure).isEmpty());
+        pressure.enter(12); begin();
+        try { pressure.beforeMapper(); }
+        finally { end(TransactionSynchronization.STATUS_COMMITTED); pressure.leave(null); }
+        assertEquals(initial.get("windowId"), pressure.snapshot().get("windowId"));
+        assertEquals(1L, pressure.snapshot().get("started"));
+        assertEquals(1L, rows(pressure).get(0).get("starts"));
+        assertNotEquals(initial.get("windowId"), pressure.openWindow(12).get("windowId"));
+    }
+
+    @Test void openingAWindowCannotEraseAnObserverClockFailure() {
+        AtomicLong now = new AtomicLong(2000);
+        var pressure = new ExperimentTransactionPressure(true, now::get);
+        pressure.enter(12); begin();
+        try { pressure.beforeMapper(); now.set(1000); }
+        finally { end(TransactionSynchronization.STATUS_COMMITTED); pressure.leave(null); }
+        assertEquals(1L, pressure.snapshot().get("errors"));
+        assertThrows(IllegalStateException.class, () -> pressure.openWindow(12));
+        assertEquals(1L, pressure.snapshot().get("errors"));
+    }
+
     @Test void disabledObserverAndUnrelatedTransactionsAreIgnored() {
         var pressure = new ExperimentTransactionPressure(true);
         var disabled = new ExperimentTransactionPressure(false);

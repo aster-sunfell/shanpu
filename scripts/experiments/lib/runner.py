@@ -217,9 +217,31 @@ def safe_load_failure(value):
             and not value.get('unresolvedCount') and set(value['loadErrors']) <= allowed)
 
 
+def require_valid_point(value, point):
+    """Stop on broken input/evidence; a valid slow service remains comparable."""
+    errors = list(value['correctnessErrors']) + list(value['loadErrors'])
+    if value.get('pressure', {}).get('valid') is False:
+        errors.extend(value['pressure'].get('errors') or ['Transaction pressure evidence is invalid'])
+    if errors or value['unresolvedCount'] or not value['valid']:
+        raise RuntimeError(
+            f"Measurement invalid; stopping remaining points: {'; '.join(dict.fromkeys(errors))} "
+            f"(planned={value['scheduled']}, started={value['started']}, "
+            f"missing={value['missingRequests']}, VUs={point['vus']}, "
+            f"peakHttpInFlight={value.get('peakHttpInFlight')}, "
+            f"lagP99Ms={value['generatorLagMs']['p99']}, unresolved={value['unresolvedCount']}). "
+            'See point/result.json and k6.out; no service performance conclusion can be drawn')
+
+
 def measure(config, private, directory, token, args):
     check_host_health()
     before_metrics = require_idle(token)
+    if config['plan'] == 'kafka-burst':
+        opened = api(f"/admin/experiments/transaction-window?activityId={config['activityId']}", token, {})
+        before_metrics = observation.fresh_metrics()
+        initial = before_metrics.get('transactionPressure', {})
+        if (initial != opened or initial.get('active') != 0 or initial.get('started') != 0
+                or initial.get('buckets') != [] or not initial.get('windowId')):
+            raise RuntimeError('Transaction window did not open empty after fixture preparation')
     write_json(directory / 'backend-before.json', before_metrics)
     write_json(directory / 'mysql-before.json', mysql_counters())
     evidence = Evidence(directory)
@@ -322,8 +344,11 @@ def measure(config, private, directory, token, args):
         if int(sql('SELECT COUNT(*) FROM t_order_dlq_log;').strip()): result['correctnessErrors'].append('DLQ evidence exists')
         result['valid'] &= not result['correctnessErrors'] and not result['loadErrors']
         if result.get('sloPassed') is not None: result['sloPassed'] &= result['valid']
-        if config['plan']=='kafka-burst' and config['workload']=='burst':
+        if config['plan']=='kafka-burst':
             attach_pressure(result, config, before_metrics, after_metrics, directory)
+            if not result['pressure']['valid']:
+                result['correctnessErrors'].extend(result['pressure']['errors'])
+                result['valid'] = False
         save_result(directory, result)
         return result
     except BaseException as error:
@@ -504,25 +529,7 @@ def main(argv=None):
                               f"examples={json.dumps(detail.get('examples', []), ensure_ascii=False)}", flush=True)
                 checkpoint()
                 check_host_health()
-                if value['correctnessErrors'] or value['unresolvedCount']:
-                    raise RuntimeError('Data/evidence invalid or accepted orders unresolved; preserve this run')
-                limited = safe_load_failure(value)
-                if value['loadErrors'] and not limited:
-                    raise RuntimeError(
-                        f"Load generation invalid: {'; '.join(value['loadErrors'])} "
-                        f"(planned={value['scheduled']}, started={value['started']}, "
-                        f"missing={value['missingRequests']}, VUs={point['vus']}, "
-                        f"lagP99Ms={value['generatorLagMs']['p99']}). "
-                        'See point/result.json and k6.out; no service performance conclusion can be drawn')
-                if not value['valid'] and not limited:
-                    raise RuntimeError('Measurement is invalid; preserve this point')
-                if limited:
-                    # Recovery requires the same full conservation/commit checks plus an idle SUT.
-                    # Disk evidence is retained; only verified closed-point hot data is retired.
-                    require_idle(admin['token'])
-                    value['recoveryVerified'] = True
-                    write_json(point_dir/'result.json', value)
-                    print('发压受限：'+ '; '.join(value['loadErrors']) + '；该点不参与收益比较；证据已保留，核对空闲后继续固定对照。', flush=True)
+                require_valid_point(value, point)
                 release_redis(private/relative, point)
                 entries[-1]['redisReleased'] = True
                 checkpoint()

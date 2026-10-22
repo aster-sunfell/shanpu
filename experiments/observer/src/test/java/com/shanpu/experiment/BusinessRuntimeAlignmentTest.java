@@ -26,7 +26,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.nio.file.Path;
@@ -91,14 +90,14 @@ class BusinessRuntimeAlignmentTest {
         assertEquals(business, experiment);
         assertEquals(business, configuration("dev"));
         assertEquals(32, experiment.get("threads"));
-        assertEquals(2048, experiment.get("connections"));
+        assertEquals(8192, experiment.get("connections"));
         assertEquals(8, experiment.get("poolMax"));
         assertEquals(3000L, experiment.get("poolWait"));
         assertEquals(Duration.ofSeconds(5), experiment.get("keepAliveTimeout"));
         assertEquals("INFO", experiment.get("logging"));
     }
 
-    @Test void sharedConnectorAcceptsTwelveHundredConnectionsAndStillServesAnotherRequest() {
+    @Test void sharedConnectorAcceptsGeneratorSocketBudgetAndStillServesAnotherRequest() {
         configurationRunner("prod,experiment,sut").run(context -> {
             var factory = new TomcatServletWebServerFactory(0);
             factory.setAddress(InetAddress.getLoopbackAddress());
@@ -113,21 +112,19 @@ class BusinessRuntimeAlignmentTest {
             var sockets = new ArrayList<Socket>();
             try {
                 server.start();
-                for (int i = 0; i < 1200; i++) {
+                for (int i = 0; i < 6400; i++) {
                     var socket = new Socket(InetAddress.getLoopbackAddress(), server.getPort());
                     sockets.add(socket);
-                    // Incomplete request headers hold accepted connections without occupying servlet threads.
-                    socket.getOutputStream().write("GET /probe HTTP/1.1\r\nHost: localhost\r\n".getBytes(StandardCharsets.US_ASCII));
-                    socket.getOutputStream().flush();
+                    // Idle sockets test admission without allocating thousands of partial HTTP parsers.
                 }
                 var protocol = (AbstractProtocol<?>) server.getTomcat().getConnector().getProtocolHandler();
                 long deadline = System.nanoTime()+Duration.ofSeconds(2).toNanos();
-                while (protocol.getConnectionCount() < 1200 && System.nanoTime() < deadline) Thread.sleep(10);
+                while (protocol.getConnectionCount() < 6400 && System.nanoTime() < deadline) Thread.sleep(10);
                 // Tomcat reserves a slot before accept(), so its admission counter may
-                // include the acceptor waiting for the next socket as well as our 1200.
+                // include the acceptor waiting for the next socket as well as our 6400.
                 long connections = protocol.getConnectionCount();
-                assertTrue(connections >= 1200 && connections <= 1201,
-                        () -> "Expected 1200 sockets plus at most one acceptor reservation, got "+connections);
+                assertTrue(connections >= 6400 && connections <= 6401,
+                        () -> "Expected 6400 sockets plus at most one acceptor reservation, got "+connections);
                 var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+server.getPort()+"/probe"))
                         .timeout(Duration.ofSeconds(2)).build();
                 var response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()

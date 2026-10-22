@@ -87,7 +87,7 @@ class ProtocolTest(unittest.TestCase):
         rows = [{'cpu': i, 'socket': 0, 'core': i//2, 'siblings': [i//2*2, i//2*2+1]} for i in range(4)]
         actions = {'runId': '123', 'attempt': '1', 'job': 'performance'}
         target = {'machineId': 'host', 'actions': actions, 'services': [{'cpuset': '0,1'}], 'environment': {'kernel': 'linux'}}
-        load = {'machineId': 'host', 'actions': actions, 'cpuset': '2', 'environment': {'cpuTopology': rows}}
+        load = {'machineId': 'host', 'actions': actions, 'cpuset': '2,3', 'environment': {'cpuTopology': rows}}
         validate_deployment(args, target, load)
         for change in ({'machineId': 'other'}, {'cpuset': '0'}, {'actions': {'runId': 'other'}}, {'environment': None}):
             with self.subTest(change=change), self.assertRaises(RuntimeError):

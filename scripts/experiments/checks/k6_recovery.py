@@ -17,7 +17,7 @@ import time
 LIB = Path(__file__).resolve().parents[1]/'lib'
 sys.path.insert(0, str(LIB))
 from analysis import Evidence, LATE_START_ERROR, save_result, write_json
-from protocol import parse_args, policy, matrix
+from protocol import DEFAULT_VUS, MAX_RATE, MAX_REQUEST_TIMEOUT, parse_args, policy, matrix
 from runner import verify_k6_load, safe_load_failure, runner_usage
 
 
@@ -27,9 +27,9 @@ class HttpQueue:
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
         self.active, self.ledger, self.config = 0, {}, {}
-        self.gate = asyncio.Semaphore(2048)
+        self.gate = asyncio.Semaphore(8192)
         self.server = asyncio.run_coroutine_threadsafe(
-            asyncio.start_server(self.handle, '127.0.0.1', 0, backlog=2048), self.loop).result()
+            asyncio.start_server(self.handle, '127.0.0.1', 0, backlog=8192), self.loop).result()
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def handle(self, reader, writer):
@@ -130,7 +130,7 @@ def check(output, experiment, short=False):
             assert measured['valid'], measured['loadErrors']
             if experiment == 'kafka-burst': assert measured['burst']['requests'] == selected['rate']*selected['seconds']
         delayed = execute({**selected,'workload':'steady','baseSeconds':0,'recoverySeconds':0,
-                           'seconds':15,'rate':800,'scheduled':12000,'fixtureDelaySeconds':1}, 'delayed-800rps')
+                           'seconds':12,'rate':MAX_RATE,'scheduled':12*MAX_RATE,'fixtureDelaySeconds':MAX_REQUEST_TIMEOUT-1}, 'delayed-600rps')
         assert delayed['valid'], delayed['loadErrors']
         if not short:
             burst = next(p for p in matrix(args) if p['path'] == 'C')
@@ -143,7 +143,7 @@ def check(output, experiment, short=False):
             assert recovered['valid'], recovered['loadErrors']
         write_json(output/'check.json', {'status': 'passed', 'scope': 'validation',
                    'description': 'Real default k6 profiles and production evidence; controlled HTTP queue, no business performance claims',
-                   'experiment': experiment, 'mode':'machine-check' if short else 'regression', 'verifiedEnvelope':{'rps':800,'responseDelayMs':1000,'vus':1200}, 'observedPoints': len(observed), 'resources': runner_usage()})
+                   'experiment': experiment, 'mode':'machine-check' if short else 'regression', 'verifiedEnvelope':{'rps':600,'responseDelayMs':9000,'requestTimeoutMs':10000,'vus':DEFAULT_VUS}, 'observedPoints': len(observed), 'resources': runner_usage()})
     finally: server.close()
 
 
@@ -151,7 +151,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--experiment', choices=['redis-filtering','kafka-burst'], default='redis-filtering')
-    parser.add_argument('--short', action='store_true', help='15s delayed-load check on the current machine; no repeated full profile or artificial overload')
+    parser.add_argument('--short', action='store_true', help='12s arrival window with 9s responses on the current machine; no repeated full profile or artificial overload')
     options = parser.parse_args()
     try:
         check(options.output.resolve(), options.experiment, options.short)

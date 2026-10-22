@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 import subprocess
 from host import cpu_list, cpu_string
+from protocol import DEFAULT_VUS
 
 ROOT = Path(__file__).resolve().parents[3]
 MIDDLEWARE = ('mysql', 'redis', 'kafka')
@@ -62,7 +63,7 @@ def validate_shared_cpu_config(services):
     return {'cpuModel':'shared-cpuset','cpuLimit':2,'cpuset':sets.pop()}
 
 
-def validate_connection_budget(services, development, vus=1200):
+def validate_connection_budget(services, development, vus=DEFAULT_VUS):
     """Proxy connections include both downstream clients and upstream sockets."""
     def integer(pattern, text):
         match = re.search(pattern,text,re.M)
@@ -82,9 +83,9 @@ def validate_connection_budget(services, development, vus=1200):
     if connections < vus+128: raise RuntimeError('Tomcat socket budget cannot cover VUs plus headroom')
     for service in (services['backend'],services['nginx'],development['services']['nginx']):
         limits = service.get('ulimits',{}).get('nofile',{})
-        if any(limits.get(k,0) < 8192 for k in ('soft','hard')):
-            raise RuntimeError('Backend and gateway require explicit 8192 descriptor limits')
-    return {'vus':vus,'nginxConnections':next(iter(values.values())), 'tomcatConnections':connections,'nofile':8192}
+        if any(limits.get(k,0) < 32768 for k in ('soft','hard')):
+            raise RuntimeError('Backend and gateway require explicit 32768 descriptor limits')
+    return {'vus':vus,'nginxConnections':next(iter(values.values())), 'tomcatConnections':connections,'nofile':32768}
 
 
 def _equal(expected, actual, label):

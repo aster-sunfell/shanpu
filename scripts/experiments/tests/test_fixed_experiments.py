@@ -77,15 +77,15 @@ class FixedExperimentTest(unittest.TestCase):
         self.assertEqual('completed',meta['status'])
         self.assertTrue(all(p['rate']==600 for p in calls))
 
-    def test_missing_pressure_is_inconclusive_but_keeps_all_fixed_points(self):
-        calls,meta=self.run_experiment(response=lambda p: {'pressure':{'valid':False}})
-        self.assertEqual(6,len(calls))
-        self.assertEqual('inconclusive',meta['status'])
+    def test_missing_pressure_stops_before_repeating_invalid_statistics(self):
+        calls,meta=self.run_experiment(response=lambda p: {'pressure':{'valid':False,'errors':['missing window']}}, expected_error='missing window')
+        self.assertEqual(1,len(calls))
+        self.assertEqual('failed',meta['status'])
 
-    def test_load_failure_retains_evidence_and_continues_after_idle_check(self):
-        calls,meta=self.run_experiment(response=lambda p: {'valid':False,'loadErrors':['Offered load not achieved']} if p['path']=='B' else {})
-        self.assertEqual(6,len(calls))
-        self.assertEqual('inconclusive',meta['status'])
+    def test_load_failure_retains_evidence_and_stops_remaining_points(self):
+        calls,meta=self.run_experiment(response=lambda p: {'valid':False,'loadErrors':['Offered load not achieved']} if p['path']=='B' else {}, expected_error='Offered load not achieved')
+        self.assertEqual(1,len(calls))
+        self.assertEqual('failed',meta['status'])
 
     def test_unhealthy_warmup_is_inconclusive_without_formal_points(self):
         calls,meta=self.run_experiment(warm_error=runner.WarmupInconclusive('unhealthy'))
@@ -93,9 +93,9 @@ class FixedExperimentTest(unittest.TestCase):
         self.assertEqual('inconclusive',meta['status'])
 
     def test_corruption_unknown_load_error_and_unresolved_abort(self):
-        for change,reason in [({'correctnessErrors':['corrupt']},'Data/evidence invalid'),
-                              ({'unresolvedCount':1},'Data/evidence invalid'),
-                              ({'loadErrors':['k6 exit 1']},'Load generation invalid')]:
+        for change,reason in [({'correctnessErrors':['corrupt']},'Measurement invalid'),
+                              ({'unresolvedCount':1},'Measurement invalid'),
+                              ({'loadErrors':['k6 exit 1']},'Measurement invalid')]:
             calls,meta=self.run_experiment(response=lambda p: change,expected_error=reason)
             self.assertEqual(1,len(calls))
             self.assertEqual('failed',meta['status'])

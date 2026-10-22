@@ -7,7 +7,7 @@ server:
       min-spare: 4
     # 1200 fixed load VUs plus idle upstream connections and health requests.
     # Socket capacity is independent of the 32 processing threads / PID budget.
-    max-connections: 2048
+    max-connections: 8192
     accept-count: 512
     connection-timeout: 5s
     keep-alive-timeout: 5s

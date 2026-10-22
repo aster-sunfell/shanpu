@@ -24,7 +24,7 @@ public class ExperimentTransactionPressure {
     private final LongSupplier clock;
     private final ThreadLocal<Long> activity = new ThreadLocal<>();
     private final TreeMap<Long, Bucket> buckets = new TreeMap<>();
-    private long activityId, started, ended, errors;
+    private long activityId, started, ended, errors, windowId;
     private int active, peak;
 
     @Autowired
@@ -50,10 +50,22 @@ public class ExperimentTransactionPressure {
         TransactionSynchronizationManager.registerSynchronization(new Completion());
     }
 
+    /** Called only after fixture work and the previous measurement have drained. */
+    public synchronized Map<String, Object> openWindow(long id) {
+        if (!enabled || id <= 0 || id != activityId || active != 0 || started != ended || errors != 0)
+            throw new IllegalStateException("Transaction window requires the prepared activity to be idle");
+        started = ended = errors = 0;
+        active = peak = 0;
+        buckets.clear();
+        windowId++;
+        return snapshot();
+    }
+
     private synchronized boolean begin(long id) {
         if (id != activityId) {
             if (active != 0) { errors++; return false; }
             activityId = id;
+            windowId = 0;
             started = ended = errors = 0;
             active = peak = 0;
             buckets.clear();
@@ -99,7 +111,7 @@ public class ExperimentTransactionPressure {
             row.put("activeEnd", b.activeEnd);
             rows.add(row);
         });
-        return Map.of("version", 1, "activityId", activityId, "started", started, "ended", ended,
+        return Map.of("version", 2, "windowId", windowId, "activityId", activityId, "started", started, "ended", ended,
                 "active", active, "peakActive", peak, "errors", errors, "buckets", rows);
     }
 

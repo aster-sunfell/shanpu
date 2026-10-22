@@ -10,10 +10,15 @@ def attach_pressure(result, config, before, after, directory):
     errors = []
     rows = raw.get('buckets', [])
     attempts = sum(result.get('backendDelta', {}).get(k, 0) for k in ('syncAttempts', 'asyncAttempts'))
-    if raw.get('version') != 1 or raw.get('activityId') != config['activityId']:
+    if raw.get('version') != 2 or raw.get('activityId') != config['activityId']:
         errors.append('Transaction pressure is missing or belongs to another activity')
-    if before.get('transactionPressure', {}).get('activityId') == config['activityId']:
-        errors.append('Transaction pressure contains previous activity history')
+    initial = before.get('transactionPressure') or {}
+    if (initial.get('version') != 2 or initial.get('activityId') != config['activityId']
+            or not initial.get('windowId') or initial.get('windowId') != raw.get('windowId')):
+        errors.append('Transaction measurement window is missing or changed')
+    if (any(initial.get(k) != 0 for k in ('started','ended','active','peakActive','errors'))
+            or initial.get('buckets') != []):
+        errors.append('Transaction window was not empty before measurement')
     if raw.get('errors') or raw.get('active') != 0 or raw.get('started') != raw.get('ended'):
         errors.append('Transaction pressure was truncated, clock shifted, or transactions remain active')
     fields = ('epochSecond','starts','ends','notCommitted','activePeak','activeEnd')

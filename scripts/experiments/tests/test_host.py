@@ -20,10 +20,10 @@ class HostTest(unittest.TestCase):
     def rows(self):
         return [{'cpu':i,'socket':0,'core':i//2,'siblings':[i//2*2,i//2*2+1]} for i in range(8)]
 
-    def test_cpu_selection_keeps_smt_together_and_reserves_a_vcpu(self):
+    def test_cpu_selection_keeps_smt_together_for_two_disjoint_pairs(self):
         with patch('host.topology', return_value=self.rows()[:4]):
             pins = select_affinity()
-            self.assertEqual(('0,1', '2', '3'), tuple(pins[k] for k in ('sut', 'runner', 'reserved')))
+            self.assertEqual(('0,1', '2,3', ''), tuple(pins[k] for k in ('sut', 'runner', 'reserved')))
             self.assertEqual([], pins['crossGroupSmt'])
         self.assertEqual([0,1,2,4], cpu_list('0-2,4'))
         for sut, load in (('0,2','0'), ('0,2','8'), ('0','4')):
@@ -143,12 +143,14 @@ class HostTest(unittest.TestCase):
                 journal.poll.side_effect=lambda:evidence.add_commits([commit]) if not evidence.scalar('SELECT COUNT(*) FROM commits') else None
                 return journal
             before={'timeMs':int(time.time()*1000),'settings':{},'localCacheEnabled':False,'journalOffset':0,
-                    'events':0,'sqlCalls':{},'processStartedAtMs':1}
+                    'events':0,'sqlCalls':{},'processStartedAtMs':1,
+                    'transactionPressure':{'version':2,'windowId':1,'activityId':12,'active':0,'started':0,'buckets':[]}}
             load=Load()
             args=parse_args(['kafka-burst'])
             config=dict(activityId=12,path='C',workload='steady',seconds=1,baseSeconds=0,baseRate=1,
                         scheduled=1,rate=1,points=1000,plan='kafka-burst',repeat=1,requestTimeout=1,vus=100)
-            with patch('runner.require_idle',return_value=before),patch('runner.mysql_counters',return_value={}), \
+            with patch('runner.api',return_value=before['transactionPressure']), \
+                 patch('runner.require_idle',return_value=before),patch('runner.mysql_counters',return_value={}), \
                  patch('runner.observation.fresh_metrics',side_effect=lambda:{**before,'timeMs':int(time.time()*1000),'events':1}), \
                  patch('runner.lag',return_value={'0':0}),patch('runner.sql',return_value='0'), \
                  patch('runner.Sampler') as sampler,patch('runner.JournalReader',side_effect=reader), \

@@ -24,6 +24,7 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestParam;
 
@@ -75,6 +76,11 @@ public class ExperimentMetrics implements Interceptor {
         public Result<Map<String, Object>> commits(@RequestParam long activityId,
                                                   @RequestParam(defaultValue = "0") long after) throws java.io.IOException {
             return Result.ok(journal.readPage(after, activityId));
+        }
+
+        @PostMapping("/api/admin/experiments/transaction-window")
+        public Result<Map<String, Object>> openTransactionWindow(@RequestParam long activityId) {
+            return Result.ok(metrics.pressure.openWindow(activityId));
         }
 
         @GetMapping("/api/admin/experiments/metrics")

@@ -8,12 +8,12 @@ services:
     # Runner resources are additional to the 2-core/2-GiB SUT budget, even on one host.
     # Both projects live in the same ephemeral GitHub-hosted VM.
     network_mode: host
-    cpus: 1
+    cpus: 2
     cpuset: ${RUNNER_CPUSET:?Actions must allocate load CPUs}
     mem_limit: 2g
     memswap_limit: 2g
     pids_limit: 128
-    ulimits: {nofile: {soft: 8192, hard: 8192}}
+    ulimits: {nofile: {soft: 32768, hard: 32768}}
     init: true
     restart: "no"
     environment:

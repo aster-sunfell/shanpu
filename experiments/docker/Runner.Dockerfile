@@ -6,5 +6,5 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 WORKDIR /workspace
 COPY scripts/experiments /workspace/scripts/experiments
 COPY experiments/compose.sut.yml /workspace/experiments/compose.sut.yml
-ENV GOMAXPROCS=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 BENCH_CONTAINER=1
+ENV GOMAXPROCS=2 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 BENCH_CONTAINER=1
 ENTRYPOINT ["python3", "/workspace/scripts/experiments/lib/runner.py"]
