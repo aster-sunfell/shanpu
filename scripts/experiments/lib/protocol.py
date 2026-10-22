@@ -160,6 +160,7 @@ def comparisons(args, results):
             difference('completed', lambda r: r['completed'])
             difference('eligibleErrorRate', lambda r: r['classes']['eligible']['errorRate'])
             difference('duplicateResponseP99Ms', lambda r: r['classes'].get('duplicate', {}).get('responseMs', {}).get('p99'))
+            difference('duplicateResponseP95Ms', lambda r: r['classes'].get('duplicate', {}).get('responseMs', {}).get('p95'))
             difference('businessSqlPer1000Requests', lambda r: sum(r['backendDelta']['sqlCalls'].values())*1000/r['started']
                        if 'sqlCalls' in r.get('backendDelta', {}) and r['started'] else None)
             difference('syncAttemptsPer1000Requests', lambda r: r['backendDelta']['syncAttempts']*1000/r['started']

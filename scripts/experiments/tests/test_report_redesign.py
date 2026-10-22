@@ -11,6 +11,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 from html_report import render
 from report_data import Experiment, burst_recovery
 from report_metrics import summarize
+from protocol import comparisons, parse_args
 import test_html_report
 
 
@@ -26,8 +27,33 @@ class RedesignTest(unittest.TestCase):
             self.assertIn('<th>Redis 同步下单</th><th>Kafka 异步下单</th>',html)
             self.assertNotIn('<th>前方案中位数',html)
             self.assertNotIn('重复请求拒绝 p99',html)
+            self.assertNotIn('重复请求拒绝 p95',html)
             self.assertNotIn('数据库同步下单',html)
             self.assertIn('突发请求完成 p99',html)
+
+    def test_duplicate_p95_uses_recorded_quantiles_and_preserves_missing_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);directory=self.fixture(root)
+            for path in directory.glob('*/result.json'):
+                row=json.loads(path.read_text())
+                values={'A':[10,100,100],'B':[20,101,300]}
+                row['classes']['duplicate']['responseMs']['p95']=values[row['path']][row['repeat']-1]
+                path.write_text(json.dumps(row))
+            # Existing experiment.json has no P95 summary: rerender from point evidence.
+            experiment=Experiment(directory,'performance')
+            metrics=comparisons(parse_args(['redis-filtering']),experiment.points)[0]['metrics']
+            self.assertEqual(10,metrics['duplicateResponseP95Ms']['afterMinusBefore']['p50'])
+            self.assertEqual(-100,metrics['duplicateResponseP95Ms']['pairedReductionPct']['p50'])
+            render(root,root/'html');html=(root/'html/index.html').read_text()
+            self.assertIn('<h3>重复请求拒绝 p95 / ms</h3>',html)
+            self.assertIn('<td>重复请求拒绝 p95 / ms</td><td>100</td><td>101</td><td>10</td>',html)
+            self.assertIn('第 3 轮 · Redis 过滤后同步下单: 300',html)
+            path=next(directory.glob('*/result.json'));row=json.loads(path.read_text())
+            del row['classes']['duplicate']['responseMs']['p95'];path.write_text(json.dumps(row))
+            experiment=Experiment(directory,'performance')
+            self.assertNotIn('duplicateResponseP95Ms',comparisons(parse_args(['redis-filtering']),experiment.points)[0]['metrics'])
+            render(root,root/'html');html=(root/'html/index.html').read_text()
+            self.assertNotIn('<td>重复请求拒绝 p95 / ms</td>',html)
 
     def test_missing_timeline_does_not_hide_other_evidence(self):
         with tempfile.TemporaryDirectory() as temp:

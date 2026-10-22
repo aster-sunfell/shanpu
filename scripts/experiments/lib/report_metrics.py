@@ -3,14 +3,14 @@ from statistics import median
 
 NAMES = {'A':'数据库同步下单', 'B':'Redis 过滤后同步下单', 'C':'Kafka 异步下单'}
 EXPERIMENTS = {
-    'redis-filtering': {'paths':('A','B'), 'names':{'A':NAMES['A'],'B':NAMES['B']}, 'primary':('eligibleResponseP99Ms','eligibleResponseP95Ms','duplicateResponseP99Ms'),
+    'redis-filtering': {'paths':('A','B'), 'names':{'A':NAMES['A'],'B':NAMES['B']}, 'primary':('eligibleResponseP99Ms','eligibleResponseP95Ms','duplicateResponseP99Ms','duplicateResponseP95Ms'),
                         'support':('businessSqlPer1000Requests','syncAttemptsPer1000Requests')},
     'kafka-burst': {'paths':('B','C'), 'names':{'B':'Redis 同步下单','C':NAMES['C']}, 'primary':('pressure.peakStartRps','pressure.peakActive'),
                     'cost':('burst.completionP50Ms','burst.completionP95Ms','burst.completionP99Ms','burst.completionPct','peakOutstanding','burst.recoveryMs')},
 }
 LABELS = {
     'eligibleResponseP99Ms':'有效购买响应 p99 / ms', 'eligibleResponseP95Ms':'有效购买响应 p95 / ms',
-    'duplicateResponseP99Ms':'重复请求拒绝 p99 / ms',
+    'duplicateResponseP99Ms':'重复请求拒绝 p99 / ms', 'duplicateResponseP95Ms':'重复请求拒绝 p95 / ms',
     'businessSqlPer1000Requests':'每千请求业务 SQL 调用', 'syncAttemptsPer1000Requests':'每千请求同步事务尝试',
     'pressure.peakStartRps':'全程下单事务开始速率峰值 / 次每秒',
     'pressure.peakActive':'全程下单事务并发峰值 / 个',
@@ -26,6 +26,7 @@ def value(row, key):
     if key == 'eligibleResponseP99Ms': return row.get('classes',{}).get('eligible',{}).get('responseMs',{}).get('p99')
     if key == 'eligibleResponseP95Ms': return row.get('classes',{}).get('eligible',{}).get('responseMs',{}).get('p95')
     if key == 'duplicateResponseP99Ms': return row.get('classes',{}).get('duplicate',{}).get('responseMs',{}).get('p99')
+    if key == 'duplicateResponseP95Ms': return row.get('classes',{}).get('duplicate',{}).get('responseMs',{}).get('p95')
     if key.startswith('pressure.'):
         pressure=row.get('pressure') or {}
         return pressure.get(key.split('.',1)[1]) if pressure.get('valid') else None
