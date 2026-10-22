@@ -90,14 +90,14 @@ class BusinessRuntimeAlignmentTest {
         assertEquals(business, experiment);
         assertEquals(business, configuration("dev"));
         assertEquals(32, experiment.get("threads"));
-        assertEquals(8192, experiment.get("connections"));
+        assertEquals(16384, experiment.get("connections"));
         assertEquals(8, experiment.get("poolMax"));
         assertEquals(3000L, experiment.get("poolWait"));
         assertEquals(Duration.ofSeconds(5), experiment.get("keepAliveTimeout"));
         assertEquals("INFO", experiment.get("logging"));
     }
 
-    @Test void sharedConnectorAcceptsGeneratorSocketBudgetAndStillServesAnotherRequest() {
+    @Test void sharedConnectorAcceptsBaselineSocketLoadAndStillServesAnotherRequest() {
         configurationRunner("prod,experiment,sut").run(context -> {
             var factory = new TomcatServletWebServerFactory(0);
             factory.setAddress(InetAddress.getLoopbackAddress());

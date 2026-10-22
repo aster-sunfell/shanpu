@@ -9,7 +9,7 @@ import threading
 import time
 
 MIB = 1024 * 1024
-START_MEMORY_MIB = 3072
+START_MEMORY_MIB = 5120
 STOP_MEMORY_MIB = 1024
 CRITICAL_MEMORY_MIB = 512
 
@@ -98,7 +98,7 @@ def environment():
 
 def require_start_memory():
     if memory()['MemAvailable'] < START_MEMORY_MIB * MIB:
-        raise RuntimeError('Available runner memory is below 3072 MiB')
+        raise RuntimeError(f'Available runner memory is below {START_MEMORY_MIB} MiB')
 
 
 def container_resources(container):

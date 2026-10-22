@@ -32,7 +32,9 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(['A','B','B','A','A','B'],[p['path'] for p in redis])
         self.assertEqual(['B','C','C','B','B','C'],[p['path'] for p in kafka])
         self.assertTrue(all(p['scheduled']==36000 and p['workload']=='mixed' for p in redis))
-        self.assertTrue(all(p['scheduled']==11000 and p['recoverySeconds']==30 for p in kafka))
+        self.assertTrue(all(p['vus']==10400 and p['rate']==1000 for p in kafka))
+        self.assertTrue(all(p['vus']==6400 and p['rate']==600 for p in redis))
+        self.assertTrue(all(p['scheduled']==15000 and p['recoverySeconds']==30 for p in kafka))
 
     def test_removed_search_flags_and_short_formal_runs_are_rejected(self):
         for extra in (['--stage','capacity'],['--rates','100,200'],['--baseline-report','x'],['--seconds','2']):

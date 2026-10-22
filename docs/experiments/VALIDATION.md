@@ -10,11 +10,11 @@ python3 scripts/experiments/lib/runner.py redis-filtering --dry-run
 python3 scripts/experiments/lib/runner.py kafka-burst --dry-run
 ```
 
-正式 workflow 在启动业务容器之前，执行 `actions.py check-load`，使用实际 runner 镜像、选定发压 CPU、2 CPU / 2 GiB / 128 PIDs / 32768 文件描述符运行 600 RPS、12 秒注入、9 秒响应延迟检查。`check.json` 绑定当前源码、机器、job、实验和 CPU 集合。通过后只启动一次业务环境，初始空库/Redis/日志检查、实际数据点的准备核对、固定预热和正式测量在同一实例内完成。
+正式 workflow 在启动业务容器之前，执行 `actions.py check-load`，使用实际 runner 镜像、选定发压 CPU、2 CPU / 4 GiB / 128 PIDs / 65536 文件描述符运行 Redis 600 RPS 或 Kafka 1000 RPS、12 秒注入、9 秒响应延迟检查。`check.json` 绑定当前源码、机器、job、实验和 CPU 集合。通过后只启动一次业务环境，初始空库/Redis/日志检查、实际数据点的准备核对、固定预热和正式测量在同一实例内完成。
 
 独立 `experiment-regressions.yml` 在相关代码变更或手动触发时执行完整回归：
 
-1. 实际默认 Redis 600 RPS × 60 秒或 Kafka 三段 60 秒形状；额外 600 RPS、9 秒延迟验证；人为限制 VU 的过载与恢复。
+1. 实际默认 Redis 600 RPS × 60 秒或 Kafka 三段 60 秒形状；额外以所选实验最高 RPS（Redis 600、Kafka 1000）进行 9 秒延迟验证；人为限制 VU 的过载与恢复。
 2. `actions.py fixture-check` 验证整场规模加余量的造数、两条业务路径及守恒关系；回归结束销毁临时环境，不再重建另一套正式实例。
 3. 使用生产请求脚本、逐笔 JSONL、SQLite 核对，不模拟或补写 k6 到达时间戳。结果只标记 validation，不发布成性能报告。
 
@@ -39,6 +39,8 @@ Kafka 削峰重构回归补充：观察器测试覆盖真实 MyBatis 拦截入�
 
 Actions 可靠性修复：Kafka 新窗口同时隔离准备请求的计数、峰值与桶，覆盖同秒准备/测量、活跃事务拒绝重置和窗口变化检测；正式发压或统计证据无效时第一点即停止，SLO 不达标但证据有效仍可继续。发压资源为 2 vCPU / 2 GiB / 6400 VU，验证实际慢响应占用，入口连接预算统一扩大，处理线程和数据库池保持不变。
 
-`scripts/experiments/checks/business_pipeline.py` 是开发时的真实业务短回归入口，必须在隔离待测服务、受限发压容器和宿主 watchdog 下执行。它以 200 VU、短时低流量复用正式的 prepare / measure / report，分别检查 Redis A/B 和 Kafka B/C，并要求 Kafka 正式事务数等于正式完成订单数（不包含准备请求）。输出始终为 validation，不进入正式收益比较，不替代正式 6400 VU 预算的生成器验证，也不增加正式 workflow 的准备步骤。
+`scripts/experiments/checks/business_pipeline.py` 是开发时的真实业务短回归入口，必须在隔离待测服务、受限发压容器和宿主 watchdog 下执行。它以 200 VU、短时低流量复用正式的 prepare / measure / report，分别检查 Redis A/B 和 Kafka B/C，并要求 Kafka 正式事务数等于正式完成订单数（不包含准备请求）。输出始终为 validation，不进入正式收益比较，不替代正式 Redis 6400 / Kafka 10400 VU 预算的生成器验证，也不增加正式 workflow 的准备步骤。
 
 本次修复验证：125 项 Python 回归、3 项 Node 调度检查、Compose 配置对齐与 actionlint 通过。受限发压容器（2 vCPU / 2 GiB / 6400 VU）完成 Redis 默认形状 36000/36000、Kafka 默认形状 11000/11000；各自 9 秒慢响应检查均为 7200/7200，人为 VU 耗尽被判无效，恢复点均为 100/100。独立完整 Docker 服务栈的短链路中，Redis A/B 各 100 请求、10 个有效购买完成，Kafka B/C 各 140 请求与 140 个正式事务，测前计数均为 0；无 OOM/重启，HTML 重生成通过。这些是机制回归，未运行新版 Actions 的正式三轮收益实验。
+
+Kafka 1000 RPS 配置验证：125 项 Python 回归、3 项 Node 调度测试、环境对齐和 actionlint 通过。2 vCPU / 4 GiB / 10400 VU 的真实 k6 容器完成三段形状 15000/15000 请求，以及 1000 RPS、9 秒响应延迟的 12000/12000 请求，均无迟发或 VU 耗尽；人为 VU 不足正确判无效，恢复点 100/100。k6 子进程峰值 RSS 2459028 KiB，容器无 OOM。Java 配置核验使用新连接上限，实际 socket 回归保留 6400 个空闲连接；额外尝试 10400 个空闲连接超出单测 192 MiB 堆，不能将配置上限视为业务承载保证。尚未运行 1000 RPS 的正式业务对照实验。

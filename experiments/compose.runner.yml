@@ -10,10 +10,10 @@ services:
     network_mode: host
     cpus: 2
     cpuset: ${RUNNER_CPUSET:?Actions must allocate load CPUs}
-    mem_limit: 2g
-    memswap_limit: 2g
+    mem_limit: 4g
+    memswap_limit: 4g
     pids_limit: 128
-    ulimits: {nofile: {soft: 32768, hard: 32768}}
+    ulimits: {nofile: {soft: 65536, hard: 65536}}
     init: true
     restart: "no"
     environment:

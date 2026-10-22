@@ -83,9 +83,9 @@ def validate_connection_budget(services, development, vus=DEFAULT_VUS):
     if connections < vus+128: raise RuntimeError('Tomcat socket budget cannot cover VUs plus headroom')
     for service in (services['backend'],services['nginx'],development['services']['nginx']):
         limits = service.get('ulimits',{}).get('nofile',{})
-        if any(limits.get(k,0) < 32768 for k in ('soft','hard')):
-            raise RuntimeError('Backend and gateway require explicit 32768 descriptor limits')
-    return {'vus':vus,'nginxConnections':next(iter(values.values())), 'tomcatConnections':connections,'nofile':32768}
+        if any(limits.get(k,0) < 65536 for k in ('soft','hard')):
+            raise RuntimeError('Backend and gateway require explicit 65536 descriptor limits')
+    return {'vus':vus,'nginxConnections':next(iter(values.values())), 'tomcatConnections':connections,'nofile':65536}
 
 
 def _equal(expected, actual, label):

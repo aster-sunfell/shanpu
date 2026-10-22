@@ -12,7 +12,7 @@
 | Nginx 1.28 | Docker，host 网络 | `127.0.0.1:8089` | 浏览器统一入口 |
 | Spring Boot | 宿主机 Java 17 | `127.0.0.1:8081` | 后端 API |
 | Next.js | 宿主机 Node.js 22 / pnpm 10.11.0 | `127.0.0.1:3000` | SSR、前端开发与热更新 |
-| 压测端 | 独立 `experiments/compose.runner.yml` | 访问独立待测端 | 2 个逻辑 CPU / 2 GiB |
+| 压测端 | 独立 `experiments/compose.runner.yml` | 访问独立待测端 | 2 个逻辑 CPU / 4 GiB |
 
 `docker-compose.yml` 固定项目名为 `shanpu`，使用 `shanpu_mysql-data`、`shanpu_redis-data`、`shanpu_kafka-data` 三个数据卷。Nginx 和 k6 使用 Linux host 网络，直接访问宿主机回环地址；Nginx 不配置 `ports`。
 
@@ -20,7 +20,7 @@
 
 前端包管理器版本固定在 `frontend/package.json` 的 `packageManager`（pnpm 10.11.0）。镜像按该字段安装工具，依赖安装和应用构建复用同一阶段，不在构建时解析 pnpm 最新版；依赖仍使用 `pnpm install --frozen-lockfile`。
 
-应用性能参数统一在 `backend/src/main/resources/application-2c2g.yml`；`dev` 和 `prod` profile 都自动加载。Tomcat 使用 32 个处理线程、8192 个连接、512 个连接排队位，连接及 keep-alive 超时均为 5 秒；数据库池最多 8 个连接、等待上限 3 秒。本地调试可显式覆盖参数，但其结果不作为容量证据。运行时镜像固定 digest，后端 JRE 版本与 `.sdkmanrc` 的 Java 17.0.18+8 对齐；生产和压测共用同一份 Dockerfile、JVM 参数及启动脚本。
+应用性能参数统一在 `backend/src/main/resources/application-2c2g.yml`；`dev` 和 `prod` profile 都自动加载。Tomcat 使用 32 个处理线程、16384 个连接、512 个连接排队位，连接及 keep-alive 超时均为 5 秒；数据库池最多 8 个连接、等待上限 3 秒。本地调试可显式覆盖参数，但其结果不作为容量证据。运行时镜像固定 digest，后端 JRE 版本与 `.sdkmanrc` 的 Java 17.0.18+8 对齐；生产和压测共用同一份 Dockerfile、JVM 参数及启动脚本。
 
 执行 `python3 scripts/experiments/lib/runtime_alignment.py` 可比较展开后的三套 Compose，不启动服务；Actions checks 和正式执行前都会核验。仅允许本地手动重启策略、宿主地址/端口，以及压测观测组件、专属数据和凭据等明确差异。
 
@@ -61,7 +61,7 @@
 
 `deploy/nginx.conf.template` 由 Nginx 官方镜像在启动时按环境变量生成配置。模板替换仅处理三个端口变量，保留 `$http_host` 等 Nginx 变量。
 
-本地、生产和待测端共用 `deploy/nginx.api.conf`，统一 API 请求头、上游连接复用和超时。网关使用一个 worker、16384 个连接位（包含客户端和上游），nofile 32768；本地仅页面代理保留 WebSocket、关闭缓冲和热更新需要的长超时。
+本地、生产和待测端共用 `deploy/nginx.api.conf`，统一 API 请求头、上游连接复用和超时。网关使用一个 worker、32768 个连接位（包含客户端和上游），nofile 65536；本地仅页面代理保留 WebSocket、关闭缓冲和热更新需要的长超时。
 
 后端上游连接池共用 `deploy/nginx.backend-keepalive.conf`，由本地和生产的 `upstream backend` 引用，压测继承生产挂载。池内最多保留 16 条空闲连接，空闲超时为 3 秒，必须小于 Tomcat 的 5 秒，避免复用正在被后端关闭的连接。`http` 中的 `keepalive_timeout 15s` 控制客户端连接，不控制这个上游连接池；`nginx.api.conf` 在 `location` 中加载，也不能放置上游连接池指令。配置一致性检查会核验共享文件引用、只读挂载和超时关系，并将共享文件纳入报告配置指纹。
 
@@ -148,7 +148,7 @@ docker compose --env-file .env.production -f deploy/compose.2c2g.yml ps
 
 性能实验仅在 GitHub 托管的 Linux Actions runner 执行。在 Actions → Performance experiments 中选择 main，手动 Run workflow，执行 A/B 和 B/C 完整实验并发布 HTML；推送与 PR 不会自动发压。
 
-被测服务共享两个逻辑 CPU，发压容器另限 2 vCPU / 2 GiB；两端使用互斥且避免跨物理核 SMT 争用的 CPU 集合。每个 run 只运行一个固定负载实验，在同一机器内进行三轮交替配对，不进行校准或容量搜索。逻辑 CPU 不等于物理核，绑定 CPU 集合不等于独占宿主 CPU。每次使用独立临时数据库和凭证，归档后销毁容器和数据卷，不使用开发环境。
+被测服务共享两个逻辑 CPU，发压容器另限 2 vCPU / 4 GiB；两端使用互斥且避免跨物理核 SMT 争用的 CPU 集合。每个 run 只运行一个固定负载实验，在同一机器内进行三轮交替配对，不进行校准或容量搜索。逻辑 CPU 不等于物理核，绑定 CPU 集合不等于独占宿主 CPU。每次使用独立临时数据库和凭证，归档后销毁容器和数据卷，不使用开发环境。
 
 业务请求经过 Nginx，前端容器计入预算但不施加浏览器负载。指标每秒原子写入证据卷，发压端只读采集，避免与业务争抢 Tomcat 连接；关键核对等待新快照，过期或不完整证据仍使测量无效。实验关闭定时补偿、超时处理、对账与定时预热，启用提交/SQL 观测；这些差异会写入报告，结果不等同于启用全部后台任务的生产容量。
 

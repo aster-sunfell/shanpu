@@ -104,7 +104,7 @@ services:
 
   backend:
     <<: *common
-    ulimits: {nofile: {soft: 32768, hard: 32768}}
+    ulimits: {nofile: {soft: 65536, hard: 65536}}
     image: shanpu-backend:2c2g
     build:
       context: ../backend
@@ -157,7 +157,7 @@ services:
 
   nginx:
     <<: *common
-    ulimits: {nofile: {soft: 32768, hard: 32768}}
+    ulimits: {nofile: {soft: 65536, hard: 65536}}
     image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
     mem_limit: 64m
     memswap_limit: 64m

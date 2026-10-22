@@ -75,7 +75,7 @@ class FixedExperimentTest(unittest.TestCase):
         calls,meta=self.run_experiment()
         self.assertEqual(6,len(calls))
         self.assertEqual('completed',meta['status'])
-        self.assertTrue(all(p['rate']==600 for p in calls))
+        self.assertTrue(all(p['rate']==1000 for p in calls))
 
     def test_missing_pressure_stops_before_repeating_invalid_statistics(self):
         calls,meta=self.run_experiment(response=lambda p: {'pressure':{'valid':False,'errors':['missing window']}}, expected_error='missing window')

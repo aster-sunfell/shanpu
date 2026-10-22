@@ -6,14 +6,14 @@ from pathlib import Path
 from analysis import percentiles, write_json
 from host import validate_affinity
 
-VERSION = 9
+VERSION = 10
 # Cover requests waiting through the full HTTP timeout, plus scheduling headroom.
-MAX_RATE = 600
+MAX_RATE = 1000
 MAX_REQUEST_TIMEOUT = 10
 DEFAULT_VUS = MAX_RATE * MAX_REQUEST_TIMEOUT + 400
 # Fixed experimental conditions; never adapted to observed results.
 REDIS_RATE = 600
-KAFKA_BURST_RATE = 600
+KAFKA_BURST_RATE = 1000
 PLANS = ('redis-filtering', 'kafka-burst')
 
 
@@ -38,7 +38,7 @@ def policy(args):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('plan', choices=PLANS)
-    for name, default in (('rate', REDIS_RATE), ('seconds', 60), ('repeats', 3), ('vus', DEFAULT_VUS),
+    for name, default in (('rate', REDIS_RATE), ('seconds', 60), ('repeats', 3), ('vus', None),
                           ('base-rate', 100), ('base-seconds', 20), ('burst-rate', KAFKA_BURST_RATE), ('burst-seconds', 10),
                           ('recovery-rate', 100), ('recovery-seconds', 30), ('request-timeout', 10),
                           ('drain-seconds', 120), ('response-p99-ms', 500), ('completion-p99-ms', 5000),
@@ -48,13 +48,15 @@ def parse_args(argv=None):
     parser.add_argument('--validation-only', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
+    if args.vus is None:
+        args.vus = (KAFKA_BURST_RATE if args.plan == 'kafka-burst' else REDIS_RATE) * MAX_REQUEST_TIMEOUT + 400
     if args.plan=='kafka-burst':
         args.response_p99_ms = args.completion_p99_ms = None
     args.deployment = 'github-actions'
     if not 0 <= args.max_error_rate <= 1: parser.error('--max-error-rate must be in [0,1]')
     if max(args.rate, args.burst_rate, args.base_rate, args.recovery_rate) > MAX_RATE:
-        parser.error('Rates above the 600 RPS generator verification envelope require new generator verification')
-    if args.vus > DEFAULT_VUS: parser.error('At most 6400 VUs in the verified load-runner budget')
+        parser.error('Rates above the 1000 RPS generator verification envelope require new generator verification')
+    if args.vus > DEFAULT_VUS: parser.error('At most 10400 VUs in the verified load-runner budget')
     if args.request_timeout > MAX_REQUEST_TIMEOUT: parser.error('Request timeout exceeds the verified 10 second occupancy budget')
     if args.repeats > 10: parser.error('At most 10 repetitions')
     if max(args.seconds, args.base_seconds, args.burst_seconds, args.recovery_seconds,

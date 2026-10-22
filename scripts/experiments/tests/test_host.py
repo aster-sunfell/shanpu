@@ -38,7 +38,7 @@ class HostTest(unittest.TestCase):
 
     def test_start_requires_available_runner_memory(self):
         with patch('host.memory', return_value={'MemAvailable': 2*1024*MIB}):
-            with self.assertRaisesRegex(RuntimeError, '3072'):
+            with self.assertRaisesRegex(RuntimeError, '5120'):
                 require_start_memory()
 
     def monitor(self,directory):
