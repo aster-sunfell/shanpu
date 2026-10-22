@@ -55,6 +55,17 @@ class ReportTest(unittest.TestCase):
             self.assertIn('不代表独占物理核',html)
             self.assertNotIn('被测端 CPU 配额合计',html)
 
+    def test_shared_memory_report_does_not_call_group_cap_a_machine_limit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);self.fixture(root)
+            (root/'environment.json').write_text(json.dumps({'targetBudget':{
+                'memoryModel':'shared-cgroup','groupMemoryMiB':1632,'machineMemoryMiB':2048}}))
+            render(root,root/'html');html=(root/'html/index.html').read_text()
+            self.assertIn('被测服务组共享内存硬上限',html)
+            self.assertIn('1632 MiB',html)
+            self.assertIn('被测部署内存预算',html)
+            self.assertNotIn('被测容器内存合计',html)
+
     def test_library_render_never_pollutes_unit_job_summary(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)

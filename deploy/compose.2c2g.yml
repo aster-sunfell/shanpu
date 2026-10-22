@@ -2,15 +2,18 @@ name: shanpu-production
 
 # All six services share the same two logical CPUs; no per-service CPU quota.
 # The verifier checks the common cpuset and actual Docker/cgroup configuration.
-# Compose has no project-wide cap: 1632 MiB for containers + 416 MiB host reserve = 2 GiB.
+# Parent slice enforces 1632 MiB shared memory; 416 MiB is host budget, not a reservation.
 x-test-machine:
   cpus: 2
   memory_mib: 2048
   host_reserve_mib: 416
+  memory_model: shared-cgroup
+  group_memory_mib: 1632
 
 x-common: &common
   restart: unless-stopped
   cpuset: ${SUT_CPUSET:-0,1}
+  cgroup_parent: ${SUT_MEMORY_GROUP:-shanpuproduction.slice}
   init: true
   logging:
     driver: json-file
@@ -20,14 +23,12 @@ services:
   mysql:
     <<: *common
     image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
-    mem_limit: 384m
-    memswap_limit: 384m
     pids_limit: 128
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set this deployment secret}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-shanpu}
     command:
-      # Fit the existing 384 MiB limit; SHOW GLOBAL STATUS remains available.
+      # Keep bounded internal buffers within the shared memory group.
       - --performance-schema=OFF
       - --innodb-buffer-pool-size=128M
       # Shared 2c2g app pool uses eight connections; reserve admin/migration headroom.
@@ -52,8 +53,6 @@ services:
   redis:
     <<: *common
     image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-    mem_limit: 96m
-    memswap_limit: 96m
     pids_limit: 32
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Set this deployment secret}
@@ -69,8 +68,6 @@ services:
   kafka:
     <<: *common
     image: apache/kafka:3.7.2@sha256:8bd63e1bd445e5e19427a4bdbcc3d23bf6efd774b058a41b36ba87fda7623e34
-    mem_limit: 384m
-    memswap_limit: 384m
     pids_limit: 192
     environment:
       CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
@@ -109,8 +106,6 @@ services:
     build:
       context: ../backend
       target: production
-    mem_limit: 512m
-    memswap_limit: 512m
     pids_limit: 128
     environment:
       SPRING_PROFILES_ACTIVE: prod
@@ -141,8 +136,6 @@ services:
     image: shanpu-frontend:2c2g
     build:
       context: ../frontend
-    mem_limit: 192m
-    memswap_limit: 192m
     pids_limit: 64
     environment:
       NODE_OPTIONS: --max-old-space-size=96
@@ -159,8 +152,6 @@ services:
     <<: *common
     ulimits: {nofile: {soft: 65536, hard: 65536}}
     image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
-    mem_limit: 64m
-    memswap_limit: 64m
     pids_limit: 32
     ports: ["${GATEWAY_BIND_ADDRESS:-0.0.0.0}:${GATEWAY_PORT:-8089}:8080"]
     volumes:

@@ -47,7 +47,7 @@
 
 `scripts/lib/dev-common.sh` 统一加载环境变量，并固定 Compose 文件和项目名，使启动脚本可从任意目录调用。
 
-后端脚本先加载 SDKMAN，在仓库根目录执行 `sdk env`，校验 `.sdkmanrc` 指定的 `17.0.18-tem` 后才运行 Maven clean 打包。默认使用 `dev -> 2c2g` profile、东八区时区与回环监听，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。JVM 参数读取共用的 `backend/docker/java.options`，默认按 512 MiB 内存预算和两个可见处理器启动；可用 `JAVA_OPTS` 覆盖。宿主进程没有容器的 CPU/PID/内存硬隔离，不能将本地运行解释为等价压测。默认日志为 INFO，调试时可设置 `SHANPU_LOG_LEVEL=DEBUG`。PID 写入 `.local/run/backend.pid`。
+后端脚本先加载 SDKMAN，在仓库根目录执行 `sdk env`，校验 `.sdkmanrc` 指定的 `17.0.18-tem` 后才运行 Maven clean 打包。默认使用 `dev -> 2c2g` profile、东八区时区与回环监听，将 `MYSQL_ROOT_PASSWORD` 映射为 `MYSQL_PASSWORD`。JVM 参数读取共用的 `backend/docker/java.options`，默认使用固定 128–256 MiB 堆和两个可见处理器启动；可用 `JAVA_OPTS` 覆盖。宿主进程没有容器的 CPU/PID/内存硬隔离，不能将本地运行解释为等价压测。默认日志为 INFO，调试时可设置 `SHANPU_LOG_LEVEL=DEBUG`。PID 写入 `.local/run/backend.pid`。
 
 前端脚本通过 `pnpm dev` 启动，注入：
 
@@ -83,11 +83,11 @@ Compose 只负责创建 `MYSQL_DATABASE` 指定的空库。表结构由后端启
 
 已有非空数据库必须先核对结构并显式 baseline，再启动后端；操作步骤见 [数据库管理](./DATABASE.md)。原有 MySQL 数据卷继续保留。
 
-共享两个逻辑 CPU，内存上限为 384 MiB，buffer pool 为 128 MiB，最多 32 个连接，关闭 Performance Schema 并限制内部临时表。Java 健康接口使用实际 SQL 连接检查数据库。
+共享两个逻辑 CPU及整组内存，buffer pool 为 128 MiB，最多 32 个连接，关闭 Performance Schema 并限制内部临时表。Java 健康接口使用实际 SQL 连接检查数据库。
 
 ### Redis
 
-Redis 启用密码、AOF 与 `appendfsync everysec`，使用 `redis-data` 持久卷，数据内存上限为 48 MiB，淘汰策略为 `noeviction`。达到内存上限时返回写入错误，业务 Key 依照各自 TTL 过期。容器上限为 0.1 CPU / 96 MiB。
+Redis 启用密码、AOF 与 `appendfsync everysec`，使用 `redis-data` 持久卷，数据内存上限为 48 MiB，淘汰策略为 `noeviction`。达到内存上限时返回写入错误，业务 Key 依照各自 TTL 过期。生产与待测端加入共同的 CPU 集合及内存组，不设置单独容器内存上限。
 
 ### Kafka
 
@@ -99,7 +99,7 @@ Redis 启用密码、AOF 与 `appendfsync everysec`，使用 `redis-data` 持久
 | EXTERNAL | 容器 19092，发布为 `127.0.0.1:${KAFKA_PORT}` | 宿主机 Java、发压端 |
 | CONTROLLER | `kafka:9093` | KRaft 内部通信，不发布 |
 
-宿主机 listener 的 advertised 地址为 `127.0.0.1:${KAFKA_PORT}`。固定 cluster ID、node ID 和数据卷，JVM 堆为 128–192 MiB，共享两个逻辑 CPU，容器内存上限为 384 MiB。不使用反复创建 JVM 的 CLI 健康检查；Kafka 就绪由后端健康接口和压测协议客户端确认。
+宿主机 listener 的 advertised 地址为 `127.0.0.1:${KAFKA_PORT}`。固定 cluster ID、node ID 和数据卷，JVM 堆为 128–192 MiB，共享两个逻辑 CPU及整组内存。不使用反复创建 JVM 的 CLI 健康检查；Kafka 就绪由后端健康接口和压测协议客户端确认。
 
 Spring `KafkaConfig` 在后端启动时声明 `shanpu.seckill.order`（3 分区）和 `shanpu.seckill.order.dlq`（1 分区），副本数均为 1。消费者并发度为 3。Producer 使用幂等发送和 `acks=all`；单节点用于开发联调，不提供节点级容错。
 
@@ -138,11 +138,12 @@ bash scripts/dev/stop.sh
 cp .env.example .env.production
 # 编辑 .env.production，替换开发凭据
 docker compose --env-file .env.production -f deploy/compose.2c2g.yml build
-docker compose --env-file .env.production -f deploy/compose.2c2g.yml up -d --wait --wait-timeout 300
+sudo python3 deploy/resource_group.py install
+python3 deploy/manage.py up --env-file .env.production
 docker compose --env-file .env.production -f deploy/compose.2c2g.yml ps
 ```
 
-入口为 `http://服务器地址:8089`；前后端通过容器网络通信，MySQL/Redis/Kafka/后端宿主端口仅绑定回环。项目名为 `shanpu-production`，数据卷与本地开发隔离。六个服务共享同一组两个逻辑 CPU（`SUT_CPUSET`，默认 `0,1`），无单独 CPU 配额，容器内存为 1632 MiB，预算另计宿主余量 416 MiB；宿主余量是预算说明，并非 Docker 硬预留。
+入口为 `http://服务器地址:8089`；前后端通过容器网络通信，MySQL/Redis/Kafka/后端宿主端口仅绑定回环。项目名为 `shanpu-production`，数据卷与本地开发隔离。六个服务共享同一组两个逻辑 CPU（`SUT_CPUSET`，默认 `0,1`），无单独 CPU 配额，六个容器通过 `cgroup_parent` 进入 `shanpuproduction.slice`，共享 1632 MiB 内存硬上限，父组禁止 swap，不再单独切分容器内存。预算另计宿主余量 416 MiB；宿主余量是预算说明，并非 Docker 硬预留。
 
 ## 8. 性能实验
 
@@ -157,3 +158,13 @@ HTML 报告和完整证据分别保存为 Actions artifacts；配置 Pages 后�
 ## 9. 重置数据
 
 日常操作使用 `stop` 保留数据。仅在明确需要清空全部本地数据时执行 `docker compose down -v`，这会删除 MySQL、Redis 和 Kafka 的数据卷。再次启动中间件后，由后端 Flyway 创建业务表；演示数据仍需显式执行 `bash scripts/db/seed-demo.sh` 导入。
+
+## 共享内存组的部署与核验
+
+生产和待测端要求 Linux cgroup v2、Docker systemd cgroup driver 和系统 systemd；不自动修改 Docker daemon 或在不支持的环境中无上限启动。`deploy/shanpu-memory.slice` 是共享定义，`resource_group.py install` 将其安装到 `/etc/systemd/system/shanpuproduction.slice` 并启用开机启动。持久化 slice 会在开机及 Docker 重启容器时由 systemd 加载，六个服务继续使用 `unless-stopped`。首次安装需要 root，之后使用 `deploy/manage.py up/verify/down --env-file .env.production`；不要绕过安装和核验直接启动。更新已有容器时，`up` 会根据 Compose 差异重建容器；数据卷保留。
+
+后端 `java.options` 固定 `-Xms128m -Xmx256m`，不再根据容器/父组/宿主内存百分比扩大堆；本地启动读取相同文件。Kafka JVM 128–192 MiB、MySQL buffer pool 128 MiB、Redis maxmemory 48 MiB、前端 Node old-space 96 MiB 是组件内部参数，并非容器硬切分。整组空余可用于 Nginx、原生内存、网络缓冲和页缓存；整组用满仍可能 OOM。
+
+Actions 在 `/run/systemd/system` 创建运行专属 slice，并在创建容器前检查其硬上限。采样检查真实 `/proc/<pid>/cgroup` 归属，发压容器不得进入该组；整组 OOM 即使只杀死 Nginx worker 也会保留失败证据。清理顺序为归档、删除本次容器/临时卷、确认组内无进程、删除临时 slice；不会删除生产组或其他项目资源。
+
+本地 `docker-compose.yml` 保持按需启动，依赖容器不继承生产 slice，也不保留旧的小内存硬额度；手动启动的前后端不具有整组资源隔离。需要严格复现时使用完整六服务 Compose、独立项目/数据卷/端口以及单独创建的父组，不能拿开发实例作待测数据。

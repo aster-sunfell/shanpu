@@ -15,6 +15,7 @@ import time
 from host import (atomic_json, HostMonitor, cpu_list, cpu_string, environment, require_start_memory,
                   select_affinity, container_resources, finalize_host_evidence, preflight_memory, validate_shared_cpu_resources)
 from runtime_alignment import check_alignment, validate_shared_cpu_config
+import resource_group
 
 
 def require_actions():
@@ -42,7 +43,7 @@ RUNTIME = Path(os.environ.get('BENCH_RUNTIME', '/bench/runtime'))
 REPORTS = Path(os.environ.get('BENCH_REPORTS', '/bench/reports'))
 ENV_FILE = RUNTIME / "sut.env"
 MIB = 1024 * 1024
-MEMORY_LIMITS = {"backend":512,"mysql":384,"redis":96,"kafka":384,"frontend":192,"nginx":64}
+SERVICES = resource_group.SERVICES
 BUSINESS_TABLES = ('t_user', 't_product', 't_seckill_activity', 't_order', 't_point_log', 't_order_dlq_log')
 
 
@@ -70,6 +71,7 @@ def compose(kind, *args):
     os.environ.update(MYSQL_PORT="13306", REDIS_PORT="16379", KAFKA_PORT="19092",
                       BACKEND_PORT="18081", GATEWAY_PORT="18080", GATEWAY_BIND_ADDRESS="127.0.0.1",
                       MYSQL_DATABASE="shanpu_bench")
+    if kind == 'sut': os.environ['SUT_MEMORY_GROUP'] = memory_group_name()
     affinity = RUNTIME / 'cpu-affinity.json'
     if affinity.exists():
         pins = json.loads(affinity.read_text())
@@ -77,6 +79,11 @@ def compose(kind, *args):
         os.environ['RUNNER_CPUSET'] = pins['runner']
     return ["docker", "compose", "--project-name", "shanpu-sut" if kind == "sut" else "shanpu-load",
             "--env-file", str(ENV_FILE), "--file", str(ROOT / f"experiments/compose.{kind}.yml"), *args]
+
+
+def memory_group_name():
+    identity = str(RUNTIME.resolve()) + ':' + os.environ.get('GITHUB_RUN_ID', '') + ':' + os.environ.get('GITHUB_RUN_ATTEMPT', '1')
+    return 'shanpusut'+hashlib.sha256(identity.encode()).hexdigest()[:16]+'.slice'
 
 
 def available_memory():
@@ -94,6 +101,8 @@ def validate_engine(info):
     required = ("MemoryLimit", "SwapLimit", "CpuCfsQuota", "CpuCfsPeriod", "PidsLimit")
     if info.get("OSType") != "linux" or any(info.get(key) is not True for key in required):
         raise RuntimeError("Docker engine must support memory, swap, CPU quota and PID limits; refusing uncapped execution")
+    if info.get('CgroupDriver') != 'systemd' or str(info.get('CgroupVersion')) != '2':
+        raise RuntimeError('Docker must use systemd and cgroup v2 for shared SUT memory')
     if info.get('KernelVersion') and info['KernelVersion'] != os.uname().release:
         raise RuntimeError('Docker must use this Linux host kernel; remote/Desktop engines make host guards unreliable')
 
@@ -108,33 +117,28 @@ def check_engine():
 
 def validate_config(config):
     budget = config.get("x-test-machine", {})
-    if budget != {"cpus": 2, "memory_mib": 2048, "host_reserve_mib": 416}:
+    if budget != {"cpus": 2, "memory_mib": 2048, "host_reserve_mib": 416,
+                  "memory_model": "shared-cgroup", "group_memory_mib": 1632}:
         raise RuntimeError("Target-machine budget must remain exactly 2 CPUs / 2048 MiB")
-    if set(config["services"]) != set(MEMORY_LIMITS):
+    if set(config["services"]) != set(SERVICES):
         raise RuntimeError("Unexpected services in the target-machine budget")
     cpu_budget = validate_shared_cpu_config(config['services'])
-    total_memory = 0
-    for name, mib in MEMORY_LIMITS.items():
-        service = config["services"][name]
-        if (int(service.get("mem_limit", 0)) != mib * MIB
-                or int(service.get("memswap_limit", 0)) != mib * MIB
-                or service.get("restart") != "unless-stopped" or not 0 < service.get("pids_limit", 0) <= 192):
-            raise RuntimeError(f"Invalid hard resource limits for {name}")
-        total_memory += mib
-    if total_memory + budget["host_reserve_mib"] != 2048:
-        raise RuntimeError("Target budget sum is inconsistent")
-    return {**cpu_budget, "containerMemoryMiB": total_memory,
-            "hostReserveMiB": 416, "machineMemoryMiB": 2048}
+    memory_budget = resource_group.validate_services(config['services'])
+    for name, service in config['services'].items():
+        if service.get('restart') != 'unless-stopped' or not 0 < service.get('pids_limit', 0) <= 192:
+            raise RuntimeError('Invalid restart/PID limits for '+name)
+    return {**cpu_budget, **memory_budget, 'hostReserveMiB': resource_group.RESERVE_MIB,
+            'machineMemoryMiB': 2048}
 
 
-def validate_container(name, container, expected_cpuset=None, expected_pids=None):
-    mib = MEMORY_LIMITS[name]
+def validate_container(name, container, expected_cpuset=None, expected_pids=None, expected_group=None):
+    expected_group = expected_group or memory_group_name()
     actual = container["HostConfig"]
     if (actual.get("NanoCpus",0) != 0 or actual.get('CpuQuota',0) not in (0,-1)
             or actual.get('CpuPeriod',0) not in (0,100000) or actual.get('CpuShares',0) not in (0,1024)
             or actual.get('CpuRealtimeRuntime',0) or actual.get('CpuRealtimePeriod',0)
-            or actual.get("Memory") != mib * MIB
-            or actual.get("MemorySwap") != mib * MIB or not 0 < actual.get("PidsLimit", 0) <= 192
+            or actual.get("Memory", 0) != 0 or actual.get("MemoryReservation", 0) != 0
+            or actual.get("MemorySwap", 0) != 0 or actual.get("CgroupParent") != expected_group or not 0 < actual.get("PidsLimit", 0) <= 192
             or actual.get("Privileged") or actual.get("NetworkMode") == "host"
             or actual.get("RestartPolicy", {}).get("Name") != "unless-stopped"):
         raise RuntimeError(f"Docker did not apply the required CPU/memory/swap limits to {name}")
@@ -150,7 +154,8 @@ def validate_container(name, container, expected_cpuset=None, expected_pids=None
             or container["State"].get("Health", {}).get("Status", "healthy") != "healthy"):
         raise RuntimeError(f"Target service {name} has stopped or was OOM-killed")
     return {"service": name, "imageId": container["Image"], "cpuLimit": None, "cpuModel":"shared-cpuset",
-            "memoryLimitMiB": mib, "memorySwapMiB": mib, "oomKilled": False,
+            "memoryModel": "shared-cgroup", "memoryLimitMiB": None, "memorySwapMiB": None,
+            "cgroupParent": expected_group, "oomKilled": False,
             'pidsLimit': actual['PidsLimit'],
             'restartPolicy': actual['RestartPolicy']['Name'],
             'startedAt': container['State'].get('StartedAt'),
@@ -188,18 +193,20 @@ def verify():
     alignment = check_alignment()
     config = json.loads(command(compose("sut", "config", "--format", "json")))
     result = validate_config(config)
+    shared_memory = resource_group.verify(memory_group_name())
     services = []
-    for name in MEMORY_LIMITS:
+    for name in SERVICES:
         identifier = command(compose("sut", "ps", "-a", "-q", name)).strip()
         if not identifier:
             raise RuntimeError(f"Missing target container: {name}")
         container = json.loads(command(["docker", "inspect", identifier]))[0]
         row=validate_container(name, container, config['services'][name].get('cpuset', ''),
                                config['services'][name]['pids_limit'])
+        row['memoryCgroup'] = resource_group.verify_member(container, memory_group_name())
         row['cpuResources'] = container_resources(container)
         validate_shared_cpu_resources(row['cpuResources'],row['cpuset'])
         services.append(row)
-    result.update(instanceId=initialize()["SUT_INSTANCE_ID"], services=services, machineId=machine_id(),
+    result.update(sharedMemory=shared_memory, instanceId=initialize()["SUT_INSTANCE_ID"], services=services, machineId=machine_id(),
                   actions=actions_context(),
                   source=json.loads((RUNTIME / "sut-source.json").read_text()),
                   environment=environment(), configurationAlignment=alignment, verifiedAtMs=int(time.time() * 1000))
@@ -349,8 +356,9 @@ def start_services():
     check_alignment()
     config = json.loads(command(compose('sut', 'config', '--format', 'json')))
     validate_config(config)
+    resource_group.ensure(memory_group_name())
     command(compose('sut', 'create'), capture=False)
-    for name in MEMORY_LIMITS:
+    for name in SERVICES:
         identifier = command(compose('sut', 'ps', '-a', '-q', name)).strip()
         value = json.loads(command(['docker', 'inspect', identifier]))[0]
         value['State'] = {'Running': True, 'OOMKilled': False}
@@ -395,7 +403,7 @@ def run_stage(arguments, deadline, *, preflight=False):
     if target['source']['sourceSha256'] != source_metadata('sut')['sourceSha256']:
         raise RuntimeError('SUT sources changed after build')
     config = json.loads(command(compose('sut', 'config', '--format', 'json')))
-    identifier_list = [command(compose('sut', 'ps', '-q', name)).strip() for name in MEMORY_LIMITS]
+    identifier_list = [command(compose('sut', 'ps', '-q', name)).strip() for name in SERVICES]
     run_id = (f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-preflight" if preflight else
               f"{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-{args.plan}-{secrets.token_hex(3)}")
     watch = RUNTIME / 'host-watch' / run_id
@@ -431,14 +439,24 @@ def run_stage(arguments, deadline, *, preflight=False):
             expected = {row['service']: row['startedAt'] for row in target['services']}
             memory_observations = 0
 
-            def observe():
+            def observe_memory():
                 nonlocal memory_observations
+                group = resource_group.snapshot(memory_group_name())
+                sample = preflight_memory(group, 64 if memory_observations == 0 else 32)
+                sample['timeMs'] = int(time.time()*1000)
+                with (result_dir/'memory-checks.jsonl').open('a') as log:
+                    log.write(json.dumps(sample)+'\n')
+                memory_observations += 1
+                return group, sample.get('error')
+
+            def observe():
                 values = json.loads(command(['docker', 'inspect', *identifier_list, identifier], timeout=5))
                 rows = []
-                for name, value in zip(MEMORY_LIMITS, values[:-1]):
+                for name, value in zip(SERVICES, values[:-1]):
                     row = validate_container(name, value, config['services'][name]['cpuset'], config['services'][name]['pids_limit'])
                     if row['startedAt'] != expected[name]:
                         raise RuntimeError('SUT container restarted: ' + name)
+                    row['memoryCgroup'] = resource_group.verify_member(value, memory_group_name())
                     row['resources'] = container_resources(value)
                     validate_shared_cpu_resources(row['resources'],config['services'][name]['cpuset'])
                     rows.append(row)
@@ -446,12 +464,8 @@ def run_stage(arguments, deadline, *, preflight=False):
                 if values[-1]['State'].get('OOMKilled'):
                     raise RuntimeError('Load runner was OOM-killed')
                 rows.append({'service': 'load-runner', 'resources': container_resources(values[-1])})
-                sample = preflight_memory(rows, 64 if memory_observations == 0 else 32)
-                sample['timeMs'] = int(time.time()*1000)
-                with (result_dir/'memory-checks.jsonl').open('a') as log:
-                    log.write(json.dumps(sample)+'\n')
-                memory_observations += 1
-                if sample.get('error'): raise RuntimeError(sample['error'])
+                if values[-1]['State'].get('Running'):
+                    resource_group.verify_member(values[-1], memory_group_name(), inside=False)
                 return rows
 
             def stop(ids):
@@ -459,8 +473,8 @@ def run_stage(arguments, deadline, *, preflight=False):
 
             watchdog = HostMonitor(watch, observe, lambda: stop([identifier, *identifier_list]),
                                    lambda: stop([identifier]), (min(args.drain_seconds, 30) if preflight else args.drain_seconds) + args.request_timeout + 30,
-                                   deadline=deadline)
-            with gateway_capture(dict(zip(MEMORY_LIMITS,identifier_list))['nginx'],result_dir), watchdog:
+                                   deadline=deadline, observe_memory=observe_memory)
+            with gateway_capture(dict(zip(SERVICES,identifier_list))['nginx'],result_dir), watchdog:
                 command(['docker', 'start', '--attach', identifier], capture=False)
                 container_state = json.loads(command(['docker', 'inspect', identifier]))[0]['State']
             watchdog.last_observation = 0
@@ -472,7 +486,11 @@ def run_stage(arguments, deadline, *, preflight=False):
         raise
     finally:
         try:
-            capture_final_containers({**dict(zip(MEMORY_LIMITS, identifier_list)), 'load-runner': identifier},
+            atomic_json(result_dir/'memory-group-final.json', resource_group.snapshot(memory_group_name()))
+        except Exception as error:
+            atomic_json(result_dir/'memory-group-final.json', {'error':str(error)})
+        try:
+            capture_final_containers({**dict(zip(SERVICES, identifier_list)), 'load-runner': identifier},
                                      result_dir / 'containers-final.json')
         except Exception as error:
             # Never hide the runner error if diagnostic collection itself fails.
@@ -571,6 +589,10 @@ def run_experiment(experiment, minutes):
 def collect(public=None):
     public = public or REPORTS / 'diagnostics'
     public.mkdir(parents=True, exist_ok=True)
+    try:
+        atomic_json(public/'memory-group.json', resource_group.snapshot(memory_group_name()))
+    except Exception as error:
+        atomic_json(public/'memory-group.json', {'error':str(error)})
     for kind in ('sut', 'runner'):
         try:
             # No docker inspect/config/env dump: those contain disposable credentials.
@@ -614,6 +636,7 @@ def cleanup():
     if ENV_FILE.exists():
         for kind in ('runner', 'sut'):
             command(compose(kind, 'down', '--volumes', '--remove-orphans', '--timeout', '15'), capture=False)
+    resource_group.remove(memory_group_name())
 
 
 def main():

@@ -22,7 +22,7 @@ class FixedExperimentTest(unittest.TestCase):
             watch.mkdir()
             (watch/'status.json').write_text('{}')
             (watch/'samples.jsonl').write_text('')
-            target = {'instanceId': 'instance', 'machineMemoryMiB': 2048, 'cpuLimit': 2, 'cpuModel': 'shared-cpuset', 'services': []}
+            target = {'instanceId': 'instance', 'machineMemoryMiB': 2048, 'cpuLimit': 2, 'cpuModel': 'shared-cpuset', 'memoryModel':'shared-cgroup', 'groupMemoryMiB':1632, 'groupSwapMiB':0, 'services': []}
             for name, value in [('target.json', target), ('load-host.json', {}),
                                 ('source.json', {'sourceSha256': 'source'})]:
                 (runtime/name).write_text(json.dumps(value))

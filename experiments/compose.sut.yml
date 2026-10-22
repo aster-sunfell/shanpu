@@ -1,10 +1,12 @@
 name: shanpu-sut
 
-# Every service inherits the actual deployment configuration, shared CPU set and memory limits.
+# Every service inherits the actual deployment configuration, shared CPU set and parent memory group.
 x-test-machine:
   cpus: 2
   memory_mib: 2048
   host_reserve_mib: 416
+  memory_model: shared-cgroup
+  group_memory_mib: 1632
 
 services:
   mysql:

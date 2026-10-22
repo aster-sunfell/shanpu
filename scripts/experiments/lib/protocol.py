@@ -6,7 +6,7 @@ from pathlib import Path
 from analysis import percentiles, write_json
 from host import validate_affinity
 
-VERSION = 10
+VERSION = 11
 # Cover requests waiting through the full HTTP timeout, plus scheduling headroom.
 MAX_RATE = 1000
 MAX_REQUEST_TIMEOUT = 10
@@ -117,8 +117,9 @@ def validate_deployment(args, target, load_host):
 
 
 def context_contract(target, settings, generator_hash=None, load_host=None, args=None, database_settings=None):
-    fields = ('service', 'imageId', 'cpuLimit', 'cpuModel', 'memoryLimitMiB', 'memorySwapMiB', 'cpuset', 'pidsLimit', 'restartPolicy')
+    fields = ('service', 'imageId', 'cpuLimit', 'cpuModel', 'memoryLimitMiB', 'memorySwapMiB', 'memoryModel', 'cgroupParent', 'cpuset', 'pidsLimit', 'restartPolicy')
     context = {'instanceId': target['instanceId'], 'services': sorted([{k: s.get(k) for k in fields} for s in target['services']], key=lambda s: s['service']),
+               'memoryBudget': {k: target.get(k) for k in ('memoryModel','groupMemoryMiB','groupSwapMiB','hostReserveMiB')},
                'settings': settings, 'protocol': VERSION, 'generatorSource': generator_hash,
                'targetHost': {k: target.get(k) for k in ('machineId', 'environment', 'actions')}, 'loadHost': load_host}
     if args is not None:

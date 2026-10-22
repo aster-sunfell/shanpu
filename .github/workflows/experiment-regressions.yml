@@ -69,6 +69,9 @@ jobs:
           docker run --rm --network none --cpuset-cpus "$RUNNER_CPUSET" --cpus 2 --memory 4g --memory-swap 4g --pids-limit 128 --ulimit nofile=65536:65536 \
             -v "$GITHUB_WORKSPACE/artifacts/generator:/check" --entrypoint python3 shanpu-experiment-runner:ci \
             /workspace/scripts/experiments/checks/k6_recovery.py --output /check --experiment "$BENCH_EXPERIMENT"
+      - name: Shared memory and real gateway regression
+        timeout-minutes: 5
+        run: python3 scripts/experiments/checks/shared_memory.py --output artifacts/shared-memory --experiment "$BENCH_EXPERIMENT"
       - run: python3 scripts/experiments/lib/actions.py up
       - name: Fixture growth and business path regression
         timeout-minutes: 15

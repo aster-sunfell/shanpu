@@ -127,29 +127,29 @@ def validate_shared_cpu_resources(resources, expected_cpuset):
         raise RuntimeError('Kernel did not apply the shared CPU set without a per-service quota')
 
 
-def preflight_memory(containers, reserve_mib):
+def preflight_memory(group, reserve_mib):
+    """Shared group working-set estimate; preserve raw counters, never a per-service cap."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]/'deploy'))
+    import resource_group
     try:
-        mysql = next(row for row in containers if row['service'] == 'mysql')
-        resources = mysql.get('resources', {})
+        resource_group.validate_snapshot(group, check_oom=False)
+        resources = group['resources']
         current = int(resources['memory.current'])
         fields = dict(line.split() for line in resources['memory.stat'].splitlines())
         inactive = int(fields['inactive_file'])
-        events = {key: int(value) for key, value in
-                  (line.split() for line in resources['memory.events'].splitlines())}
-        limit = mysql['memoryLimitMiB'] * MIB
-        if not {'max', 'oom', 'oom_kill'} <= set(events): raise ValueError('Incomplete memory events')
-    except (KeyError, ValueError, StopIteration):
-        raise RuntimeError('Preflight requires readable MySQL cgroup memory counters') from None
-    if not 0 <= inactive <= current <= limit:
-        raise RuntimeError('Preflight MySQL memory counters are inconsistent or above the limit')
-    # An estimate, not guaranteed allocatable memory: do not count inactive file
-    # cache as anonymous working memory. Keep raw usage and pressure counters too.
+        events = {key: int(value) for key, value in (line.split() for line in resources['memory.events'].splitlines())}
+        limit = int(resources['memory.max'])
+    except (KeyError, TypeError, ValueError):
+        raise RuntimeError('Preflight requires readable shared group memory counters') from None
+    if not 0 <= inactive <= current:
+        raise RuntimeError('Shared group memory counters are inconsistent')
     working = current - inactive
-    sample = {'currentMiB': round(current/MIB, 3), 'inactiveFileMiB': round(inactive/MIB, 3),
-              'workingMiB': round(working/MIB, 3), 'headroomMiB': round((limit-working)/MIB, 3),
-              'requiredHeadroomMiB': reserve_mib, 'events': events}
+    sample = {'group': group['name'], 'currentMiB': round(current/MIB, 3),
+              'inactiveFileMiB': round(inactive/MIB, 3), 'workingMiB': round(working/MIB, 3),
+              'headroomMiB': round((limit-working)/MIB, 3), 'requiredHeadroomMiB': reserve_mib, 'events': events}
     if events.get('oom', 0) or events.get('oom_kill', 0) or limit-working < reserve_mib*MIB:
-        sample['error'] = (f"Preflight MySQL memory check failed: headroom={sample['headroomMiB']} MiB, "
+        sample['error'] = (f"Shared SUT memory check failed: headroom={sample['headroomMiB']} MiB, "
                            f"required={reserve_mib} MiB, current={sample['currentMiB']} MiB, "
                            f"oom={events.get('oom',0)}, oom_kill={events.get('oom_kill',0)}")
     return sample
@@ -196,10 +196,11 @@ def finalize_host_evidence(directory, watch_directory, failure=None):
 
 class HostMonitor:
     """Independent of potentially blocked SQL/API calls inside the runner."""
-    def __init__(self, directory, observe, emergency_stop, force_runner_stop, grace_seconds, deadline=None):
+    def __init__(self, directory, observe, emergency_stop, force_runner_stop, grace_seconds, deadline=None, observe_memory=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.observe, self.deadline = observe, deadline
+        self.observe_memory = observe_memory
         self.emergency_stop, self.force_runner_stop = emergency_stop, force_runner_stop
         self.grace_seconds, self.failure, self.failed_at = grace_seconds, None, None
         self.stop = threading.Event()
@@ -219,6 +220,10 @@ class HostMonitor:
                  'swapCounters': [line for line in Path('/proc/vmstat').read_text().splitlines()
                                   if line.startswith(('pswpin ', 'pswpout '))]}
         try:
+            if self.observe_memory:
+                group, error = self.observe_memory()
+                value['sharedMemory'] = group
+                if error: raise RuntimeError(error)
             if now - self.last_observation >= 5:
                 self.targets = self.observe()
                 self.last_observation = time.monotonic()

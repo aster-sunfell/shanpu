@@ -6,10 +6,13 @@ import os
 import re
 from pathlib import Path
 import subprocess
+import sys
 from host import cpu_list, cpu_string
 from protocol import DEFAULT_VUS
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT/'deploy'))
+import resource_group
 MIDDLEWARE = ('mysql', 'redis', 'kafka')
 
 
@@ -100,6 +103,7 @@ def validate_alignment(production, sut, development):
     cpu_budget = validate_shared_cpu_config(baseline)
     validate_shared_cpu_config(sut['services'])
     validate_shared_cpu_config(development['services'])
+    memory_budget = resource_group.validate_services(baseline)
     if set(sut['services']) != set(baseline):
         raise RuntimeError('SUT must run every production service')
     _equal(production.get('x-test-machine', {}), sut.get('x-test-machine', {}), 'machine budget')
@@ -132,8 +136,13 @@ def validate_alignment(production, sut, development):
         if actual.get('restart') != 'no':
             raise RuntimeError('Development services must only start on demand: '+name)
         actual['restart'] = baseline[name]['restart']
+        if actual.get('cgroup_parent', ''):
+            raise RuntimeError('Development middleware must not join the production memory group')
+        actual['cgroup_parent'] = baseline[name]['cgroup_parent']
         _equal(baseline[name], actual, 'development '+name)
     nginx = development['services']['nginx']
+    if nginx.get('cgroup_parent', '') or nginx.get('mem_limit') or nginx.get('deploy',{}).get('resources',{}).get('limits',{}).get('memory'):
+        raise RuntimeError('Development gateway must not inherit a private or production memory cap')
     if nginx.get('restart') != 'no':
         raise RuntimeError('Development gateway must only start on demand')
     if any(service.get('restart') != 'unless-stopped' for service in baseline.values()):
@@ -156,12 +165,13 @@ def validate_alignment(production, sut, development):
     digest = hashlib.sha256()
     for name in ('deploy/compose.2c2g.yml', 'deploy/nginx.2c2g.conf', 'deploy/nginx.api.conf',
                  'deploy/nginx.backend-keepalive.conf',
+                 'deploy/resource_group.py', 'deploy/shanpu-memory.slice',
                  'backend/Dockerfile', 'backend/docker/java.options', 'backend/docker/entrypoint.sh',
                  'backend/src/main/resources/application.yml', 'backend/src/main/resources/application-prod.yml',
                  'backend/src/main/resources/application-2c2g.yml', 'frontend/Dockerfile'):
         digest.update(name.encode()+b'\0'+(ROOT/name).read_bytes()+b'\0')
     return {'status': 'aligned', 'services': sorted(baseline),
-            'sharedCpu':cpu_budget, 'backendKeepalive': keepalive, 'connectionBudget': connection_budget,
+            'sharedCpu':cpu_budget, 'sharedMemory':memory_budget, 'backendKeepalive': keepalive, 'connectionBudget': connection_budget,
             'developmentMiddleware': list(MIDDLEWARE),
             'sharedConfigurationSha256': digest.hexdigest(),
             'baselineSha256': hashlib.sha256((ROOT/'deploy/compose.2c2g.yml').read_bytes()).hexdigest()}

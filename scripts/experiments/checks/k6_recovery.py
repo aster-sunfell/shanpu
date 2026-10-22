@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 
 LIB = Path(__file__).resolve().parents[1]/'lib'
 sys.path.insert(0, str(LIB))
@@ -22,14 +23,14 @@ from runner import verify_k6_load, safe_load_failure, runner_usage
 
 
 class HttpQueue:
-    def __init__(self):
+    def __init__(self, exposed=False):
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
         self.active, self.ledger, self.config = 0, {}, {}
         self.gate = asyncio.Semaphore(16384)
         self.server = asyncio.run_coroutine_threadsafe(
-            asyncio.start_server(self.handle, '127.0.0.1', 0, backlog=16384), self.loop).result()
+            asyncio.start_server(self.handle, '0.0.0.0' if exposed else '127.0.0.1', 8080 if exposed else 0, backlog=16384), self.loop).result()
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def handle(self, reader, writer):
@@ -66,10 +67,10 @@ class HttpQueue:
         self.loop.close()
 
 
-def check(output, experiment, short=False):
+def check(output, experiment, short=False, gateway=None):
     output.mkdir(parents=True, exist_ok=True)
     args = parse_args(['kafka-burst'])
-    server = HttpQueue()
+    server = HttpQueue(exposed=bool(gateway))
     observed, results, meta = [], [], {}
 
     def execute(point, phase):
@@ -88,7 +89,7 @@ def check(output, experiment, short=False):
                 '--console-output', str(directory/'requests.jsonl'), str(wrapper)],
                 env={**os.environ, 'POINT_CONFIG': str(directory/'point.json'), 'USER_FILE': str(directory/'users.json'),
                      'JWT_SECRET': 'local-recovery-fixture-only',
-                     'API_BASE': f'http://127.0.0.1:{server.port}/api'}, stdout=log, stderr=subprocess.STDOUT, timeout=100)
+                     'API_BASE': gateway+'/api' if gateway else f'http://127.0.0.1:{server.port}/api'}, stdout=log, stderr=subprocess.STDOUT, timeout=100)
         until = time.monotonic()+5
         while server.active and time.monotonic() < until: time.sleep(.01)
         assert server.active == 0, 'HTTP queue did not drain'
@@ -122,6 +123,15 @@ def check(output, experiment, short=False):
         return value
 
     try:
+        if gateway:
+            deadline = time.monotonic()+30
+            while True:
+                try:
+                    with urllib.request.urlopen(gateway+'/healthz',timeout=1) as response:
+                        if response.status == 200: break
+                except OSError:
+                    if time.monotonic() >= deadline: raise RuntimeError('Real gateway did not become ready')
+                    time.sleep(.2)
         # Actual default counts, durations and fixed VU allocation; only HTTP business
         # behavior is controlled. This validates the generator, not service performance.
         selected = list(matrix(parse_args([experiment])))[-1]
@@ -144,7 +154,7 @@ def check(output, experiment, short=False):
             assert recovered['valid'], recovered['loadErrors']
         write_json(output/'check.json', {'status': 'passed', 'scope': 'validation',
                    'description': 'Real default k6 profiles and production evidence; controlled HTTP queue, no business performance claims',
-                   'experiment': experiment, 'mode':'machine-check' if short else 'regression', 'verifiedEnvelope':{'rps':check_rate,'responseDelayMs':9000,'requestTimeoutMs':10000,'vus':selected['vus']}, 'observedPoints': len(observed), 'resources': runner_usage()})
+                   'gateway': gateway, 'experiment': experiment, 'mode':'machine-check' if short else 'regression', 'verifiedEnvelope':{'rps':check_rate,'responseDelayMs':9000,'requestTimeoutMs':10000,'vus':selected['vus']}, 'observedPoints': len(observed), 'resources': runner_usage()})
     finally: server.close()
 
 
@@ -152,10 +162,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--experiment', choices=['redis-filtering','kafka-burst'], default='redis-filtering')
+    parser.add_argument('--gateway', help='Real Nginx URL for isolated transport regression; expose fixture on port 8080')
     parser.add_argument('--short', action='store_true', help='12s arrival window with 9s responses on the current machine; no repeated full profile or artificial overload')
     options = parser.parse_args()
     try:
-        check(options.output.resolve(), options.experiment, options.short)
+        check(options.output.resolve(), options.experiment, options.short, options.gateway)
     except Exception as error:
         options.output.mkdir(parents=True, exist_ok=True)
         write_json(options.output/'check.json', {'status': 'failed', 'scope': 'validation', 'error': str(error)})

@@ -448,7 +448,10 @@ def main(argv=None):
     if os.environ.get('BENCH_CONTAINER') != '1' or os.environ.get('GITHUB_ACTIONS') != 'true': raise RuntimeError('Use the resource-limited load-runner container')
     target = json.loads((RUNTIME / 'target.json').read_text())
     load_host = json.loads((RUNTIME / 'load-host.json').read_text())
-    if target['instanceId'] != os.environ['SUT_INSTANCE_ID'] or target['machineMemoryMiB'] != 2048 or target['cpuLimit'] != 2 or target.get('cpuModel') != 'shared-cpuset':
+    if (target['instanceId'] != os.environ['SUT_INSTANCE_ID'] or target['machineMemoryMiB'] != 2048
+            or target['cpuLimit'] != 2 or target.get('cpuModel') != 'shared-cpuset'
+            or target.get('memoryModel') != 'shared-cgroup' or target.get('groupMemoryMiB') != 1632
+            or target.get('groupSwapMiB') != 0):
         raise RuntimeError('Target resource verification is missing or belongs to another SUT')
     validate_deployment(args, target, load_host)
     if not os.environ.get('BENCH_HOST_STATUS'):

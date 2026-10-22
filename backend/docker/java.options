@@ -1,7 +1,7 @@
-# Shared business/experiment runtime. Percentages follow the container memory limit.
+# Shared business/experiment heap, independent of parent/host memory discovery.
 -XX:+UseG1GC
--XX:InitialRAMPercentage=25.0
--XX:MaxRAMPercentage=50.0
+-Xms128m
+-Xmx256m
 -XX:MaxMetaspaceSize=128m
 -XX:MaxDirectMemorySize=48m
 -Xss512k

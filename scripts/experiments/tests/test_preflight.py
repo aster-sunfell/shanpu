@@ -1,5 +1,6 @@
 """Preflight gates, memory reserves, snapshot integrity and clean reset regressions."""
 import json
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import subprocess
@@ -28,35 +29,35 @@ class PreflightTest(unittest.TestCase):
         self.assertNotEqual(vars(parse_args(['redis-filtering'])),vars(parse_args(['kafka-burst'])))
 
     def resources(self, current=300, inactive=0, events='max 0\noom 0\noom_kill 0'):
-        return [{'service': 'mysql', 'memoryLimitMiB': 384, 'resources': {
+        return {'name': 'shanputest.slice', 'resources': {'memory.max':str(1632*1048576), 'memory.swap.max':'0',
             'memory.current': str(current*1048576), 'memory.stat': f'inactive_file {inactive*1048576}',
-            'memory.events': events, 'cpu.max':'max 100000', 'cpuset.cpus.effective':'0-1'}}]
+            'memory.events': events, 'cpu.max':'max 100000', 'cpuset.cpus.effective':'0-1'}}
 
-    def test_mysql_startup_near_limit_is_rejected_and_file_cache_is_reported_separately(self):
-        self.assertIn('error', preflight_memory(self.resources(current=369), 64))
-        sample = preflight_memory(self.resources(current=370, inactive=100), 64)
+    def test_group_startup_near_limit_is_rejected_and_file_cache_is_reported_separately(self):
+        self.assertIn('error', preflight_memory(self.resources(current=1617), 64))
+        sample = preflight_memory(self.resources(current=1620, inactive=100), 64)
         self.assertNotIn('error', sample)
-        self.assertEqual((270, 114), (sample['workingMiB'], sample['headroomMiB']))
-        self.assertIn('error', preflight_memory(self.resources(current=360), 32))
+        self.assertEqual((1520, 112), (sample['workingMiB'], sample['headroomMiB']))
+        self.assertIn('error', preflight_memory(self.resources(current=1610), 32))
 
     def test_oom_or_unavailable_cgroup_evidence_cannot_pass_the_preflight(self):
         self.assertIn('error', preflight_memory(self.resources(events='max 0\noom 1\noom_kill 1'), 32))
-        for rows in ([], [{'service': 'mysql'}], self.resources(events='')):
+        for rows in ([], {}, self.resources(events='')):
             with self.subTest(rows=rows), self.assertRaises(RuntimeError): preflight_memory(rows, 32)
 
-    def test_host_preflight_stops_before_starting_load_when_mysql_has_no_startup_reserve(self):
+    def test_host_preflight_stops_before_starting_load_when_group_has_no_startup_reserve(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root/'source.json').write_text(json.dumps({'sourceSha256': 'source'}))
             target = {'source': {'sourceSha256': 'source'},
-                      'services': [{'service': name, 'startedAt': 'before'} for name in actions.MEMORY_LIMITS]}
+                      'services': [{'service': name, 'startedAt': 'before'} for name in actions.SERVICES]}
             calls, overrides = [], []
             container = {'Image': 'image', 'State': {'Running': True, 'OOMKilled': False, 'StartedAt': 'before'}}
 
             def command(args, **kwargs):
                 calls.append(args)
                 if args[:2] == ['compose', 'sut']:
-                    if 'config' in args: return json.dumps({'services': {n: {'cpuset': '0,1', 'pids_limit': 128} for n in actions.MEMORY_LIMITS}})
+                    if 'config' in args: return json.dumps({'services': {n: {'cpuset': '0,1', 'pids_limit': 128} for n in actions.SERVICES}})
                     return args[-1]+'-id'
                 if args[:2] == ['compose', 'runner']:
                     if '--file' in args:
@@ -68,20 +69,24 @@ class PreflightTest(unittest.TestCase):
                 return ''
 
             def validate(name, value, cpuset, pids):
-                return {'service': name, 'startedAt': 'before', 'memoryLimitMiB': actions.MEMORY_LIMITS[name]}
+                return {'service': name, 'startedAt': 'before', 'memoryLimitMiB': None}
 
-            with patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root), \
-                    patch.dict(os.environ, {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}), \
-                    patch.object(actions, 'require_start_memory'), patch.object(actions, 'check_engine'), \
-                    patch.object(actions, 'verify', return_value=target), patch.object(actions, 'source_metadata', return_value={'sourceSha256': 'source'}), \
-                    patch.object(actions, 'actions_context', return_value={}), patch.object(actions, 'environment', return_value={}), \
-                    patch.object(actions, 'machine_id', return_value='test-host'), \
-                    patch.object(actions, 'compose', side_effect=lambda *a: ['compose', *a]), \
-                    patch.object(actions, 'command', side_effect=command), \
-                    patch.object(actions, 'validate_runner_config'), patch.object(actions, 'validate_runner_container'), \
-                    patch.object(actions, 'validate_container', side_effect=validate), \
-                    patch.object(actions, 'container_resources', return_value=self.resources(current=369)[0]['resources']), \
-                    patch('host.memory', return_value={'MemAvailable': 4000*1048576}), patch('builtins.print'):
+            with ExitStack() as stack:
+                for context in [
+                    patch.object(actions, 'RUNTIME', root), patch.object(actions, 'REPORTS', root),
+                    patch.dict(os.environ, {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}),
+                    patch.object(actions, 'require_start_memory'), patch.object(actions, 'check_engine'),
+                    patch.object(actions, 'verify', return_value=target), patch.object(actions, 'source_metadata', return_value={'sourceSha256': 'source'}),
+                    patch.object(actions, 'actions_context', return_value={}), patch.object(actions, 'environment', return_value={}),
+                    patch.object(actions, 'machine_id', return_value='test-host'),
+                    patch.multiple(actions.resource_group, snapshot=lambda name:self.resources(current=1617), verify_member=lambda *a,**k:None),
+                    patch.object(actions, 'compose', side_effect=lambda *a: ['compose', *a]),
+                    patch.object(actions, 'command', side_effect=command),
+                    patch.object(actions, 'validate_runner_config'), patch.object(actions, 'validate_runner_container'),
+                    patch.object(actions, 'validate_container', side_effect=validate),
+                    patch.object(actions, 'container_resources', return_value=self.resources(current=1617)['resources']),
+                    patch('host.memory', return_value={'MemAvailable': 4000*1048576}), patch('builtins.print')
+                ]: stack.enter_context(context)
                 with self.assertRaisesRegex(RuntimeError, 'headroom=15.0 MiB'):
                     actions.run_stage(['redis-filtering'], time.monotonic()+300, preflight=True)
             self.assertFalse(any(c[:3] == ['docker', 'start', '--attach'] for c in calls))

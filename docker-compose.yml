@@ -5,19 +5,23 @@ services:
     extends: {file: deploy/compose.2c2g.yml, service: mysql}
     container_name: shanpu-mysql
     restart: "no"
+    cgroup_parent: ""
   redis:
     extends: {file: deploy/compose.2c2g.yml, service: redis}
     container_name: shanpu-redis
     restart: "no"
+    cgroup_parent: ""
   kafka:
     extends: {file: deploy/compose.2c2g.yml, service: kafka}
     container_name: shanpu-kafka
     restart: "no"
+    cgroup_parent: ""
   nginx:
     image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
     container_name: shanpu-nginx
     ulimits: {nofile: {soft: 65536, hard: 65536}}
     restart: "no"
+    cgroup_parent: ""
     network_mode: host
     cpuset: ${SUT_CPUSET:-0,1}
     environment:
@@ -30,10 +34,6 @@ services:
       - ./deploy/nginx.conf.template:/etc/nginx/templates/nginx.conf.template:ro
       - ./deploy/nginx.api.conf:/etc/nginx/api.conf:ro
       - ./deploy/nginx.backend-keepalive.conf:/etc/nginx/backend-keepalive.conf:ro
-    deploy:
-      resources:
-        limits:
-          memory: 64m
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$$GATEWAY_PORT/gateway-health"]
       interval: 5s

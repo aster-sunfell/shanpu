@@ -67,7 +67,8 @@ def environment_report(environment):
             ('被测端共享逻辑 CPU 数' if budget.get('cpuModel')=='shared-cpuset' else '被测端 CPU 配额合计',quantity(budget.get('cpuLimit'),'vCPU')),
             ('CPU 分配模式',budget.get('cpuModel') or '历史逐服务配额'),
             ('被测端 / 发压端 CPU 集合',str(allocation.get('sut','—'))+' / '+str(allocation.get('runner','—'))),
-            ('被测容器内存合计',quantity(budget.get('containerMemoryMiB'),'MiB')),
+            ('被测服务组共享内存硬上限' if budget.get('memoryModel')=='shared-cgroup' else '被测容器内存合计',
+             quantity(budget.get('groupMemoryMiB') if budget.get('memoryModel')=='shared-cgroup' else budget.get('containerMemoryMiB'),'MiB')),
             ('被测部署内存预算',quantity(budget.get('machineMemoryMiB'),'MiB')),
             ('Runner 镜像 / 版本',image or '未采集'),('内核',host.get('kernel') or '未采集')]
     return '<section id="environment">'+heading('实验环境','本次 Runner 采集值与被测端资源预算')+'<div class="environment"><dl class="environment-grid">'+''.join(f'<div><dt>{text(k)}</dt><dd>{text(v)}</dd></div>' for k,v in fields)+'</dl><p class="env-note">逻辑 CPU 可能是同一核心的 SMT 线程，不代表独占物理核。CPU 型号中的核心数不代表实验分配的核心数；Runner 可见内存不等于被测容器配额。宿主余量为预算，不是硬预留。</p></div></section>'
